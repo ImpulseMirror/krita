@@ -1,4 +1,3 @@
-Dependencies:
 - 'on':
   - '@all'
   require:
@@ -152,18 +151,3 @@ Dependencies:
   - MacOS
   require:
     base/zlib: master
-Options:
-  ccache-large-cache: true
-  cmake-options: -DKRITA_ENABLE_PCH=OFF -DFOUNDATION_BUILD=ON
-  cppcheck-ignore-files:
-  - libs/pigment/KoAlphaMaskApplicatorFactory.cpp
-  force-build-target: all
-  force-install-target: install
-  per-test-timeout: 240
-  run-cppcheck: true
-  run-gcovr: false
-  tests-run-in-parallel: true
-  use-asan: false
-  use-ccache: true
-PostInstallScripts:
-  krita-plugins: build-tools/ci-scripts/build-plugins.py
