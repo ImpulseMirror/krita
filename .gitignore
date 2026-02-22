@@ -48,3 +48,9 @@ _build
 _install
 _staging
 _packaging
+.venv/
+cache/
+ccache/
+packaging/android/fdroid/.gradle/
+packaging/android/fdroid/build/
+*.log
