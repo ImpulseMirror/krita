@@ -18,6 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file \
     && rm -rf /var/lib/apt/lists/*
 
+# Miniforge (conda-forge) for a dedicated Python env (avoids "pip as root", no ToS prompt)
+ENV CONDA_DIR=/opt/conda
+RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p ${CONDA_DIR} \
+    && rm /tmp/miniforge.sh \
+    && ${CONDA_DIR}/bin/conda create -n krita python=3.10 -y \
+    && ${CONDA_DIR}/bin/conda clean -afy
+ENV PATH="${CONDA_DIR}/bin:${PATH}"
+
 # Android command-line tools
 RUN mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools \
     && wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline-tools.zip \
