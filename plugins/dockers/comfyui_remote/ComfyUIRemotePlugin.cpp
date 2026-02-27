@@ -18,7 +18,7 @@ public:
         return QString("ComfyUIRemote");
     }
 
-    Qt::DockWidgetArea defaultDockWidgetArea() const override {
+    virtual Qt::DockWidgetArea defaultDockWidgetArea() const {
         return Qt::RightDockWidgetArea;
     }
 
@@ -28,7 +28,7 @@ public:
         return dock;
     }
 
-    DockPosition defaultDockPosition() const override {
+    virtual DockPosition defaultDockPosition() const {
         return DockMinimized;
     }
 };

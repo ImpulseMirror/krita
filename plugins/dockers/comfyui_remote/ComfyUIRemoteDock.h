@@ -26,19 +26,37 @@ private:
     void startPolling();
     void updateQueueStatus();
     void refreshHistoryList();
+    void refreshRegionsList();
+    void loadRegionsFromConfig();
+    void saveRegionsToConfig();
 
 private Q_SLOTS:
     void slotTestConnection();
     void slotRefreshCheckpoints();
+    void slotRefreshSamplers();
+    void slotRandomSeed();
     void slotLoadWorkflowFromFile();
     void slotPresetChanged(int index);
     void slotSaveAsPreset();
     void slotDeletePreset();
     void slotGenerate();
+    void slotBatchSubmitNext();
     void slotCancelQueue();
     void slotHistoryReRun();
     void slotHistoryItemSelected();
+    void slotHistoryApply();
+    void slotHistoryContextMenu(QPoint pos);
+    void slotHistoryCopyPrompt();
+    void slotHistoryCopySeed();
+    void slotHistoryDiscard();
+    void slotHistoryClear();
     void slotInpaint();
+    void slotUpscale();
+    void slotUpscalePoll();
+    void slotGenerateAnimation();
+    void slotConfigureHelp();
+    void slotLiveTick();
+    void slotLivePoll();
     void slotAddRegion();
     void slotRemoveRegion();
     void slotMoveRegionUp();
@@ -47,6 +65,7 @@ private Q_SLOTS:
     void slotGenerateRegions();
     void runNextRegionInpainting();
     void pollRegionHistory();
+    void slotInpaintPoll();
 
 private:
     struct Private;
