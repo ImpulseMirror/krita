@@ -54,3 +54,4 @@ ccache/
 packaging/android/fdroid/.gradle/
 packaging/android/fdroid/build/
 *.log
+_ci_cache/*

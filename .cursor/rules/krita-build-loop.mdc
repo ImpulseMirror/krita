@@ -1,0 +1,12 @@
+---
+description: Aggressively loop /build-krita until the spec-driven port is finished
+alwaysApply: true
+---
+
+When the user types `/build-krita`, the agent must:
+
+- Treat this as permission to run the **entire `build-krita` skill loop continuously**, not just a single section tweak.
+- Within a single `/build-krita` invocation, keep iterating over spec sections (`not_started`/`in_progress`) and updating code + `Technical_Specification_Completed.json` **without waiting for further user input**, until:
+  - All behaviorally relevant sections are `complete` / `not_applicable`, **or**
+  - External limits (tool/runtime/response limits) force the agent to stop.
+- If external limits are hit and the spec is **not** fully covered, the agent should assume that the **next** `/build-krita` command from the user means “resume the same loop where you left off” and again process as many sections as possible in that invocation.

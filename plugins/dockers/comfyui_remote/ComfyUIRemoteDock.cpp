@@ -4,6 +4,8 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyUIUtils.h"
 
 #include <QWidget>
 #include <QVBoxLayout>
@@ -20,14 +22,22 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QVector>
+#include <QMap>
+#include <QSharedPointer>
 #include <QTemporaryFile>
 #include <QMessageBox>
 #include <QTimer>
 #include <QRandomGenerator>
 #include <QPointer>
 #include <QInputDialog>
+#include <QListView>
 #include <QListWidget>
 #include <QPlainTextEdit>
+#include <QSignalBlocker>
+#include <QCompleter>
+#include <QStringListModel>
+#include <QTextCursor>
 #include <QScrollArea>
 #include <QFile>
 #include <QFileDialog>
@@ -39,19 +49,34 @@
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QProgressBar>
+#include <QRadioButton>
+#include <QButtonGroup>
+#include <QKeyEvent>
+#include <QEvent>
+#include <QPaintEvent>
 #include <QMenu>
 #include <QStandardPaths>
 #include <QDir>
+#include <QFileInfo>
 #include <QPixmap>
+#include <QPainter>
 #include <QApplication>
+#include <QFontMetrics>
 #include <QClipboard>
 #include <QTabWidget>
+#include <QStackedWidget>
 #include <QGroupBox>
+#include <QFrame>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QDesktopServices>
 #include <QToolButton>
 #include <QWidgetAction>
+#include <QUuid>
+#include <QCryptographicHash>
+#include <QSet>
 
+#include <algorithm>
 #include <KSharedConfig>
 #include <KConfigGroup>
 #include <klocalizedstring.h>
@@ -62,213 +87,76 @@
 #include <kis_image_manager.h>
 #include <kis_selection.h>
 #include <kis_types.h>
+#include <kis_animation_importer.h>
+#include <kis_annotation.h>
 #include <kis_paint_device.h>
 #include <kis_layer.h>
 #include <kis_group_layer.h>
 #include <kis_paint_layer.h>
+#include <kis_image.h>
+#include <kis_image_animation_interface.h>
+#include <kis_node.h>
+#include <KisPart.h>
+#include <KisDocument.h>
+#include <KisImportExportErrorCode.h>
+#include <commands/KisNodeRenameCommand.h>
+#include <kis_undo_adapter.h>
 #include <KoColorSpaceRegistry.h>
 #include <KoColorProfile.h>
 #include <KoColorConversionTransformation.h>
 
-// Minimal ComfyUI default workflow (text2img). Node keys "3".."9" as in ComfyUI basic_api_example.
-static const char defaultWorkflow[] = R"({
- "3": {"class_type": "KSampler", "inputs": {"cfg": 8, "denoise": 1, "latent_image": ["5", 0], "model": ["4", 0], "negative": ["7", 0], "positive": ["6", 0], "sampler_name": "euler", "scheduler": "normal", "seed": 0, "steps": 20}},
- "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}},
- "5": {"class_type": "EmptyLatentImage", "inputs": {"batch_size": 1, "height": 512, "width": 512}},
- "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": ""}},
- "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": ""}},
- "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
- "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI", "images": ["8", 0]}}
-})";
-
-// Minimal inpainting workflow: LoadImage (1=image, 2=mask), Checkpoint (4), CLIP (5,6), VAEEncodeForInpaint (7), KSampler (8), VAEDecode (9), SaveImage (10).
-static const char inpaintingWorkflowTemplate[] = R"({
- "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
- "2": {"class_type": "LoadImage", "inputs": {"image": "MASK_PLACEHOLDER"}},
- "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "CKPT_PLACEHOLDER"}},
- "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "PROMPT_PLACEHOLDER"}},
- "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "NEGATIVE_PLACEHOLDER"}},
- "7": {"class_type": "VAEEncodeForInpaint", "inputs": {"grow_mask_by": 6, "mask": ["2", 1], "pixels": ["1", 0], "vae": ["4", 2]}},
- "8": {"class_type": "KSampler", "inputs": {"cfg": 8, "denoise": 1, "latent_image": ["7", 0], "model": ["4", 0], "negative": ["6", 0], "positive": ["5", 0], "sampler_name": "euler", "scheduler": "normal", "seed": 0, "steps": 20}},
- "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 2]}},
- "10": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI_region", "images": ["9", 0]}}
-})";
-
-// Upscale: LoadImage (1), ImageScale (2), SaveImage (3). Uses ComfyUI core ImageScale (width/height).
-static const char upscaleWorkflowTemplate[] = R"({
- "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
- "2": {"class_type": "ImageScale", "inputs": {"height": 1024, "image": ["1", 0], "upscale_method": "lanczos", "width": 1024}},
- "3": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI_upscale", "images": ["2", 0]}}
-})";
-
-// img2img for Live: LoadImage (1), VAEEncode (2), Checkpoint (3), CLIP (4,5), KSampler (6), VAEDecode (7), SaveImage (8)
-static const char img2imgWorkflowTemplate[] = R"({
- "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
- "2": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["3", 2]}},
- "3": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "CKPT_PLACEHOLDER"}},
- "4": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 1], "text": "PROMPT_PLACEHOLDER"}},
- "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 1], "text": "NEGATIVE_PLACEHOLDER"}},
- "6": {"class_type": "KSampler", "inputs": {"cfg": 8, "denoise": 0.75, "latent_image": ["2", 0], "model": ["3", 0], "negative": ["5", 0], "positive": ["4", 0], "sampler_name": "euler", "scheduler": "normal", "seed": 0, "steps": 20}},
- "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["3", 2]}},
- "8": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI_live", "images": ["7", 0]}}
-})";
-
-namespace
+// §13.32: Strength spinbox snaps to valid step boundaries (arrow keys / scroll)
+class StrengthSpinBox : public QSpinBox
 {
-QString historyCacheDir()
+    QPointer<QSpinBox> m_steps;
+public:
+    explicit StrengthSpinBox(QSpinBox *stepsSpinBox, QWidget *parent = nullptr)
+        : QSpinBox(parent), m_steps(stepsSpinBox) {}
+    void stepBy(int step) override {
+        const int steps = m_steps ? qMax(1, m_steps->value()) : 20;
+        int idx = qRound(value() * steps / 100.0);
+        idx = qBound(1, idx, steps);
+        const int newIdx = qBound(1, idx + step, steps);
+        setValue(qRound(100.0 * newIdx / steps));
+    }
+};
+
+// §13.105: SpinnerWidget — compact progress for Live view (48×20, 120° arc + percentage, 50 ms timer)
+class LiveSpinnerWidget : public QWidget
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (base.isEmpty()) base = QDir::tempPath();
-    QString path = base + QStringLiteral("/krita/comfyui_remote");
-    QDir().mkpath(path);
-    return path;
-}
-} // namespace
-
-struct ComfyUIRemoteDock::Private
-{
-    QPointer<KisViewManager> viewManager;
-    QPointer<KisCanvas2> canvas;
-
-    QLineEdit *editServerUrl = nullptr;
-    QComboBox *comboCheckpoint = nullptr;
-    QPushButton *btnRefreshCheckpoints = nullptr;
-    QComboBox *comboPreset = nullptr;
-    QComboBox *comboSizePreset = nullptr;
-    QPushButton *btnSaveAsPreset = nullptr;
-    QPushButton *btnDeletePreset = nullptr;
-    QPlainTextEdit *editPrompt = nullptr;
-    QPlainTextEdit *editNegative = nullptr;
-    QSpinBox *spinWidth = nullptr;
-    QSpinBox *spinHeight = nullptr;
-    QSpinBox *spinSteps = nullptr;
-    QDoubleSpinBox *spinCfg = nullptr;
-    QComboBox *comboSampler = nullptr;
-    QPushButton *btnRefreshSamplers = nullptr;
-    QSpinBox *spinSeed = nullptr;
-    QCheckBox *checkFixedSeed = nullptr;
-    QPushButton *btnRandomSeed = nullptr;
-    QProgressBar *progressBar = nullptr;
-    QComboBox *comboWorkspace = nullptr;
-    QComboBox *comboQueueMode = nullptr;
-    QSpinBox *spinBatchCount = nullptr;
-    QLabel *labelQueueCount = nullptr;
-    QPushButton *btnTest = nullptr;
-    QPushButton *btnGenerate = nullptr;
-    QPushButton *btnCancelQueue = nullptr;
-    QPushButton *btnInpaint = nullptr;
-    QPushButton *btnUpscale = nullptr;
-    QSpinBox *spinAnimationFrames = nullptr;
-    QPushButton *btnGenerateAnimation = nullptr;
-    QCheckBox *checkUseReferenceImage = nullptr;
-    QCheckBox *checkLiveMode = nullptr;
-    QTimer *liveTimer = nullptr;
-    QString liveUploadedImageName;
-    QString livePromptId;
-    int livePollCount = 0;
-    static const int liveMaxPollCount = 120;
-    QTimer *livePollTimer = nullptr;
-    QLabel *labelStatus = nullptr;
-    QListWidget *listHistory = nullptr;
-    QPushButton *btnHistoryReRun = nullptr;
-    QPushButton *btnHistoryApply = nullptr;
-    QPlainTextEdit *editCustomWorkflow = nullptr;
-    QPushButton *btnLoadWorkflow = nullptr;
-
-    struct RegionEntry {
-        QString name;
-        QString prompt;
-        QString maskSource; // "selection" or "layer:LayerName"
-    };
-    QList<RegionEntry> regionEntries;
-    QListWidget *listRegions = nullptr;
-    QPushButton *btnAddRegion = nullptr;
-    QPushButton *btnRemoveRegion = nullptr;
-    QPushButton *btnMoveRegionUp = nullptr;
-    QPushButton *btnMoveRegionDown = nullptr;
-    QPushButton *btnEditRegion = nullptr;
-    QPushButton *btnGenerateRegions = nullptr;
-
-    void refreshRegionsList();
-    void loadRegionsFromConfig();
-    void saveRegionsToConfig();
-
-    struct HistoryEntry {
-        QString prompt, negative, checkpoint;
-        int width = 512, height = 512;
-        int steps = 20;
-        double cfg = 8.0;
-        QString samplerName;
-        qint64 seed = 0;
-        QString resultImagePath;  // path to cached thumbnail/result image
-    };
-    QList<HistoryEntry> historyEntries;
-    QMap<QString, HistoryEntry> pendingHistoryByPromptId;
-    static const int maxHistoryEntries = 20;
-
-    static const int builtinPresetCount = 5; // None, Portrait, Landscape, Anime, Realistic
-
-    void refreshHistoryList();
-
-    QNetworkAccessManager *nam = nullptr;
-    QTimer *pollTimer = nullptr;
-    QString currentPromptId;      // the one we're currently polling
-    QStringList jobQueue;         // prompt_ids waiting (first is running)
-    int pollCount = 0;
-    static const int maxPollCount = 300; // 5 min at 1s
-    KisSignalAutoConnectionsStore connections;
-
-    // Batch submit state
-    QStringList batchCollectIds;
-    int batchSubmitIndex = 0;
-    int batchCountTarget = 0;
-    int batchQueueMode = 0;
-    QUrl batchBaseUrl;
-    bool batchUseCustomWorkflow = false;
-    QJsonObject batchCustomWorkflow;
-
-    // Region generation state (used during slotGenerateRegions async chain)
-    QImage regionCurrentImage;
-    int regionIndex = 0;
-    QString regionUploadedImageName;
-    QString regionUploadedImageSubfolder;
-    QString regionPromptId;
-    QString regionMaskUploadedName;
-    QString regionMaskUploadedSubfolder;
-    int regionPollCount = 0;
-    static const int regionMaxPollCount = 300;
-
-    // One-click inpaint state
-    QString inpaintUploadedImageName;
-    QString inpaintUploadedImageSubfolder;
-    QString inpaintUploadedMaskName;
-    QString inpaintUploadedMaskSubfolder;
-    QString inpaintPromptId;
-    QImage inpaintCurrentImage;
-    int inpaintPollCount = 0;
-    static const int inpaintMaxPollCount = 300;
-    QTimer *inpaintPollTimer = nullptr;
-
-    // Upscale state
-    QString upscaleUploadedImageName;
-    QString upscalePromptId;
-    int upscalePollCount = 0;
-    static const int upscaleMaxPollCount = 300;
-    QTimer *upscalePollTimer = nullptr;
-
-    // Settings dialog (connection & workflow configuration)
-    QPointer<QDialog> settingsDialog;
-
-    // Queue popup button (jobs, batch, seed, enqueue mode, cancel)
-    QToolButton *btnQueuePopup = nullptr;
-    QSlider *sliderResolutionMultiplier = nullptr;
-    QLabel *labelResolutionMultiplier = nullptr;
-    double resolutionMultiplier = 1.0;
-
-    // Group pointers for workspace visibility toggling
-    QGroupBox *genGroupBox = nullptr;
-    QGroupBox *histGroupBox = nullptr;
-    QGroupBox *regionsGroupBox = nullptr;
+public:
+    explicit LiveSpinnerWidget(QWidget *parent = nullptr) : QWidget(parent), m_progress(0), m_angle(0)
+    {
+        setFixedSize(48, 20);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        connect(m_timer, &QTimer::timeout, this, [this]() {
+            m_angle = (m_angle + 12) % 360;
+            update();
+        });
+    }
+    void setProgress(int progress) { m_progress = qBound(0, progress, 100); update(); }
+    void startAnimation() { m_timer->start(50); show(); }
+    void stopAnimation() { m_timer->stop(); hide(); }
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const int w = width();
+        const int h = height();
+        const int span = 120 * 16;  // 120° in sixteenths of a degree
+        const int startAngle = (90 - m_angle) * 16;
+        p.setPen(Qt::NoPen);
+        p.setBrush(palette().color(QPalette::WindowText));
+        p.drawPie(2, 0, w - 4, h - 4, startAngle, span);
+        p.setPen(palette().color(QPalette::WindowText));
+        p.drawText(QRect(0, 0, w, h), Qt::AlignCenter, QString::number(m_progress) + QLatin1Char('%'));
+    }
+private:
+    QTimer *m_timer;
+    int m_progress;
+    int m_angle;
 };
 
 ComfyUIRemoteDock::ComfyUIRemoteDock()
@@ -296,11 +184,12 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (!base.isValid()) return;
         base.setPath(base.path() + "/history/" + m_d->currentPromptId);
         QNetworkRequest req(base);
+        ComfyUIUtils::setComfyUIRequestHeaders(req);
         QNetworkReply *reply = m_d->nam->get(req);
         connect(reply, &QNetworkReply::finished, this, [this, reply]() {
             reply->deleteLater();
             if (reply->error() != QNetworkReply::NoError) {
-                m_d->labelStatus->setText(i18n("History error: %1", reply->errorString()));
+                setStatusMessage(i18n("History error: %1", reply->errorString()), true);
                 m_d->progressBar->setValue(0);
                 m_d->currentPromptId.clear();
                 if (!m_d->jobQueue.isEmpty()) {
@@ -319,7 +208,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             if (outputs.isEmpty()) {
                 m_d->pollCount++;
                 if (m_d->pollCount >= Private::maxPollCount) {
-                    m_d->labelStatus->setText(i18n("Generation timed out."));
+                    setStatusMessage(i18n("Generation timed out."), true);
                     m_d->progressBar->setValue(0);
                     m_d->currentPromptId.clear();
                     if (!m_d->jobQueue.isEmpty()) {
@@ -336,20 +225,21 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 m_d->pollTimer->start(1000);
                 return;
             }
-            // Find SaveImage output (node "9" in default workflow)
-            QString filename, subfolder;
+            // §13.131: Collect all images from output (multi-image result per job)
+            QVector<QPair<QString, QString>> imageInfos;
             for (const QString &nodeId : outputs.keys()) {
                 QJsonObject nodeOut = outputs.value(nodeId).toObject();
                 QJsonArray images = nodeOut.value("images").toArray();
-                if (!images.isEmpty()) {
-                    QJsonObject img = images.at(0).toObject();
-                    filename = img.value("filename").toString();
-                    subfolder = img.value("subfolder").toString();
-                    break;
+                for (int i = 0; i < images.size(); i++) {
+                    QJsonObject img = images.at(i).toObject();
+                    QString fn = img.value("filename").toString();
+                    if (!fn.isEmpty())
+                        imageInfos.append(qMakePair(fn, img.value("subfolder").toString()));
                 }
+                if (!imageInfos.isEmpty()) break;
             }
-            if (filename.isEmpty()) {
-                m_d->labelStatus->setText(i18n("No image in output."));
+            if (imageInfos.isEmpty()) {
+                setStatusMessage(i18n("No image in output."), true);
                 m_d->progressBar->setValue(0);
                 m_d->currentPromptId.clear();
                 if (!m_d->jobQueue.isEmpty()) {
@@ -368,21 +258,97 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 m_d->btnGenerate->setEnabled(true);
             }
             QUrl baseUrl(m_d->editServerUrl->text().trimmed());
+            const int totalImages = imageInfos.size();
+            // §13.131: Multi-image result — download all images and store in one entry
+            if (totalImages > 1 && m_d->pendingHistoryByPromptId.contains(completedId)) {
+                Private::HistoryEntry entry = m_d->pendingHistoryByPromptId.take(completedId);
+                entry.jobId = completedId;
+                QSharedPointer<QMap<int, QString>> pathsByIndex(new QMap<int, QString>());
+                for (int i = 0; i < totalImages; i++) {
+                    QUrl viewUrl(baseUrl);
+                    QString path = viewUrl.path();
+                    if (!path.endsWith('/')) path += '/';
+                    path += "view";
+                    viewUrl.setPath(path);
+                    QUrlQuery q;
+                    q.addQueryItem("filename", imageInfos.at(i).first);
+                    if (!imageInfos.at(i).second.isEmpty()) q.addQueryItem("subfolder", imageInfos.at(i).second);
+                    viewUrl.setQuery(q);
+                    QNetworkRequest req(viewUrl);
+                    ComfyUIUtils::setComfyUIRequestHeaders(req);
+                    QNetworkReply *getReply = m_d->nam->get(req);
+                    connect(getReply, &QNetworkReply::finished, this, [this, getReply, completedId, entry, totalImages, pathsByIndex, i, baseUrl]() mutable {
+                        getReply->deleteLater();
+                        if (getReply->error() != QNetworkReply::NoError) {
+                            setStatusMessage(i18n("Download error: %1", getReply->errorString()), true);
+                            m_d->progressBar->setValue(0);
+                            if (!m_d->jobQueue.isEmpty()) {
+                                m_d->currentPromptId = m_d->jobQueue.takeFirst();
+                                m_d->pollCount = 0;
+                                startPolling();
+                            } else {
+                                m_d->btnGenerate->setEnabled(true);
+                            }
+                            updateQueueStatus();
+                            return;
+                        }
+                        QByteArray data = getReply->readAll();
+                        QString suffix = "png";
+                        if (data.startsWith("\x89PNG")) suffix = "png";
+                        else if (data.startsWith("\xff\xd8")) suffix = "jpg";
+                        QString cachePath = ComfyUIUtils::historyCacheDir() + QStringLiteral("/") + completedId + QStringLiteral("_") + QString::number(i) + QStringLiteral(".") + suffix;
+                        if (QFile::exists(cachePath)) QFile::remove(cachePath);
+                        QFile f(cachePath);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(data);
+                            f.close();
+                            pathsByIndex->insert(i, cachePath);
+                        }
+                        if (pathsByIndex->size() == totalImages) {
+                            Private::HistoryEntry e = entry;
+                            for (int j = 0; j < totalImages; j++)
+                                e.resultImagePaths.append(pathsByIndex->value(j));
+                            e.resultImagePath = e.resultImagePaths.isEmpty() ? QString() : e.resultImagePaths.first();
+                            m_d->progressBar->setValue(100);
+                            m_d->historyEntries.prepend(e);
+                            while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
+                                Private::HistoryEntry old = m_d->historyEntries.takeLast();
+                                evictDocumentEmbeddedSlotIfAny(old.documentSlot);
+                                QStringList paths = old.resultImagePaths;
+                                if (paths.isEmpty() && !old.resultImagePath.isEmpty()) paths << old.resultImagePath;
+                                for (const QString &p : paths) { if (!p.isEmpty() && QFile::exists(p)) QFile::remove(p); }
+                            }
+                            pruneHistoryToStorageLimit();
+                            persistTopHistoryEntryToDocument(false);
+                            handleGenerationFinished(e.resultImagePath, false);
+                            if (!m_d->jobQueue.isEmpty()) {
+                                m_d->currentPromptId = m_d->jobQueue.takeFirst();
+                                m_d->pollCount = 0;
+                                startPolling();
+                            }
+                            updateQueueStatus();
+                        }
+                    });
+                }
+                return;
+            }
+            // Single image: one GET
             QUrl viewUrl(baseUrl);
             QString path = viewUrl.path();
             if (!path.endsWith('/')) path += '/';
             path += "view";
             viewUrl.setPath(path);
             QUrlQuery q;
-            q.addQueryItem("filename", filename);
-            if (!subfolder.isEmpty()) q.addQueryItem("subfolder", subfolder);
+            q.addQueryItem("filename", imageInfos.at(0).first);
+            if (!imageInfos.at(0).second.isEmpty()) q.addQueryItem("subfolder", imageInfos.at(0).second);
             viewUrl.setQuery(q);
             QNetworkRequest req(viewUrl);
+            ComfyUIUtils::setComfyUIRequestHeaders(req);
             QNetworkReply *getReply = m_d->nam->get(req);
             connect(getReply, &QNetworkReply::finished, this, [this, getReply, completedId]() {
                 getReply->deleteLater();
                 if (getReply->error() != QNetworkReply::NoError) {
-                    m_d->labelStatus->setText(i18n("Download error: %1", getReply->errorString()));
+                    setStatusMessage(i18n("Download error: %1", getReply->errorString()), true);
                     m_d->progressBar->setValue(0);
                     if (!m_d->jobQueue.isEmpty()) {
                         m_d->currentPromptId = m_d->jobQueue.takeFirst();
@@ -401,7 +367,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 QTemporaryFile tmp;
                 tmp.setFileTemplate(tmp.fileTemplate() + "." + suffix);
                 if (!tmp.open()) {
-                    m_d->labelStatus->setText(i18n("Could not create temp file."));
+                    setStatusMessage(i18n("Could not create temp file."), true);
                     m_d->progressBar->setValue(0);
                     if (!m_d->jobQueue.isEmpty()) {
                         m_d->currentPromptId = m_d->jobQueue.takeFirst();
@@ -417,13 +383,16 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 tmp.close();
                 QString cachePath;
                 if (m_d->pendingHistoryByPromptId.contains(completedId)) {
-                    cachePath = historyCacheDir() + QStringLiteral("/") + completedId + QStringLiteral(".png");
+                    cachePath = ComfyUIUtils::historyCacheDir() + QStringLiteral("/") + completedId + QStringLiteral(".png");
                     if (QFile::exists(cachePath)) QFile::remove(cachePath);
-                    if (QFile::copy(tmp.fileName(), cachePath))
+                    if (QFile::copy(tmp.fileName(), cachePath)) {
                         m_d->pendingHistoryByPromptId[completedId].resultImagePath = cachePath;
+                        m_d->pendingHistoryByPromptId[completedId].resultImagePaths = QStringList() << cachePath;
+                        m_d->pendingHistoryByPromptId[completedId].jobId = completedId;
+                    }
                 }
                 if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
-                    m_d->labelStatus->setText(i18n("No document open."));
+                    setStatusMessage(i18n("No document open."), true);
                     m_d->progressBar->setValue(0);
                     if (!m_d->jobQueue.isEmpty()) {
                         m_d->currentPromptId = m_d->jobQueue.takeFirst();
@@ -435,16 +404,149 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                     updateQueueStatus();
                     return;
                 }
-                qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
-                if (n > 0) {
-                    if (m_d->canvas) m_d->canvas->updateCanvas();
-                }
                 m_d->progressBar->setValue(100);
                 if (m_d->pendingHistoryByPromptId.contains(completedId)) {
-                    m_d->historyEntries.prepend(m_d->pendingHistoryByPromptId.take(completedId));
-                    while (m_d->historyEntries.size() > Private::maxHistoryEntries)
-                        m_d->historyEntries.removeLast();
-                    refreshHistoryList();
+                    Private::HistoryEntry entry = m_d->pendingHistoryByPromptId.take(completedId);
+                    entry.jobId = completedId;
+                    if (entry.resultImagePaths.isEmpty() && !entry.resultImagePath.isEmpty())
+                        entry.resultImagePaths = QStringList() << entry.resultImagePath;
+                    const bool skipGenFinishedActions =
+                        m_d->isFullAnimationBatch && m_d->animationBatchPromptIdToIndex.contains(completedId);
+                    // §13.45 / §13.74: Full Animation — collect per-frame results; on last frame, build keyframes list
+                    // (cached execution: same bytes as previous frame → reuse previous path in list).
+                    if (m_d->isFullAnimationBatch && m_d->animationBatchPromptIdToIndex.contains(completedId)) {
+                        const int frameIdx = m_d->animationBatchPromptIdToIndex.take(completedId);
+                        const QString docPath = (m_d->canvas && m_d->canvas->imageView() && m_d->canvas->imageView()->document())
+                            ? m_d->canvas->imageView()->document()->path() : QString();
+                        QString srcPath = entry.resultImagePath;
+                        if (srcPath.isEmpty() && !entry.resultImagePaths.isEmpty())
+                            srcPath = entry.resultImagePaths.first();
+                        if (!srcPath.isEmpty() && QFile::exists(srcPath))
+                            m_d->animationBatchSourcePathByFrame.insert(frameIdx, srcPath);
+                        if (m_d->animationBatchPromptIdToIndex.isEmpty()) {
+                            m_d->isFullAnimationBatch = false;
+                            m_d->batchNeedsPerFrameReference = false;
+                            if (!docPath.isEmpty() && m_d->canvas && m_d->canvas->image()) {
+                                QVector<int> frameOrder;
+                                if (!m_d->animationBatchFrameTimes.isEmpty()) {
+                                    frameOrder = m_d->animationBatchFrameTimes;
+                                } else {
+                                    for (int f = m_d->animationBatchRangeStart; f <= m_d->animationBatchRangeEnd; ++f)
+                                        frameOrder.append(f);
+                                }
+                                if (frameOrder.isEmpty()) {
+                                    QList<int> keys = m_d->animationBatchSourcePathByFrame.keys();
+                                    std::sort(keys.begin(), keys.end());
+                                    for (int k : keys)
+                                        frameOrder.append(k);
+                                }
+                                QStringList keyframePaths;
+                                QString prevListPath;
+                                QString prevSrcPath;
+                                bool batchOk = true;
+                                for (int ft : frameOrder) {
+                                    const QString src = m_d->animationBatchSourcePathByFrame.value(ft);
+                                    if (src.isEmpty() || !QFile::exists(src)) {
+                                        batchOk = false;
+                                        break;
+                                    }
+                                    if (!keyframePaths.isEmpty() && !prevSrcPath.isEmpty()
+                                        && ComfyUIUtils::filesContentsEqual(src, prevSrcPath)) {
+                                        keyframePaths.append(prevListPath);
+                                        prevSrcPath = src;
+                                        continue;
+                                    }
+                                    const QString destPath = ComfyUIUtils::animationFramePath(docPath, ft);
+                                    QDir().mkpath(QFileInfo(destPath).absolutePath());
+                                    if (QFile::exists(destPath))
+                                        QFile::remove(destPath);
+                                    if (!QFile::copy(src, destPath)) {
+                                        batchOk = false;
+                                        break;
+                                    }
+                                    keyframePaths.append(destPath);
+                                    prevListPath = destPath;
+                                    prevSrcPath = src;
+                                }
+                                m_d->animationBatchSourcePathByFrame.clear();
+                                if (!batchOk || keyframePaths.size() != frameOrder.size()) {
+                                    if (!batchOk)
+                                        setStatusMessage(i18n("Animation batch incomplete: missing or invalid frame files."), true);
+                                } else if (!keyframePaths.isEmpty()) {
+                                    KisImageSP img = m_d->canvas->image().toStrongRef();
+                                    if (img) {
+                                        KisAnimationImporter importer(img, nullptr);
+                                        const int firstFrame = m_d->animationImportStartFrame;
+                                        KisImportExportErrorCode impRes =
+                                            importer.import(keyframePaths, firstFrame, 1, false, false, 1);
+                                        if (m_d->canvas)
+                                            m_d->canvas->updateCanvas();
+                                        if (impRes.isOk() || impRes.isInternalError()) {
+                                            setStatusMessage(i18n("Imported %1 animation frames.", keyframePaths.size()));
+                                            // §13.74: rename imported layer "[Generated] {start}-{end}: {params.name}"
+                                            if (m_d->viewManager) {
+                                                KisNodeSP an = m_d->viewManager->activeNode();
+                                                if (an && img->undoAdapter()) {
+                                                    QString pfx = ComfyUIUtils::stripPromptComments(
+                                                                      m_d->editPrompt->toPlainText())
+                                                                      .trimmed();
+                                                    if (pfx.length() > 48)
+                                                        pfx = pfx.left(48) + QStringLiteral("...");
+                                                    if (pfx.isEmpty())
+                                                        pfx = i18n("Animation");
+                                                    const QString newName = i18n("[Generated] %1-%2: %3",
+                                                        m_d->animationBatchRangeStart,
+                                                        m_d->animationBatchRangeEnd,
+                                                        pfx);
+                                                    img->undoAdapter()->addCommand(
+                                                        new KisNodeRenameCommand(an, an->name(), newName));
+                                                }
+                                            }
+                                        } else {
+                                            setStatusMessage(
+                                                impRes.errorMessage().isEmpty()
+                                                    ? i18n("Animation import failed.")
+                                                    : impRes.errorMessage(),
+                                                true);
+                                        }
+                                        m_d->animationBatchFrameTimes.clear();
+                                        m_d->animationBatchGroupId.clear();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    m_d->historyEntries.prepend(entry);
+                    while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
+                        Private::HistoryEntry old = m_d->historyEntries.takeLast();
+                        evictDocumentEmbeddedSlotIfAny(old.documentSlot);
+                        QStringList paths = old.resultImagePaths;
+                        if (paths.isEmpty() && !old.resultImagePath.isEmpty()) paths << old.resultImagePath;
+                        for (const QString &p : paths) { if (!p.isEmpty() && QFile::exists(p)) QFile::remove(p); }
+                    }
+                    pruneHistoryToStorageLimit();
+                    persistTopHistoryEntryToDocument(skipGenFinishedActions);
+                    const QString finishPath = entry.resultImagePath.isEmpty()
+                        ? (entry.resultImagePaths.isEmpty() ? QString() : entry.resultImagePaths.first())
+                        : entry.resultImagePath;
+                    bool animTimelineMismatch = false;
+                    if (!skipGenFinishedActions && m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3
+                        && m_d->radioSingleFrame && m_d->radioSingleFrame->isChecked()
+                        && entry.animationSubmitTime >= 0 && m_d->viewManager) {
+                        KisImageSP ki = m_d->viewManager->image();
+                        if (ki && ki->animationInterface() && ki->animationInterface()->hasAnimation())
+                            animTimelineMismatch =
+                                (ki->animationInterface()->currentTime() != entry.animationSubmitTime);
+                    }
+                    const bool animTarget = !skipGenFinishedActions
+                        && tryApplyAnimationSingleFrameToTargetLayer(finishPath, animTimelineMismatch);
+                    if (!skipGenFinishedActions && m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3
+                        && m_d->radioSingleFrame && m_d->radioSingleFrame->isChecked()) {
+                        updateAnimationResultPreview(finishPath);
+                    }
+                    if (animTimelineMismatch && !animTarget)
+                        setStatusMessage(i18n("Generated frame does not match current time."), false, true);
+                    handleGenerationFinished(finishPath, skipGenFinishedActions || animTarget);
                 }
                 if (!m_d->jobQueue.isEmpty()) {
                     m_d->currentPromptId = m_d->jobQueue.takeFirst();
@@ -458,6 +560,111 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     QWidget *widget = new QWidget(this);
     QVBoxLayout *layout = new QVBoxLayout(widget);
+    // §13.1 Dock stack: index 0 = Welcome, 1 = workspace content (Generate/Upscale/Live/Animation/Graph via combo)
+    m_d->mainStack = new QStackedWidget(widget);
+
+    // §5.2 Welcome view: logo, title "AI Image\nGeneration", connection status, Configure button, footer links
+    m_d->welcomePage = new QWidget(widget);
+    QVBoxLayout *welcomeLayout = new QVBoxLayout(m_d->welcomePage);
+    QLabel *logoLabel = new QLabel(m_d->welcomePage);
+    logoLabel->setFixedSize(64, 64);
+    QPixmap logoPix = KisIconUtils::loadIcon("view-preview").pixmap(64, 64);
+    if (!logoPix.isNull()) {
+        logoLabel->setPixmap(logoPix.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    } else {
+        logoLabel->setStyleSheet(QStringLiteral("background: palette(mid); border-radius: 4px;"));
+    }
+    QLabel *welcomeTitle = new QLabel(i18n("AI Image\nGeneration"), m_d->welcomePage);
+    QFont titleFont = welcomeTitle->font();
+    titleFont.setPointSize(qMax(12, titleFont.pointSize()));
+    welcomeTitle->setFont(titleFont);
+    welcomeTitle->setAlignment(Qt::AlignCenter);
+    welcomeTitle->setTextFormat(Qt::PlainText);
+    QHBoxLayout *headerRow = new QHBoxLayout();
+    headerRow->addWidget(logoLabel);
+    headerRow->addWidget(welcomeTitle, 1);
+    welcomeLayout->addLayout(headerRow);
+    welcomeLayout->addSpacing(12);
+    // §13.190 order: AutoUpdateWidget (3), NewsWidget (4), ConnectionWidget (5). At most one visible.
+    m_d->welcomeUpdateWidget = new QWidget(m_d->welcomePage);
+    QVBoxLayout *updateLayout = new QVBoxLayout(m_d->welcomeUpdateWidget);
+    QLabel *updateLabel = new QLabel(i18n("A new plugin version is available!"), m_d->welcomeUpdateWidget);
+    updateLabel->setWordWrap(true);
+    updateLayout->addWidget(updateLabel);
+    QPushButton *btnUpdate = new QPushButton(i18n("Download and Install"), m_d->welcomeUpdateWidget);
+    connect(btnUpdate, &QPushButton::clicked, this, [this]() {
+        QUrl u = !m_d->updateDownloadUrl.isEmpty() ? QUrl(m_d->updateDownloadUrl) : QUrl(QStringLiteral("https://github.com/IntersticeAI/krita-ai-diffusion/releases"));
+        if (u.isValid()) QDesktopServices::openUrl(u);
+    });
+    updateLayout->addWidget(btnUpdate);
+    m_d->welcomeUpdateWidget->hide();
+    welcomeLayout->addWidget(m_d->welcomeUpdateWidget);
+    m_d->welcomeNewsWidget = new QWidget(m_d->welcomePage);
+    QVBoxLayout *newsLayout = new QVBoxLayout(m_d->welcomeNewsWidget);
+    m_d->welcomeNewsLabel = new QLabel(m_d->welcomeNewsWidget);
+    m_d->welcomeNewsLabel->setWordWrap(true);
+    m_d->welcomeNewsLabel->setObjectName(QStringLiteral("newsText"));
+    newsLayout->addWidget(m_d->welcomeNewsLabel);
+    QPushButton *btnNewsOk = new QPushButton(i18n("Ok"), m_d->welcomeNewsWidget);
+    connect(btnNewsOk, &QPushButton::clicked, this, [this]() {
+        m_d->hasUnseenNews = false;
+        QJsonObject s = ComfyUIUtils::loadSettingsJson();
+        s.insert(QStringLiteral("last_news"), m_d->lastNewsDigest);
+        ComfyUIUtils::saveSettingsJson(s);
+        updateWelcomeVisibility();
+    });
+    newsLayout->addWidget(btnNewsOk);
+    m_d->welcomeNewsWidget->hide();
+    welcomeLayout->addWidget(m_d->welcomeNewsWidget);
+    m_d->welcomeConnectionWidget = new QWidget(m_d->welcomePage);
+    QVBoxLayout *connWidgetLayout = new QVBoxLayout(m_d->welcomeConnectionWidget);
+    connWidgetLayout->setContentsMargins(0, 0, 0, 0);
+    m_d->welcomeStatusLabel = new QLabel(i18n("Not connected to server."), m_d->welcomeConnectionWidget);
+    m_d->welcomeStatusLabel->setWordWrap(true);
+    m_d->welcomeErrorLabel = new QLabel(m_d->welcomeConnectionWidget);
+    m_d->welcomeErrorLabel->setWordWrap(true);
+    m_d->welcomeErrorLabel->setStyleSheet(QStringLiteral("color: #b58900;"));  // Yellow for error line (§13.73)
+    m_d->welcomeErrorLabel->hide();
+    QPushButton *btnConfigure = new QPushButton(i18n("Configure"), m_d->welcomeConnectionWidget);
+    btnConfigure->setIcon(KisIconUtils::loadIcon("configure"));
+    connect(btnConfigure, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
+    connWidgetLayout->addWidget(m_d->welcomeStatusLabel);
+    connWidgetLayout->addWidget(m_d->welcomeErrorLabel);
+    connWidgetLayout->addWidget(btnConfigure);
+    welcomeLayout->addWidget(m_d->welcomeConnectionWidget);
+    welcomeLayout->addStretch();
+    welcomeLayout->addSpacing(24);
+    QHBoxLayout *footerLinks = new QHBoxLayout();
+    footerLinks->addStretch();
+    QPushButton *linkInterstice = new QPushButton(QStringLiteral("Interstice.cloud"), m_d->welcomePage);
+    linkInterstice->setFlat(true);
+    linkInterstice->setCursor(Qt::PointingHandCursor);
+    connect(linkInterstice, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://interstice.cloud")));
+    });
+    QPushButton *linkGitHub = new QPushButton(i18n("GitHub Project"), m_d->welcomePage);
+    linkGitHub->setFlat(true);
+    linkGitHub->setCursor(Qt::PointingHandCursor);
+    connect(linkGitHub, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/IntersticeAI/krita-ai-diffusion")));
+    });
+    QPushButton *linkDiscord = new QPushButton(QStringLiteral("Discord"), m_d->welcomePage);
+    linkDiscord->setFlat(true);
+    linkDiscord->setCursor(Qt::PointingHandCursor);
+    connect(linkDiscord, &QPushButton::clicked, this, []() {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/krita")));
+    });
+    footerLinks->addWidget(linkInterstice);
+    footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
+    footerLinks->addWidget(linkGitHub);
+    footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
+    footerLinks->addWidget(linkDiscord);
+    welcomeLayout->addLayout(footerLinks);
+    m_d->mainStack->addWidget(m_d->welcomePage);
+
+    QWidget *contentPage = new QWidget(widget);
+    QVBoxLayout *contentLayout = new QVBoxLayout(contentPage);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
     QScrollArea *scroll = new QScrollArea();
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -468,8 +675,29 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QGroupBox *connGroup = new QGroupBox(i18n("Connection"));
     QVBoxLayout *connLayout = new QVBoxLayout(connGroup);
     m_d->editServerUrl = new QLineEdit();
-    m_d->editServerUrl->setPlaceholderText(i18n("e.g. http://192.168.1.10:8188"));
+    {
+        // §3.1: Prefer user_data_dir/settings.json, fallback to KConfig
+        QJsonObject settings = ComfyUIUtils::loadSettingsJson();
+        QString savedUrl;
+        if (settings.contains(QStringLiteral("server_url")))
+            savedUrl = settings.value(QStringLiteral("server_url")).toString();
+        if (savedUrl.isEmpty()) {
+            KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+            savedUrl = cfg.readEntry("ServerUrl", QStringLiteral("127.0.0.1:8188"));
+        }
+        m_d->editServerUrl->setText(savedUrl);
+    }
+    m_d->editServerUrl->setPlaceholderText(i18n("e.g. 127.0.0.1:8188"));
     m_d->editServerUrl->setClearButtonEnabled(true);
+    connect(m_d->editServerUrl, &QLineEdit::editingFinished, this, [this]() {
+        QString url = m_d->editServerUrl->text().trimmed();
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("ServerUrl", url);
+        // §3.1: Persist to settings.json
+        QJsonObject settings = ComfyUIUtils::loadSettingsJson();
+        settings.insert(QStringLiteral("server_url"), url);
+        ComfyUIUtils::saveSettingsJson(settings);
+    });
 
     m_d->comboCheckpoint = new QComboBox();
     m_d->comboCheckpoint->setEditable(true);
@@ -478,44 +706,21 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnRefreshCheckpoints = new QPushButton(i18n("Refresh"));
     m_d->btnRefreshCheckpoints->setToolTip(i18n("Load checkpoint list from server"));
     connect(m_d->btnRefreshCheckpoints, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRefreshCheckpoints);
-    QHBoxLayout *checkpointRow = new QHBoxLayout();
-    checkpointRow->addWidget(new QLabel(i18n("Checkpoint:")));
-    checkpointRow->addWidget(m_d->comboCheckpoint, 1);
-    checkpointRow->addWidget(m_d->btnRefreshCheckpoints);
-    connLayout->addLayout(checkpointRow);
 
     m_d->comboPreset = new QComboBox();
-    m_d->comboPreset->addItem(i18n("None"));
-    m_d->comboPreset->addItem(i18n("Portrait"));
-    m_d->comboPreset->addItem(i18n("Landscape"));
-    m_d->comboPreset->addItem(i18n("Anime"));
-    m_d->comboPreset->addItem(i18n("Realistic"));
-    m_d->comboPreset->setItemIcon(0, KisIconUtils::loadIcon("document-new"));
-    m_d->comboPreset->setItemIcon(1, KisIconUtils::loadIcon("user-identity"));
-    m_d->comboPreset->setItemIcon(2, KisIconUtils::loadIcon("view-landscape"));
-    m_d->comboPreset->setItemIcon(3, KisIconUtils::loadIcon("draw-brush"));
-    m_d->comboPreset->setItemIcon(4, KisIconUtils::loadIcon("camera-photo"));
-    KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-    QStringList customNames = cfg.readEntry("PresetNames", QStringList());
-    for (const QString &name : customNames) {
-        if (!name.isEmpty()) m_d->comboPreset->addItem(name);
-    }
+    rebuildPresetComboItems();
     connect(m_d->comboPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ComfyUIRemoteDock::slotPresetChanged);
     m_d->btnSaveAsPreset = new QPushButton(i18n("Save as preset"));
     m_d->btnDeletePreset = new QPushButton(i18n("Delete preset"));
     connect(m_d->btnSaveAsPreset, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotSaveAsPreset);
     connect(m_d->btnDeletePreset, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotDeletePreset);
-    QHBoxLayout *presetRow = new QHBoxLayout();
-    presetRow->addWidget(new QLabel(i18n("Style:")));
-    presetRow->addWidget(m_d->comboPreset, 2);
-
-    // Simple quality selector inspired by krita-ai ("Fast" vs "Quality")
-    QComboBox *comboQuality = new QComboBox();
-    comboQuality->addItem(i18n("Fast"));
-    comboQuality->addItem(i18n("Quality"));
-    comboQuality->setCurrentIndex(1);
-    comboQuality->setToolTip(i18n("Fast: fewer steps, quicker results. Quality: more steps, better details."));
-    connect(comboQuality, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+    // §13.34: SamplingQuality (fast/quality) — affects steps; animation uses same spinSteps via slotGenerate
+    m_d->comboQuality = new QComboBox();
+    m_d->comboQuality->addItem(i18n("Fast"));
+    m_d->comboQuality->addItem(i18n("Quality"));
+    m_d->comboQuality->setCurrentIndex(1);
+    m_d->comboQuality->setToolTip(i18n("Fast: fewer steps, quicker results. Quality: more steps, better details."));
+    connect(m_d->comboQuality, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         if (!m_d->spinSteps) return;
         if (idx == 0) { // Fast
             int v = m_d->spinSteps->value();
@@ -524,12 +729,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             if (m_d->spinSteps->value() < 20)
                 m_d->spinSteps->setValue(20);
         }
+        if (m_d->canvas && m_d->canvas->image())
+            scheduleDocumentUiJsonSave();
     });
-    presetRow->addWidget(new QLabel(i18n("Quality:")));
-    presetRow->addWidget(comboQuality, 1);
 
+    QHBoxLayout *presetRow = new QHBoxLayout();
     presetRow->addWidget(m_d->btnSaveAsPreset);
     presetRow->addWidget(m_d->btnDeletePreset);
+    presetRow->addStretch();
     connLayout->addLayout(presetRow);
     m_d->btnDeletePreset->setEnabled(false);
 
@@ -541,6 +748,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->editCustomWorkflow->setMaximumHeight(80);
     m_d->btnLoadWorkflow = new QPushButton(i18n("Load from file…"));
     connect(m_d->btnLoadWorkflow, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
+    m_d->customWorkflowDocumentSaveTimer = new QTimer(this);
+    m_d->customWorkflowDocumentSaveTimer->setSingleShot(true);
+    connect(m_d->customWorkflowDocumentSaveTimer, &QTimer::timeout, this, [this]() {
+        saveEmbeddedCustomWorkflowToDocument();
+    });
+    connect(m_d->editCustomWorkflow, &QPlainTextEdit::textChanged, this, &ComfyUIRemoteDock::scheduleSaveEmbeddedCustomWorkflowToDocument);
+    m_d->customWorkflowParamsRefreshTimer = new QTimer(this);
+    m_d->customWorkflowParamsRefreshTimer->setSingleShot(true);
+    connect(m_d->customWorkflowParamsRefreshTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel);
+    connect(m_d->editCustomWorkflow, &QPlainTextEdit::textChanged, this, [this]() {
+        if (m_d->customWorkflowParamsRefreshTimer)
+            m_d->customWorkflowParamsRefreshTimer->start(450);
+    });
 
     // Open settings dialog (connection + workflow) instead of exposing config directly
     QPushButton *btnSettings = new QPushButton(i18n("Settings…"));
@@ -553,14 +773,24 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->genGroupBox = genGroup;
     QVBoxLayout *genLayout = new QVBoxLayout(genGroup);
 
-    // Workspace selector similar to krita-ai (Generate / Upscale / Live / Animation / Regions)
+    // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     m_d->comboWorkspace = new QComboBox();
-    m_d->comboWorkspace->addItem(i18n("Generate"));
-    m_d->comboWorkspace->addItem(i18n("Upscale"));
-    m_d->comboWorkspace->addItem(i18n("Live"));
-    m_d->comboWorkspace->addItem(i18n("Animation"));
-    m_d->comboWorkspace->addItem(i18n("Regions"));
-    m_d->comboWorkspace->setToolTip(i18n("Choose workspace: image generation, upscaling, live painting, animation, or region-based prompts."));
+    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("rating"), i18n("Generate"));  // §5.3: sparkle/magic icon
+    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("view-zoom"), i18n("Upscale"));
+    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("view-refresh"), i18n("Live"));
+    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("video-x-generic"), i18n("Animation"));
+    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("project-development-open"), i18n("Graph"));
+    m_d->comboWorkspace->setToolTip(i18n("Choose workspace: image generation, upscaling, live painting, animation, or custom graph workflow."));
+    {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        int storedWorkspace = cfg.readEntry("WorkspaceIndex", 0);
+        if (storedWorkspace < 0 || storedWorkspace >= m_d->comboWorkspace->count()) {
+            storedWorkspace = 0;
+        }
+        m_d->comboWorkspace->setCurrentIndex(storedWorkspace);
+        m_d->lastWorkspaceIndex = storedWorkspace;
+    }
+    // §13.72: Per-workspace dispatch — Generate / Upscale / Live / Animation / Graph each show their action button
     connect(m_d->comboWorkspace, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         // Toggle visibility of mode-specific controls
         if (!m_d->genGroupBox) return;
@@ -568,30 +798,189 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         const bool isUpscale = (idx == 1);
         const bool isLive = (idx == 2);
         const bool isAnimation = (idx == 3);
-        const bool isRegions = (idx == 4);
+        const bool isGraph = (idx == 4);
 
-        if (m_d->btnGenerate) m_d->btnGenerate->setVisible(isGenerate || isRegions);
-        if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate || isRegions);
+        // §13.149: LiveWorkspace persistence — save live strength when leaving Live, restore when entering
+        KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
+        const int prevWorkspace = m_d->lastWorkspaceIndex;
+        const QString liveKey = ComfyUIUtils::liveWorkspaceAnnotationKey();
+        if (m_d->lastWorkspaceIndex == 2 && img && m_d->spinStrength) {
+            QJsonObject o;
+            o.insert(QStringLiteral("strength"), m_d->spinStrength->value() / 100.0);
+            img->removeAnnotation(liveKey);
+            img->addAnnotation(KisAnnotationSP(new KisAnnotation(liveKey, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("live")), QJsonDocument(o).toJson(QJsonDocument::Compact))));
+        }
+        // §13.169: CustomInpaint — save inpaint UI to document when leaving Generate
+        if (prevWorkspace == 0 && idx != 0 && img)
+            saveInpaintWorkspaceToDocument();
+        if (idx == 2 && img && m_d->spinStrength) {
+            KisAnnotationSP liveAnn = img->annotation(liveKey);
+            if (liveAnn && !liveAnn->data().isEmpty()) {
+                QJsonObject o = QJsonDocument::fromJson(liveAnn->data()).object();
+                double s = o.value(QStringLiteral("strength")).toDouble(0.75);
+                m_d->spinStrength->setValue(qBound(1, qRound(s * 100.0), 100));
+            }
+        }
+        m_d->lastWorkspaceIndex = idx;
+        if (idx == 0 && img)
+            loadInpaintWorkspaceFromDocument();
+
+        if (m_d->btnGenerate) m_d->btnGenerate->setVisible(isGenerate);
+        if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate);
+        if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(isGenerate);
+        if (m_d->comboFillMode) m_d->comboFillMode->setVisible(isGenerate);
         if (m_d->btnUpscale) m_d->btnUpscale->setVisible(isUpscale);
         if (m_d->btnGenerateAnimation) m_d->btnGenerateAnimation->setVisible(isAnimation);
         if (m_d->checkLiveMode) m_d->checkLiveMode->setVisible(isLive);
-        if (m_d->regionsGroupBox) m_d->regionsGroupBox->setVisible(isRegions);
+        if (m_d->checkLiveRecord) m_d->checkLiveRecord->setVisible(isLive);
+        if (!isLive) stopLiveSpinner();
+        if (m_d->batchModeRow) m_d->batchModeRow->setVisible(isLive || isAnimation);
+        if (isAnimation)
+            refreshAnimationTargetLayerCombo();
+        updateAnimationTargetLayerRowVisibility();
+        if (m_d->btnImportAnimation) m_d->btnImportAnimation->setVisible(isLive || isAnimation);
+        if (m_d->regionsGroupBox) m_d->regionsGroupBox->setVisible(isGenerate);
+        if (isGenerate)
+            refreshRegionsList();  // §13.125: show active region set when returning to Generate
+        if (m_d->upscaleFactorRow) m_d->upscaleFactorRow->setVisible(isUpscale);
+        if (m_d->upscaleTileOverlapRow) m_d->upscaleTileOverlapRow->setVisible(isUpscale);
+        if (isUpscale) updateUpscaleTargetSize();
+        updateAnimationButtonLabel();
+
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("WorkspaceIndex", idx);
+        if (m_d->genContentContainer) m_d->genContentContainer->setVisible(!isGraph);
+        if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
+        if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate);
+        applyInterfaceAppearanceSettings(); // §3.5: prompt_line_count_live when Live workspace
     });
+    updateAnimationButtonLabel();  // §5.7: initial label from persisted FullAnimation
     genLayout->addWidget(m_d->comboWorkspace);
-    genLayout->addWidget(new QLabel(i18n("Prompt:")));
+
+    m_d->genContentContainer = new QWidget(genGroup);
+    QVBoxLayout *genContentLayout = new QVBoxLayout(m_d->genContentContainer);
+    genContentLayout->setContentsMargins(0, 0, 0, 0);
+
+    // §13.179: Upscale FactorWidget — slider (1.0–4.0), spinbox "Scale: X.XXx", "Target size: W x H"
+    m_d->upscaleFactorRow = new QWidget(genGroup);
+    QHBoxLayout *upscaleFactorLayout = new QHBoxLayout(m_d->upscaleFactorRow);
+    upscaleFactorLayout->setContentsMargins(0, 0, 0, 0);
+    m_d->sliderUpscaleFactor = new QSlider(Qt::Horizontal, m_d->upscaleFactorRow);
+    m_d->sliderUpscaleFactor->setRange(10, 40);  // 1.0–4.0 as int*10
+    m_d->sliderUpscaleFactor->setValue(20);
+    m_d->sliderUpscaleFactor->setToolTip(i18n("Upscale factor"));
+    m_d->spinUpscaleFactor = new QDoubleSpinBox(m_d->upscaleFactorRow);
+    m_d->spinUpscaleFactor->setRange(1.0, 4.0);
+    m_d->spinUpscaleFactor->setValue(2.0);
+    m_d->spinUpscaleFactor->setDecimals(2);
+    m_d->spinUpscaleFactor->setSingleStep(0.1);
+    m_d->spinUpscaleFactor->setSuffix(i18nc("scale factor suffix", "×"));
+    m_d->spinUpscaleFactor->setToolTip(i18n("Scale: X.XX×"));
+    m_d->labelUpscaleTargetSize = new QLabel(i18n("Target size: — × —"), m_d->upscaleFactorRow);
+    m_d->labelUpscaleTargetSize->setToolTip(i18n("Target size: W x H (from document extent × scale)"));
+    upscaleFactorLayout->addWidget(m_d->sliderUpscaleFactor, 1);
+    upscaleFactorLayout->addWidget(m_d->spinUpscaleFactor);
+    upscaleFactorLayout->addWidget(m_d->labelUpscaleTargetSize);
+    connect(m_d->sliderUpscaleFactor, &QSlider::valueChanged, this, [this](int v) {
+        m_d->upscaleFactor = v / 10.0;
+        if (m_d->spinUpscaleFactor && qAbs(m_d->spinUpscaleFactor->value() - m_d->upscaleFactor) > 0.005)
+            m_d->spinUpscaleFactor->setValue(m_d->upscaleFactor);
+        updateUpscaleTargetSize();
+    });
+    connect(m_d->spinUpscaleFactor, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v) {
+        m_d->upscaleFactor = v;
+        if (m_d->sliderUpscaleFactor)
+            m_d->sliderUpscaleFactor->setValue(qRound(v * 10));
+        updateUpscaleTargetSize();
+    });
+    genContentLayout->addWidget(m_d->upscaleFactorRow);
+    m_d->upscaleFactorRow->setVisible(m_d->comboWorkspace->currentIndex() == 1);
+    // §13.147: Tile Overlap — Automatic (-1) or Custom (pixels)
+    m_d->upscaleTileOverlapRow = new QWidget(genGroup);
+    QHBoxLayout *tileOverlapLayout = new QHBoxLayout(m_d->upscaleTileOverlapRow);
+    tileOverlapLayout->setContentsMargins(0, 0, 0, 0);
+    tileOverlapLayout->addWidget(new QLabel(i18n("Tile overlap:"), m_d->upscaleTileOverlapRow));
+    m_d->comboTileOverlapMode = new QComboBox(m_d->upscaleTileOverlapRow);
+    m_d->comboTileOverlapMode->addItem(i18n("Automatic"), 0);
+    m_d->comboTileOverlapMode->addItem(i18n("Custom"), 1);
+    m_d->comboTileOverlapMode->setCurrentIndex(KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("TileOverlapMode", 0));
+    m_d->tileOverlapMode = m_d->comboTileOverlapMode->currentIndex();
+    m_d->spinTileOverlap = new QSpinBox(m_d->upscaleTileOverlapRow);
+    m_d->spinTileOverlap->setRange(0, 512);
+    m_d->spinTileOverlap->setValue(KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("TileOverlap", 32));
+    m_d->tileOverlap = m_d->spinTileOverlap->value();
+    m_d->spinTileOverlap->setSuffix(i18n(" px"));
+    m_d->spinTileOverlap->setToolTip(i18n("Tile overlap in pixels when Custom is selected."));
+    tileOverlapLayout->addWidget(m_d->comboTileOverlapMode);
+    tileOverlapLayout->addWidget(m_d->spinTileOverlap);
+    tileOverlapLayout->addStretch();
+    genContentLayout->addWidget(m_d->upscaleTileOverlapRow);
+    m_d->upscaleTileOverlapRow->setVisible(m_d->comboWorkspace->currentIndex() == 1);
+    m_d->spinTileOverlap->setVisible(m_d->tileOverlapMode == 1);
+    connect(m_d->comboTileOverlapMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        m_d->tileOverlapMode = idx;
+        if (m_d->spinTileOverlap) m_d->spinTileOverlap->setVisible(idx == 1);
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("TileOverlapMode", idx);
+    });
+    connect(m_d->spinTileOverlap, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        m_d->tileOverlap = v;
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("TileOverlap", v);
+    });
+
+    genContentLayout->addWidget(new QLabel(i18n("Prompt:")));
     m_d->editPrompt = new QPlainTextEdit();
+    m_d->editPrompt->setTabChangesFocus(true);  // §13.196: Tab moves focus, not inserted
+    m_d->editPrompt->installEventFilter(this);  // §13.196: Shift+Enter → Generate
     m_d->editPrompt->setPlaceholderText(i18n("Describe the content you want to see, or leave empty."));
-    m_d->editPrompt->setToolTip(i18n("Tip: (word) for emphasis, [word] to reduce strength. Use commas to separate concepts."));
+    m_d->editPrompt->setToolTip(i18n(
+        "Tip: (word) for emphasis, [word] to reduce strength. Use commas to separate concepts. Shift+Enter to generate. "
+        "Ctrl+Space for tag completion (CSV files in Settings → Interface)."));
     m_d->editPrompt->setMaximumHeight(60);
-    genLayout->addWidget(m_d->editPrompt);
+    genContentLayout->addWidget(m_d->editPrompt);
 
-    genLayout->addWidget(new QLabel(i18n("Negative prompt:")));
+    m_d->negativePromptBlock = new QWidget(this);
+    QVBoxLayout *negBlockLayout = new QVBoxLayout(m_d->negativePromptBlock);
+    negBlockLayout->setContentsMargins(0, 0, 0, 0);
+    QHBoxLayout *negativePromptRow = new QHBoxLayout();
+    negativePromptRow->addWidget(new QLabel(i18n("Negative prompt:")));
+    negativePromptRow->addStretch();
+    m_d->labelNegativePromptAlert = new QLabel(m_d->negativePromptBlock);
+    m_d->labelNegativePromptAlert->setToolTip(i18n("The selected Style does not use the negative prompt."));
+    m_d->labelNegativePromptAlert->setPixmap(KisIconUtils::loadIcon("dialog-warning").pixmap(16, 16));
+    m_d->labelNegativePromptAlert->setVisible(false);
+    negativePromptRow->addWidget(m_d->labelNegativePromptAlert);
+    negBlockLayout->addLayout(negativePromptRow);
     m_d->editNegative = new QPlainTextEdit();
+    m_d->editNegative->setTabChangesFocus(true);  // §13.196: Tab moves focus
     m_d->editNegative->setPlaceholderText(i18n("Describe content you want to avoid."));
+    m_d->editNegative->setToolTip(i18n("Ctrl+Space: tag completion (same lists as positive prompt)."));
     m_d->editNegative->setMaximumHeight(40);
-    genLayout->addWidget(m_d->editNegative);
+    m_d->editNegative->installEventFilter(this);
+    negBlockLayout->addWidget(m_d->editNegative);
+    genContentLayout->addWidget(m_d->negativePromptBlock);
+    updateNegativePromptAlertVisibility();  // §13.143: initial state (e.g. "None" selected)
 
-    QHBoxLayout *stepsCfgRow = new QHBoxLayout();
+    // §13.48: Tag autocomplete — shared model, Ctrl+Space in positive/negative prompts
+    m_d->tagKeywordModel = new QStringListModel(this);
+    m_d->promptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
+    m_d->promptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_d->promptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_d->promptTagCompleter->setWidget(m_d->editPrompt);
+    m_d->negativePromptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
+    m_d->negativePromptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_d->negativePromptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_d->negativePromptTagCompleter->setWidget(m_d->editNegative);
+    connect(m_d->promptTagCompleter, QOverload<const QString &>::of(&QCompleter::activated), this, [this](const QString &text) {
+        insertPromptTagCompletion(m_d->editPrompt, text);
+    });
+    connect(m_d->negativePromptTagCompleter, QOverload<const QString &>::of(&QCompleter::activated), this, [this](const QString &text) {
+        insertPromptTagCompletion(m_d->editNegative, text);
+    });
+    refreshPromptTagCompleter();
+
+    m_d->stepsParametersWidget = new QWidget(this);
+    QHBoxLayout *stepsCfgRow = new QHBoxLayout(m_d->stepsParametersWidget);
+    stepsCfgRow->setContentsMargins(0, 0, 0, 0);
     m_d->spinSteps = new QSpinBox();
     m_d->spinSteps->setRange(1, 150);
     m_d->spinSteps->setValue(20);
@@ -620,15 +1009,101 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     stepsCfgRow->addWidget(new QLabel(i18n("Sampler:")));
     stepsCfgRow->addWidget(m_d->comboSampler, 1);
     stepsCfgRow->addWidget(m_d->btnRefreshSamplers);
-    genLayout->addLayout(stepsCfgRow);
+    genContentLayout->addWidget(m_d->stepsParametersWidget);
+
+    // §5.4: Strength (1–100%, denoise = strength/100). §13.32: stepBy snaps to valid step boundaries.
+    m_d->spinStrength = new StrengthSpinBox(m_d->spinSteps, this);
+    m_d->spinStrength->setRange(1, 100);
+    m_d->spinStrength->setValue(100);
+    m_d->spinStrength->setSuffix(QStringLiteral("%"));
+    m_d->spinStrength->setToolTip(i18n("Strength: 100% = full generation, lower = more preserved (refine)."));
+    QHBoxLayout *strengthRow = new QHBoxLayout();
+    strengthRow->addWidget(new QLabel(i18n("Strength:")));
+    strengthRow->addWidget(m_d->spinStrength);
+    genContentLayout->addLayout(strengthRow);
+    {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        m_d->spinStrength->setValue(qBound(1, cfg.readEntry("Strength", 100), 100));
+    }
+    connect(m_d->spinStrength, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("Strength", v);
+        // §13.149: When in Live workspace, persist strength to document (ui.json live key)
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2) {
+            KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
+            if (img) {
+                const QString liveKey = ComfyUIUtils::liveWorkspaceAnnotationKey();
+                QJsonObject o;
+                o.insert(QStringLiteral("strength"), v / 100.0);
+                img->removeAnnotation(liveKey);
+                img->addAnnotation(KisAnnotationSP(new KisAnnotation(liveKey, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("live")), QJsonDocument(o).toJson(QJsonDocument::Compact))));
+            }
+        }
+    });
+
+    // §5.4: Region-only toggle; when set, only active region mask and prompt are used
+    m_d->checkRegionOnly = new QCheckBox(i18n("Region only"));
+    m_d->checkRegionOnly->setToolTip(i18n("Limit generation to the active region only."));
+    {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        m_d->checkRegionOnly->setChecked(cfg.readEntry("RegionOnly", false));
+    }
+    connect(m_d->checkRegionOnly, &QCheckBox::toggled, this, [this](bool checked) {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("RegionOnly", checked);
+    });
+    genContentLayout->addWidget(m_d->checkRegionOnly);
+
+    // §5.4: Edit mode toggle (instruction-based editing; uses linked_edit_style when set)
+    m_d->checkEditMode = new QCheckBox(i18n("Edit"));
+    m_d->checkEditMode->setToolTip(
+        i18n("Use instruction-based editing (alternative style when set). On Generate, the Regions list switches to a separate set while Edit is checked, so normal and edit workflows do not share the same regions."));
+    {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        m_d->checkEditMode->setChecked(cfg.readEntry("EditMode", false));
+    }
+    connect(m_d->checkEditMode, &QCheckBox::toggled, this, [this](bool checked) {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("EditMode", checked);
+        refreshRegionsList();  // §13.125: switch between root and edit region lists
+    });
+    genContentLayout->addWidget(m_d->checkEditMode);
+
+    // §5.4: Layer count (1–8); visible only when style architecture is Qwen Layered (Arch.qwen_l)
+    m_d->layerCountRow = new QWidget(genGroup);
+    QHBoxLayout *layerCountLayout = new QHBoxLayout(m_d->layerCountRow);
+    layerCountLayout->setContentsMargins(0, 0, 0, 0);
+    m_d->spinLayerCount = new QSpinBox(m_d->layerCountRow);
+    m_d->spinLayerCount->setRange(1, 8);
+    m_d->spinLayerCount->setValue(1);
+    m_d->spinLayerCount->setToolTip(i18n("Number of output layers for Qwen Layered generation."));
+    layerCountLayout->addWidget(new QLabel(i18n("Layer count:"), m_d->layerCountRow));
+    layerCountLayout->addWidget(m_d->spinLayerCount);
+    layerCountLayout->addStretch();
+    {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        m_d->spinLayerCount->setValue(qBound(1, cfg.readEntry("LayerCount", 1), 8));
+    }
+    connect(m_d->spinLayerCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("LayerCount", v);
+    });
+    genContentLayout->addWidget(m_d->layerCountRow);
+    m_d->layerCountRow->setVisible(false);  // Shown only when current style arch is qwen_l; no arch in presets yet
 
     m_d->checkFixedSeed = new QCheckBox(i18n("Fixed seed"));
     m_d->spinSeed = new QSpinBox();
-    m_d->spinSeed->setRange(0, 2147483647);
+    m_d->spinSeed->setRange(0, 2147483647);  // §13.209: 32-bit non-negative (0 to 2^31−1)
     m_d->spinSeed->setValue(0);
     m_d->btnRandomSeed = new QPushButton(i18n("Random"));
-    m_d->btnRandomSeed->setIcon(KisIconUtils::loadIcon("random"));
+    m_d->btnRandomSeed->setIcon(KisIconUtils::loadIcon("random"));  // §5.4: dice icon for random seed
     connect(m_d->btnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
+    QHBoxLayout *seedRow = new QHBoxLayout();
+    seedRow->addWidget(new QLabel(i18n("Seed:")));
+    seedRow->addWidget(m_d->checkFixedSeed);
+    seedRow->addWidget(m_d->spinSeed);
+    seedRow->addWidget(m_d->btnRandomSeed);
+    genContentLayout->addLayout(seedRow);
 
     m_d->comboSizePreset = new QComboBox();
     m_d->comboSizePreset->addItem(i18n("512×512 (default)"), QSize(512, 512));
@@ -643,35 +1118,202 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             m_d->spinHeight->setValue(s.height());
         }
     });
-    genLayout->addWidget(new QLabel(i18n("Size preset:")));
-    genLayout->addWidget(m_d->comboSizePreset);
-    QHBoxLayout *sizeLayout = new QHBoxLayout();
     m_d->spinWidth = new QSpinBox();
     m_d->spinWidth->setRange(64, 8192);
     m_d->spinWidth->setValue(512);
     m_d->spinHeight = new QSpinBox();
     m_d->spinHeight->setRange(64, 8192);
     m_d->spinHeight->setValue(512);
-    sizeLayout->addWidget(new QLabel(i18n("Width:")));
-    sizeLayout->addWidget(m_d->spinWidth);
-    sizeLayout->addWidget(new QLabel(i18n("Height:")));
-    sizeLayout->addWidget(m_d->spinHeight);
-    genLayout->addLayout(sizeLayout);
+
+    QHBoxLayout *sizeRow = new QHBoxLayout();
+    sizeRow->addWidget(new QLabel(i18n("Size:")));
+    sizeRow->addWidget(m_d->comboSizePreset, 1);
+    sizeRow->addWidget(new QLabel(i18n("W:")));
+    sizeRow->addWidget(m_d->spinWidth);
+    sizeRow->addWidget(new QLabel(i18n("H:")));
+    sizeRow->addWidget(m_d->spinHeight);
+    genContentLayout->addLayout(sizeRow);
 
     m_d->btnGenerate = new QPushButton(i18n("Generate"));
-    m_d->btnGenerate->setIcon(KisIconUtils::loadIcon("run-build"));
+    m_d->btnGenerate->setIcon(KisIconUtils::loadIcon("rating"));  // §5.4: primary button with sparkle icon
     connect(m_d->btnGenerate, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerate);
-    genLayout->addWidget(m_d->btnGenerate);
+    genContentLayout->addWidget(m_d->btnGenerate);
 
     m_d->btnInpaint = new QPushButton(i18n("Inpaint (selection)"));
     m_d->btnInpaint->setToolTip(i18n("Generate in selection."));
     connect(m_d->btnInpaint, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotInpaint);
-    genLayout->addWidget(m_d->btnInpaint);
+    genContentLayout->addWidget(m_d->btnInpaint);
+    // §13.29: Main action menu — switch Generate / Refine / Edit / region / custom without leaving Generate
+    {
+        QHBoxLayout *opLayout = new QHBoxLayout();
+        opLayout->addWidget(new QLabel(i18n("Actions:"), genGroup));
+        m_d->btnGenerateViewOperations = new QToolButton(genGroup);
+        m_d->btnGenerateViewOperations->setText(i18n("Mode && operations"));
+        m_d->btnGenerateViewOperations->setToolTip(i18n(
+            "Choose Generate, Refine, Edit, region workflows, or custom graph without leaving this workspace."));
+        m_d->btnGenerateViewOperations->setPopupMode(QToolButton::InstantPopup);
+        QMenu *opMenu = new QMenu(m_d->btnGenerateViewOperations);
+        opMenu->addAction(i18n("Generate"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
+                m_d->comboWorkspace->setCurrentIndex(0);
+            if (m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(false);
+            setStatusMessage(i18n("Mode: Generate — use the Generate button when ready."));
+        });
+        opMenu->addAction(i18n("Refine"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
+                m_d->comboWorkspace->setCurrentIndex(0);
+            if (m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(false);
+            if (m_d->comboInpaintMode) {
+                const int fillIdx = m_d->comboInpaintMode->findData(QStringLiteral("fill"));
+                if (fillIdx >= 0)
+                    m_d->comboInpaintMode->setCurrentIndex(fillIdx);
+            }
+            setStatusMessage(i18n("Mode: Refine — use Inpaint (selection) with a selection mask."));
+        });
+        opMenu->addAction(i18n("Edit (instruction-based)"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
+                m_d->comboWorkspace->setCurrentIndex(0);
+            if (m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(true);
+            setStatusMessage(i18n("Mode: Edit — instruction-based editing; use the Regions list for per-area prompts."));
+        });
+        opMenu->addAction(i18n("Refine region"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
+                m_d->comboWorkspace->setCurrentIndex(0);
+            if (m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(false);
+            if (m_d->comboInpaintMode)
+                m_d->comboInpaintMode->setCurrentIndex(0);
+            setStatusMessage(i18n("Mode: Refine region — add regions below, then Generate regions."));
+            if (m_d->listRegions)
+                m_d->listRegions->setFocus(Qt::OtherFocusReason);
+        });
+        opMenu->addAction(i18n("Edit (per region)"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
+                m_d->comboWorkspace->setCurrentIndex(0);
+            if (m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(true);
+            setStatusMessage(i18n("Mode: Edit per region — use the Regions list, then Generate regions."));
+            if (m_d->listRegions)
+                m_d->listRegions->setFocus(Qt::OtherFocusReason);
+        });
+        opMenu->addAction(i18n("Edit (Custom)"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->count() > 4)
+                m_d->comboWorkspace->setCurrentIndex(4);
+            setStatusMessage(i18n("Mode: Custom workflow — set API JSON under Settings → Workflow, then use Generate."));
+        });
+        opMenu->addAction(i18n("Generate region"), this, [this]() {
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
+                m_d->comboWorkspace->setCurrentIndex(0);
+            if (m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(false);
+            setStatusMessage(i18n("Mode: Generate region — choose regions in the list, then Generate regions."));
+            if (m_d->listRegions)
+                m_d->listRegions->setFocus(Qt::OtherFocusReason);
+        });
+        m_d->btnGenerateViewOperations->setMenu(opMenu);
+        opLayout->addWidget(m_d->btnGenerateViewOperations);
+        opLayout->addStretch();
+        genContentLayout->addLayout(opLayout);
+    }
+    // §13.206: Inpaint mode — Automatic (heuristic) or explicit Fill / Expand
+    m_d->comboInpaintMode = new QComboBox(genGroup);
+    m_d->comboInpaintMode->addItem(i18n("Automatic"), QStringLiteral("automatic"));
+    m_d->comboInpaintMode->addItem(i18n("Fill"), QStringLiteral("fill"));
+    m_d->comboInpaintMode->addItem(i18n("Expand"), QStringLiteral("expand"));
+    m_d->comboInpaintMode->setToolTip(i18n("Automatic: expand if selection touches canvas edge, else fill. Fill/Expand: use explicitly."));
+    int savedInpaintMode = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("InpaintMode", 0);
+    m_d->comboInpaintMode->setCurrentIndex(qBound(0, savedInpaintMode, m_d->comboInpaintMode->count() - 1));
+    connect(m_d->comboInpaintMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("InpaintMode", idx);
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+            saveInpaintWorkspaceToDocument();
+    });
+    genContentLayout->addWidget(m_d->comboInpaintMode);
+    // §13.188: FillMode UI — five options (None, Neutral, Blur, Border, Inpaint); replace and green are internal only
+    m_d->comboFillMode = new QComboBox(genGroup);
+    m_d->comboFillMode->addItem(i18n("None"), QStringLiteral("none"));
+    m_d->comboFillMode->addItem(i18n("Neutral"), QStringLiteral("neutral"));
+    m_d->comboFillMode->addItem(i18n("Blur"), QStringLiteral("blur"));
+    m_d->comboFillMode->addItem(i18n("Border"), QStringLiteral("border"));
+    m_d->comboFillMode->addItem(i18n("Inpaint"), QStringLiteral("inpaint"));
+    m_d->comboFillMode->setToolTip(i18n("Fill mode for inpaint area (blur/border for fill/expand)."));
+    int savedFillMode = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("FillMode", 2);  // default Blur
+    m_d->comboFillMode->setCurrentIndex(qBound(0, savedFillMode, m_d->comboFillMode->count() - 1));
+    connect(m_d->comboFillMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("FillMode", idx);
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+            saveInpaintWorkspaceToDocument();
+    });
+    genContentLayout->addWidget(m_d->comboFillMode);
 
-    m_d->btnUpscale = new QPushButton(i18n("Upscale 2×"));
-    m_d->btnUpscale->setToolTip(i18n("Upscale canvas 2× using ComfyUI ImageScale (lanczos)."));
+    m_d->btnUpscale = new QPushButton(i18n("Upscale"));
+    m_d->btnUpscale->setToolTip(i18n("Upscale canvas using the scale factor above. Uses ComfyUI ImageScale (lanczos)."));
     connect(m_d->btnUpscale, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotUpscale);
-    genLayout->addWidget(m_d->btnUpscale);
+    genContentLayout->addWidget(m_d->btnUpscale);
+
+    // §5.6 Live / §5.7 Animation: Full Animation / Single Frame radio (batch_mode); visible when workspace is Live or Animation
+    m_d->batchModeRow = new QWidget(genGroup);
+    QHBoxLayout *batchModeLayout = new QHBoxLayout(m_d->batchModeRow);
+    m_d->batchModeRow->setContentsMargins(0, 0, 0, 0);
+    m_d->radioSingleFrame = new QRadioButton(i18n("Single Frame"), m_d->batchModeRow);
+    m_d->radioFullAnimation = new QRadioButton(i18n("Full Animation"), m_d->batchModeRow);
+    m_d->radioSingleFrame->setToolTip(i18n("Generate a single image at current time."));
+    m_d->radioFullAnimation->setToolTip(i18n("Generate multiple frames (animation)."));
+    m_d->batchModeGroup = new QButtonGroup(m_d->batchModeRow);
+    m_d->batchModeGroup->addButton(m_d->radioSingleFrame);
+    m_d->batchModeGroup->addButton(m_d->radioFullAnimation);
+    bool fullAnimation = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("FullAnimation", false);
+    m_d->radioFullAnimation->setChecked(fullAnimation);
+    m_d->radioSingleFrame->setChecked(!fullAnimation);
+    batchModeLayout->addWidget(m_d->radioSingleFrame);
+    batchModeLayout->addWidget(m_d->radioFullAnimation);
+    batchModeLayout->addStretch();
+    genContentLayout->addWidget(m_d->batchModeRow);
+    m_d->batchModeRow->setVisible(false);
+
+    // §13.74: Single Frame — choose paint layer that receives output (persisted in ui.json animation.target_layer)
+    m_d->animationTargetRow = new QWidget(genGroup);
+    QHBoxLayout *animTargetLayout = new QHBoxLayout(m_d->animationTargetRow);
+    m_d->animationTargetRow->setContentsMargins(0, 0, 0, 0);
+    animTargetLayout->addWidget(new QLabel(i18n("Target layer:"), m_d->animationTargetRow));
+    m_d->comboAnimationTargetLayer = new QComboBox(m_d->animationTargetRow);
+    m_d->comboAnimationTargetLayer->setToolTip(
+        i18n("Paint layer that receives Single Frame generation output (Animation workspace)."));
+    connect(m_d->comboAnimationTargetLayer, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (m_d->canvas && m_d->canvas->image())
+            scheduleDocumentUiJsonSave();
+    });
+    animTargetLayout->addWidget(m_d->comboAnimationTargetLayer, 1);
+    genContentLayout->addWidget(m_d->animationTargetRow);
+    m_d->animationTargetRow->setVisible(false);
+
+    // §13.74: preview of last Single Frame result (Animation workspace)
+    m_d->animationPreviewRow = new QWidget(genGroup);
+    QVBoxLayout *animPreviewLayout = new QVBoxLayout(m_d->animationPreviewRow);
+    m_d->animationPreviewRow->setContentsMargins(0, 0, 0, 0);
+    animPreviewLayout->addWidget(new QLabel(i18n("Frame preview:"), m_d->animationPreviewRow));
+    m_d->labelAnimationPreview = new QLabel(m_d->animationPreviewRow);
+    m_d->labelAnimationPreview->setAlignment(Qt::AlignCenter);
+    m_d->labelAnimationPreview->setMinimumHeight(96);
+    m_d->labelAnimationPreview->setMaximumHeight(220);
+    m_d->labelAnimationPreview->setScaledContents(false);
+    m_d->labelAnimationPreview->setFrameShape(QFrame::StyledPanel);
+    m_d->labelAnimationPreview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+    animPreviewLayout->addWidget(m_d->labelAnimationPreview);
+    genContentLayout->addWidget(m_d->animationPreviewRow);
+    m_d->animationPreviewRow->setVisible(false);
+
+    connect(m_d->batchModeGroup, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked), this, [this](QAbstractButton *) {
+        const bool full = m_d->radioFullAnimation && m_d->radioFullAnimation->isChecked();
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("FullAnimation", full);
+        updateAnimationButtonLabel();
+        updateAnimationTargetLayerRowVisibility();
+        if (m_d->canvas && m_d->canvas->image())
+            scheduleDocumentUiJsonSave();
+    });
 
     QHBoxLayout *animRow = new QHBoxLayout();
     m_d->spinAnimationFrames = new QSpinBox();
@@ -684,26 +1326,48 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     animRow->addWidget(new QLabel(i18n("Frames:")));
     animRow->addWidget(m_d->spinAnimationFrames);
     animRow->addWidget(m_d->btnGenerateAnimation);
-    genLayout->addLayout(animRow);
+    genContentLayout->addLayout(animRow);
+
+    // §13.45: Import Animation — import frames from .animation or .live-frames into document
+    m_d->btnImportAnimation = new QPushButton(i18n("Import Animation"), genGroup);
+    m_d->btnImportAnimation->setToolTip(i18n("Import frame images from the document's .animation or .live-frames folder as keyframes."));
+    connect(m_d->btnImportAnimation, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotImportAnimation);
+    genContentLayout->addWidget(m_d->btnImportAnimation);
+    m_d->btnImportAnimation->setVisible(false);
 
     m_d->checkLiveMode = new QCheckBox(i18n("Live (periodic img2img from canvas)"));
     m_d->checkLiveMode->setToolTip(i18n("Every 30 s: export canvas, run img2img, apply result as new layer. Stop by unchecking."));
     connect(m_d->checkLiveMode, &QCheckBox::toggled, this, [this](bool checked) {
         if (checked) m_d->liveTimer->start(30000);
-        else { m_d->liveTimer->stop(); m_d->livePollTimer->stop(); }
+        else { m_d->liveTimer->stop(); m_d->livePollTimer->stop(); stopLiveSpinner(); }
     });
-    genLayout->addWidget(m_d->checkLiveMode);
+    genContentLayout->addWidget(m_d->checkLiveMode);
+    // §13.45: Record — save each live result to .live-frames/frame-N.webp for later Import Animation
+    m_d->checkLiveRecord = new QCheckBox(i18n("Record (save frames to .live-frames)"));
+    m_d->checkLiveRecord->setToolTip(i18n("When enabled, each live result is saved to the document's .live-frames folder as frame-N.webp. Use Import Animation to add them to the document."));
+    connect(m_d->checkLiveRecord, &QCheckBox::toggled, this, [this](bool checked) {
+        if (checked) {
+            m_d->liveFrameIndex = 0;
+        } else {
+            // §13.149: When recording stops, import_animation is called (frames from .live-frames)
+            slotImportAnimation();
+        }
+    });
+    genContentLayout->addWidget(m_d->checkLiveRecord);
+    // §13.105: compact progress indicator for Live view (next to live checkbox)
+    m_d->liveSpinner = new LiveSpinnerWidget(this);
+    m_d->liveSpinner->hide();
+    genContentLayout->addWidget(m_d->liveSpinner);
 
     // Queue popup (similar to krita-ai Queue button)
     m_d->labelQueueCount = new QLabel(i18n("Queue: 0"));
     m_d->comboQueueMode = new QComboBox();
-    m_d->comboQueueMode->addItem(i18n("Back"), 0);
-    m_d->comboQueueMode->addItem(i18n("Front"), 1);
-    m_d->comboQueueMode->addItem(i18n("Replace"), 2);
-    m_d->comboQueueMode->setToolTip(i18n("Back: add after current jobs. Front: new jobs run first. Replace: clear queue and add."));
+    m_d->comboQueueMode->addItem(i18n("at the Back"), 0);
+    m_d->comboQueueMode->addItem(i18n("in Front (new jobs first)"), 1);
+    m_d->comboQueueMode->addItem(i18n("Replace Queue"), 2);
+    m_d->comboQueueMode->setToolTip(i18n("at the Back: add after current jobs. in Front: new jobs run first. Replace Queue: clear queue then add."));
     m_d->spinBatchCount = new QSpinBox();
     m_d->spinBatchCount->setRange(1, 10);
-    m_d->spinBatchCount->setValue(1);
     m_d->spinBatchCount->setToolTip(i18n("Number of images to generate per click"));
 
     m_d->btnQueuePopup = new QToolButton();
@@ -730,19 +1394,62 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // Resolution multiplier (similar to krita-ai)
     m_d->sliderResolutionMultiplier = new QSlider(Qt::Horizontal, queueWidget);
-    m_d->sliderResolutionMultiplier->setRange(3, 15); // 0.3x .. 1.5x
-    m_d->sliderResolutionMultiplier->setValue(10);    // 1.0x
-    m_d->labelResolutionMultiplier = new QLabel(i18n("1.0×"), queueWidget);
+    m_d->sliderResolutionMultiplier->setRange(3, 15); // §13.213: 3–15 → 0.3–1.5
+    m_d->labelResolutionMultiplier = new QLabel(queueWidget);
     m_d->labelResolutionMultiplier->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        const int storedBatch = cfg.readEntry("BatchCount", 1);
+        m_d->spinBatchCount->setValue(qBound(1, storedBatch, 10));
+        const int storedQueueMode = cfg.readEntry("QueueMode", 0);
+        if (storedQueueMode >= 0 && storedQueueMode < m_d->comboQueueMode->count()) {
+            m_d->comboQueueMode->setCurrentIndex(storedQueueMode);
+        } else {
+            m_d->comboQueueMode->setCurrentIndex(0);
+        }
+        const double storedMul = cfg.readEntry("ResolutionMultiplier", 1.0);
+        m_d->resolutionMultiplier = storedMul <= 0.0 ? 1.0 : storedMul;
+        int sliderValue = qRound(m_d->resolutionMultiplier * 10.0);
+        sliderValue = qBound(3, sliderValue, 15);
+        m_d->sliderResolutionMultiplier->setValue(sliderValue);
+        m_d->labelResolutionMultiplier->setText(QString::number(m_d->resolutionMultiplier, 'f', 1) + QLatin1String("×"));
+        const bool fixedSeed = cfg.readEntry("FixedSeed", false);
+        const qint64 seedValue = cfg.readEntry("SeedValue", qint64(0));
+        m_d->checkFixedSeed->setChecked(fixedSeed);
+        m_d->spinSeed->setValue(static_cast<int>(seedValue));
+    }
     connect(m_d->sliderResolutionMultiplier, &QSlider::valueChanged, this, [this](int v) {
         m_d->resolutionMultiplier = qMax(0.3, v / 10.0);
         m_d->labelResolutionMultiplier->setText(QString::number(m_d->resolutionMultiplier, 'f', 1) + QLatin1String("×"));
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("ResolutionMultiplier", m_d->resolutionMultiplier);
     });
-    QHBoxLayout *resLayout = new QHBoxLayout();
-    resLayout->addWidget(new QLabel(i18n("Resolution:"), queueWidget));
+    connect(m_d->spinBatchCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("BatchCount", value);
+    });
+    connect(m_d->comboQueueMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("QueueMode", index);
+    });
+    auto saveSeedConfig = [this]() {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("FixedSeed", m_d->checkFixedSeed->isChecked());
+        cfg.writeEntry("SeedValue", static_cast<qint64>(m_d->spinSeed->value()));
+    };
+    connect(m_d->checkFixedSeed, &QCheckBox::toggled, this, [saveSeedConfig](bool) {
+        saveSeedConfig();
+    });
+    connect(m_d->spinSeed, QOverload<int>::of(&QSpinBox::valueChanged), this, [saveSeedConfig](int) {
+        saveSeedConfig();
+    });
+    m_d->queueResolutionRow = new QWidget(queueWidget);
+    QHBoxLayout *resLayout = new QHBoxLayout(m_d->queueResolutionRow);
+    resLayout->setContentsMargins(0, 0, 0, 0);
+    resLayout->addWidget(new QLabel(i18n("Resolution:"), m_d->queueResolutionRow));
     resLayout->addWidget(m_d->sliderResolutionMultiplier, 1);
     resLayout->addWidget(m_d->labelResolutionMultiplier);
-    queueLayout->addLayout(resLayout);
+    queueLayout->addWidget(m_d->queueResolutionRow);
 
     QHBoxLayout *seedLayout = new QHBoxLayout();
     seedLayout->addWidget(m_d->checkFixedSeed);
@@ -755,8 +1462,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     modeLayout->addWidget(m_d->comboQueueMode, 1);
     queueLayout->addLayout(modeLayout);
 
-    QPushButton *popupCancel = new QPushButton(i18n("Cancel queue"), queueWidget);
+    QPushButton *popupCancel = new QPushButton(i18n("Cancel all"), queueWidget);
     popupCancel->setIcon(KisIconUtils::loadIcon("dialog-cancel"));
+    popupCancel->setToolTip(i18n("Stop the running job and clear the queue (Cancel All)."));
     connect(popupCancel, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotCancelQueue);
     queueLayout->addWidget(popupCancel);
 
@@ -768,7 +1476,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QHBoxLayout *queueRow = new QHBoxLayout();
     queueRow->addWidget(m_d->btnQueuePopup);
     queueRow->addStretch();
-    genLayout->addLayout(queueRow);
+    genContentLayout->addLayout(queueRow);
 
     m_d->btnCancelQueue = popupCancel;
     m_d->btnCancelQueue->setEnabled(false);
@@ -779,16 +1487,55 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->progressBar->setValue(0);
     m_d->progressBar->setTextVisible(false);
     m_d->progressBar->setFixedHeight(6);
-    genLayout->addWidget(m_d->progressBar);
+    setProgressBarKind(false);  // §13.18: default = generation
+    genContentLayout->addWidget(m_d->progressBar);
+
+    genLayout->addWidget(m_d->genContentContainer);
+
+    m_d->graphPlaceholderWidget = new QWidget(genGroup);
+    QVBoxLayout *graphPlaceholderLayout = new QVBoxLayout(m_d->graphPlaceholderWidget);
+    QLabel *graphLabel = new QLabel(i18n("Custom workflow: configure in Settings → Workflow tab, then use Generate with your workflow."));
+    graphLabel->setWordWrap(true);
+    graphPlaceholderLayout->addWidget(graphLabel);
+    // §13.170: Open Web UI — open client.url in default browser (QDesktopServices::openUrl)
+    QPushButton *btnOpenWebUI = new QPushButton(i18n("Open Web UI"));
+    btnOpenWebUI->setToolTip(i18n("Open Web UI to create custom workflows"));
+    connect(btnOpenWebUI, &QPushButton::clicked, this, [this]() {
+        QString urlStr = m_d->editServerUrl->text().trimmed();
+        if (urlStr.isEmpty()) {
+            setStatusMessage(i18n("Set server URL in Settings first."), true);
+            return;
+        }
+        QUrl url(urlStr);
+        if (!url.scheme().isEmpty() && url.scheme() != QLatin1String("http") && url.scheme() != QLatin1String("https"))
+            urlStr = QStringLiteral("http://") + urlStr;
+        else if (url.scheme().isEmpty())
+            urlStr = QStringLiteral("http://") + urlStr;
+        QDesktopServices::openUrl(QUrl(urlStr));
+        beginWebWorkflowSwitch();
+    });
+    graphPlaceholderLayout->addWidget(btnOpenWebUI);
+    QPushButton *btnOpenSettingsForGraph = new QPushButton(i18n("Open Settings"));
+    connect(btnOpenSettingsForGraph, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
+    graphPlaceholderLayout->addWidget(btnOpenSettingsForGraph);
+    m_d->graphPlaceholderWidget->setVisible(false);
+    genLayout->addWidget(m_d->graphPlaceholderWidget);
+
     scrollLayout->addWidget(genGroup);
 
     QGroupBox *histGroup = new QGroupBox(i18n("History"));
+    m_d->histGroupBox = histGroup;
     QVBoxLayout *histLayout = new QVBoxLayout(histGroup);
     histLayout->addWidget(new QLabel(i18n("Results (double-click Apply, right-click for menu):")));
     m_d->listHistory = new QListWidget();
     m_d->listHistory->setMaximumHeight(140);
     m_d->listHistory->setViewMode(QListWidget::IconMode);
-    m_d->listHistory->setIconSize(QSize(64, 64));
+    m_d->listHistory->setIconSize(QSize(96, 96));  // §13.28a: thumbnail size 96×96 px
+    m_d->listHistory->setFlow(QListView::LeftToRight);
+    m_d->listHistory->setResizeMode(QListView::Adjust);
+    m_d->listHistory->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_d->listHistory->setFrameShape(QFrame::NoFrame);
+    m_d->listHistory->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);  // §13.28a: vertical scroll only
     m_d->listHistory->setSpacing(4);
     m_d->listHistory->setMovement(QListWidget::Static);
     m_d->listHistory->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -808,10 +1555,30 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnHistoryApply->setEnabled(false);
     scrollLayout->addWidget(histGroup);
 
-    QGroupBox *regGroup = new QGroupBox(i18n("Regions"));
-    QVBoxLayout *regLayout = new QVBoxLayout(regGroup);
-    regLayout->addWidget(new QLabel(i18n("Different prompt per area (layer or selection):")));
+    m_d->regionsGroupBox = new QGroupBox(i18n("Regions"));
+    QVBoxLayout *regLayout = new QVBoxLayout(m_d->regionsGroupBox);
+    // §13.90: PromptHeader — full (title + description), icon (icon only), none (no header)
+    QHBoxLayout *regionHeaderRow = new QHBoxLayout();
+    regionHeaderRow->addWidget(new QLabel(i18n("Header:")));
+    m_d->regionHeaderCombo = new QComboBox();
+    m_d->regionHeaderCombo->addItem(i18n("Full"), 0);
+    m_d->regionHeaderCombo->addItem(i18n("Icon"), 1);
+    m_d->regionHeaderCombo->addItem(i18n("None"), 2);
+    m_d->regionHeaderCombo->setCurrentIndex(qBound(0, m_d->promptHeaderMode, 2));
+    m_d->regionHeaderCombo->setToolTip(i18n("Region prompt header style: Full text, Icon only, or None (compact)."));
+    connect(m_d->regionHeaderCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        m_d->promptHeaderMode = qBound(0, idx, 2);
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("PromptHeader", m_d->promptHeaderMode);
+        applyPromptHeader();
+    });
+    regionHeaderRow->addWidget(m_d->regionHeaderCombo);
+    regionHeaderRow->addStretch();
+    regLayout->addLayout(regionHeaderRow);
+    m_d->regionHeaderLabel = new QLabel(i18n("Different prompt per area (layer or selection):"));
+    regLayout->addWidget(m_d->regionHeaderLabel);
+    // §13.106: InactiveRegionWidget — list of regions; selected item = active, others = inactive
     m_d->listRegions = new QListWidget();
+    m_d->listRegions->setObjectName(QStringLiteral("InactiveRegionWidget"));
     m_d->listRegions->setMaximumHeight(80);
     connect(m_d->listRegions, &QListWidget::doubleClicked, this, &ComfyUIRemoteDock::slotEditRegion);
     regLayout->addWidget(m_d->listRegions);
@@ -835,24 +1602,451 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     regionBtns->addWidget(m_d->btnEditRegion);
     regionBtns->addWidget(m_d->btnGenerateRegions);
     regLayout->addLayout(regionBtns);
-    scrollLayout->addWidget(regGroup);
+    scrollLayout->addWidget(m_d->regionsGroupBox);
+
+    // §13.90: Apply PromptHeader from config (full / icon / none)
+    m_d->promptHeaderMode = qBound(0, KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("PromptHeader", 0), 2);
+    if (m_d->regionHeaderCombo) m_d->regionHeaderCombo->setCurrentIndex(m_d->promptHeaderMode);
+    applyPromptHeader();
 
     scrollLayout->addStretch();
     scroll->setWidget(scrollContent);
-    layout->addWidget(scroll);
+    contentLayout->addWidget(scroll);
     m_d->labelStatus = new QLabel(i18n("Use Settings to configure server URL and advanced options."));
     m_d->labelStatus->setWordWrap(true);
-    layout->addWidget(m_d->labelStatus);
+    contentLayout->addWidget(m_d->labelStatus);
+    m_d->mainStack->addWidget(contentPage);
+    layout->addWidget(m_d->mainStack);
     setWidget(widget);
-    setWindowTitle(i18n("AI Image (ComfyUI)"));
+    setWindowTitle(i18n("AI Image Generation"));
     setEnabled(false);
 
     loadRegionsFromConfig();
     refreshRegionsList();
+
+    int ws = m_d->comboWorkspace->currentIndex();
+    const bool isGraph = (ws == 4);
+    const bool isGenerate = (ws == 0);
+    if (m_d->genContentContainer) m_d->genContentContainer->setVisible(!isGraph);
+    if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
+    if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate);
+
+    updateWelcomeVisibility();
+    applyInterfaceAppearanceSettings();
+    applyQualitySamplerPresetFromSettings();
+    refreshQueueResolutionRowVisibility();
+    refreshAnimationTargetLayerCombo();
+    updateAnimationTargetLayerRowVisibility();
+}
+
+namespace {
+
+void setComboCurrentItemData(QComboBox *c, const QString &data, int fallbackIndex)
+{
+    if (!c || c->count() <= 0)
+        return;
+    for (int i = 0; i < c->count(); ++i) {
+        if (c->itemData(i).toString() == data) {
+            c->setCurrentIndex(i);
+            return;
+        }
+    }
+    c->setCurrentIndex(qBound(0, fallbackIndex, c->count() - 1));
+}
+
+} // namespace
+
+void ComfyUIRemoteDock::persistOpenCustomWorkflowToDocument()
+{
+    saveEmbeddedCustomWorkflowToDocument();
+}
+
+void ComfyUIRemoteDock::saveEmbeddedCustomWorkflowToDocument()
+{
+    if (!m_d->canvas || !m_d->editCustomWorkflow)
+        return;
+    KisImageSP img = m_d->canvas->image().toStrongRef();
+    if (!img)
+        return;
+    const QString key = ComfyUIUtils::customWorkflowAnnotationKey();
+    const QString text = m_d->editCustomWorkflow->toPlainText();
+    if (text.trimmed().isEmpty()) {
+        img->removeAnnotation(key);
+        return;
+    }
+    img->removeAnnotation(key);
+    img->addAnnotation(KisAnnotationSP(new KisAnnotation(
+        key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("custom_workflow")), text.toUtf8())));
+}
+
+void ComfyUIRemoteDock::loadEmbeddedCustomWorkflowFromDocument()
+{
+    if (!m_d->canvas || !m_d->editCustomWorkflow)
+        return;
+    KisImageSP img = m_d->canvas->image().toStrongRef();
+    if (!img)
+        return;
+    KisAnnotationSP ann = img->annotation(ComfyUIUtils::customWorkflowAnnotationKey());
+    if (!ann || ann->data().isEmpty())
+        return;
+    QSignalBlocker b(m_d->editCustomWorkflow);
+    m_d->editCustomWorkflow->setPlainText(QString::fromUtf8(ann->data()));
+    refreshCustomWorkflowParameterPanel();
+}
+
+void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
+{
+    if (!m_d->customWorkflowParamsForm || !m_d->customWorkflowParamsGroup || !m_d->editCustomWorkflow)
+        return;
+
+    while (QLayoutItem *item = m_d->customWorkflowParamsForm->takeAt(0)) {
+        if (item->widget())
+            delete item->widget();
+        delete item;
+    }
+
+    const QString json = m_d->editCustomWorkflow->toPlainText().trimmed();
+    if (json.isEmpty()) {
+        m_d->customWorkflowParamsGroup->setVisible(false);
+        return;
+    }
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(json.toUtf8()), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        m_d->customWorkflowParamsGroup->setVisible(false);
+        return;
+    }
+    const QList<ComfyUIUtils::CustomWorkflowParamSlot> slots =
+        ComfyUIUtils::discoverCustomWorkflowParameterSlots(doc.object());
+    if (slots.isEmpty()) {
+        m_d->customWorkflowParamsGroup->setVisible(false);
+        return;
+    }
+
+    QSet<QString> names;
+    for (const auto &s : slots)
+        names.insert(s.paramName);
+    QStringList stale;
+    for (auto it = m_d->customWorkflowParamOverrides.constBegin(); it != m_d->customWorkflowParamOverrides.constEnd(); ++it) {
+        if (!names.contains(it.key()))
+            stale.append(it.key());
+    }
+    for (const QString &k : stale)
+        m_d->customWorkflowParamOverrides.remove(k);
+
+    m_d->customWorkflowParamsGroup->setVisible(true);
+    m_d->customWorkflowParamsGroup->setTitle(i18n("Workflow parameters (ETN)"));
+
+    for (const ComfyUIUtils::CustomWorkflowParamSlot &sl : slots) {
+        const QVariant cur = m_d->customWorkflowParamOverrides.contains(sl.paramName)
+            ? m_d->customWorkflowParamOverrides.value(sl.paramName)
+            : sl.defaultValue;
+        QString labelText = sl.paramName;
+        if (!sl.typeStr.isEmpty() && sl.kind != ComfyUIUtils::CustomWorkflowParamSlot::Kind::Unsupported)
+            labelText = QStringLiteral("%1 [%2]").arg(sl.paramName, sl.typeStr);
+
+        switch (sl.kind) {
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterInt: {
+            auto *sp = new QSpinBox(m_d->customWorkflowParamsGroup);
+            int lo = static_cast<int>(qBound(-2147483648.0, sl.minV, 2147483647.0));
+            int hi = static_cast<int>(qBound(-2147483648.0, sl.maxV, 2147483647.0));
+            if (lo > hi)
+                std::swap(lo, hi);
+            sp->setRange(lo, hi);
+            sp->setValue(cur.toInt(sl.defaultValue.toInt()));
+            const QString pname = sl.paramName;
+            connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, pname](int v) {
+                m_d->customWorkflowParamOverrides.insert(pname, v);
+            });
+            m_d->customWorkflowParamOverrides.insert(pname, sp->value());
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), sp);
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterFloat: {
+            auto *sp = new QDoubleSpinBox(m_d->customWorkflowParamsGroup);
+            sp->setDecimals(4);
+            sp->setRange(sl.minV, sl.maxV);
+            sp->setValue(cur.toDouble(sl.defaultValue.toDouble()));
+            const QString pname = sl.paramName;
+            connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, pname](double v) {
+                m_d->customWorkflowParamOverrides.insert(pname, v);
+            });
+            m_d->customWorkflowParamOverrides.insert(pname, sp->value());
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), sp);
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterBool: {
+            auto *cb = new QCheckBox(m_d->customWorkflowParamsGroup);
+            bool chk = sl.defaultValue.toBool();
+            if (!cur.isNull())
+                chk = cur.toBool();
+            cb->setChecked(chk);
+            const QString pname = sl.paramName;
+            connect(cb, &QCheckBox::toggled, this, [this, pname](bool on) {
+                m_d->customWorkflowParamOverrides.insert(pname, on);
+            });
+            m_d->customWorkflowParamOverrides.insert(pname, cb->isChecked());
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterText:
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterPromptPositive:
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterPromptNegative: {
+            auto *le = new QLineEdit(m_d->customWorkflowParamsGroup);
+            le->setText(cur.toString(sl.defaultValue.toString()));
+            const QString pname = sl.paramName;
+            connect(le, &QLineEdit::editingFinished, this, [this, pname, le]() {
+                m_d->customWorkflowParamOverrides.insert(pname, le->text());
+            });
+            m_d->customWorkflowParamOverrides.insert(pname, le->text());
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), le);
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterChoice: {
+            const QString pname = sl.paramName;
+            if (!sl.choices.isEmpty()) {
+                auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
+                for (const QString &ch : sl.choices)
+                    cb->addItem(ch, ch);
+                const QString pick = cur.toString(sl.defaultValue.toString());
+                int ix = cb->findData(pick);
+                if (ix < 0)
+                    ix = 0;
+                cb->setCurrentIndex(ix);
+                connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, pname, cb](int) {
+                    m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+                });
+                m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+                m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
+            } else {
+                auto *le = new QLineEdit(m_d->customWorkflowParamsGroup);
+                le->setText(cur.toString(sl.defaultValue.toString()));
+                connect(le, &QLineEdit::editingFinished, this, [this, pname, le]() {
+                    m_d->customWorkflowParamOverrides.insert(pname, le->text());
+                });
+                m_d->customWorkflowParamOverrides.insert(pname, le->text());
+                m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), le);
+            }
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaStyleSampler: {
+            auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
+            cb->addItem(i18n("Auto"), QStringLiteral("auto"));
+            cb->addItem(i18n("Regular"), QStringLiteral("regular"));
+            cb->addItem(i18n("Live"), QStringLiteral("live"));
+            const QString pick = cur.toString(sl.defaultValue.toString());
+            int ix = cb->findData(pick);
+            if (ix < 0)
+                ix = 0;
+            cb->setCurrentIndex(ix);
+            const QString pname = sl.paramName;
+            connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, pname, cb](int) {
+                m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+            });
+            m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaImageLayer:
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaMaskLayer: {
+            auto *lb = new QLabel(
+                i18n("Layer binding is not edited here — use the workflow JSON or the Python plugin for full parity."),
+                m_d->customWorkflowParamsGroup);
+            lb->setWordWrap(true);
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), lb);
+            break;
+        }
+        case ComfyUIUtils::CustomWorkflowParamSlot::Kind::Unsupported:
+        default: {
+            auto *lb = new QLabel(
+                i18n("Unsupported parameter type in this port: %1", sl.paramName), m_d->customWorkflowParamsGroup);
+            lb->setWordWrap(true);
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), lb);
+            break;
+        }
+        }
+    }
+}
+
+void ComfyUIRemoteDock::scheduleSaveEmbeddedCustomWorkflowToDocument()
+{
+    if (!m_d->customWorkflowDocumentSaveTimer)
+        return;
+    m_d->customWorkflowDocumentSaveTimer->start(800);
+}
+
+void ComfyUIRemoteDock::saveInpaintWorkspaceToDocument()
+{
+    if (!m_d->canvas)
+        return;
+    KisImageSP img = m_d->canvas->image().toStrongRef();
+    if (!img)
+        return;
+    const QString key = ComfyUIUtils::inpaintWorkspaceAnnotationKey();
+    QJsonObject o;
+    o.insert(QStringLiteral("mode"),
+             m_d->comboInpaintMode ? m_d->comboInpaintMode->currentData().toString() : QStringLiteral("automatic"));
+    o.insert(QStringLiteral("fill"),
+             m_d->comboFillMode ? m_d->comboFillMode->currentData().toString() : QStringLiteral("blur"));
+    o.insert(QStringLiteral("use_inpaint"), true);
+    o.insert(QStringLiteral("use_prompt_focus"), false);
+    o.insert(QStringLiteral("context"), QStringLiteral("automatic"));
+    o.insert(QStringLiteral("context_layer_id"), QString());
+    img->removeAnnotation(key);
+    img->addAnnotation(KisAnnotationSP(new KisAnnotation(
+        key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("inpaint")),
+        QJsonDocument(o).toJson(QJsonDocument::Compact))));
+}
+
+void ComfyUIRemoteDock::loadInpaintWorkspaceFromDocument()
+{
+    if (!m_d->canvas)
+        return;
+    KisImageSP img = m_d->canvas->image().toStrongRef();
+    if (!img)
+        return;
+    KisAnnotationSP ann = img->annotation(ComfyUIUtils::inpaintWorkspaceAnnotationKey());
+    if (!ann || ann->data().isEmpty())
+        return;
+    QJsonObject root = QJsonDocument::fromJson(ann->data()).object();
+    if (root.isEmpty())
+        return;
+    const QString mode = root.value(QStringLiteral("mode")).toString();
+    const QString fill = root.value(QStringLiteral("fill")).toString();
+    if (m_d->comboInpaintMode) {
+        QSignalBlocker b(m_d->comboInpaintMode);
+        setComboCurrentItemData(m_d->comboInpaintMode, mode, 0);
+    }
+    if (m_d->comboFillMode) {
+        QSignalBlocker b(m_d->comboFillMode);
+        setComboCurrentItemData(m_d->comboFillMode, fill, 2);
+    }
 }
 
 ComfyUIRemoteDock::~ComfyUIRemoteDock()
 {
+    endWebWorkflowSwitch();
+}
+
+namespace {
+
+bool tagCompletionTokenChar(QChar ch)
+{
+    return ch.isLetterOrNumber() || ch == QLatin1Char('_') || ch == QLatin1Char(':') || ch == QLatin1Char('-');
+}
+
+QString tagCompletionPrefixAtCursor(QPlainTextEdit *e)
+{
+    if (!e)
+        return {};
+    QTextCursor c = e->textCursor();
+    const QString t = e->toPlainText();
+    int pos = c.position();
+    int start = pos;
+    while (start > 0 && tagCompletionTokenChar(t.at(start - 1)))
+        --start;
+    return t.mid(start, pos - start);
+}
+
+} // namespace
+
+void ComfyUIRemoteDock::refreshPromptTagCompleter()
+{
+    if (!m_d->tagKeywordModel)
+        return;
+    m_d->tagKeywordModel->setStringList(ComfyUIUtils::tagKeywordsForAutocomplete());
+}
+
+void ComfyUIRemoteDock::refreshQueueResolutionRowVisibility()
+{
+    if (!m_d->queueResolutionRow)
+        return;
+    QString preset = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("performance_preset")).toString();
+    if (preset.isEmpty())
+        preset = QStringLiteral("auto");
+    m_d->queueResolutionRow->setVisible(preset == QLatin1String("custom"));
+}
+
+void ComfyUIRemoteDock::showPromptTagCompletion(QPlainTextEdit *editor)
+{
+    if (!editor)
+        return;
+    QCompleter *comp = nullptr;
+    if (editor == m_d->editPrompt)
+        comp = m_d->promptTagCompleter;
+    else if (editor == m_d->editNegative)
+        comp = m_d->negativePromptTagCompleter;
+    if (!comp || !m_d->tagKeywordModel)
+        return;
+    if (m_d->tagKeywordModel->stringList().isEmpty()) {
+        setStatusMessage(i18n("No tags loaded. Add CSV files (e.g. Danbooru.csv) to the tag folder and enable stems under Settings → Interface."),
+                         false,
+                         true);
+        return;
+    }
+    const QString prefix = tagCompletionPrefixAtCursor(editor);
+    comp->setCompletionPrefix(prefix);
+    QRect cr = editor->cursorRect();
+    cr.setWidth(qMax(cr.width(), 220));
+    comp->complete(cr);
+}
+
+void ComfyUIRemoteDock::insertPromptTagCompletion(QPlainTextEdit *editor, const QString &completion)
+{
+    if (!editor || completion.isEmpty())
+        return;
+    const QString prefix = tagCompletionPrefixAtCursor(editor);
+    QTextCursor tc = editor->textCursor();
+    const int n = prefix.length();
+    if (n > 0)
+        tc.setPosition(tc.position() - n, QTextCursor::KeepAnchor);
+    tc.removeSelectedText();
+    // §13.138 / §13.1885: literal parentheses in tag names must not break attention syntax
+    QString escaped = completion;
+    escaped.replace(QLatin1Char('('), QStringLiteral("\\("));
+    escaped.replace(QLatin1Char(')'), QStringLiteral("\\)"));
+    tc.insertText(escaped);
+    editor->setTextCursor(tc);
+}
+
+bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if ((obj == m_d->editPrompt || obj == m_d->editNegative) && (ke->modifiers() & Qt::ControlModifier)
+            && ke->key() == Qt::Key_Space) {
+            showPromptTagCompletion(static_cast<QPlainTextEdit *>(obj));
+            return true;
+        }
+    }
+    // §13.196: Shift+Enter in prompt widget → same as clicking Generate
+    if (obj == m_d->editPrompt && event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && (ke->modifiers() & Qt::ShiftModifier)) {
+            slotGenerate();
+            return true;
+        }
+        // §13.201: Ctrl+Up / Ctrl+Down — adjust attention weight for segment at cursor (parenthesis/angle block or word)
+        if ((ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down) && (ke->modifiers() & Qt::ControlModifier)) {
+            QPlainTextEdit *edit = m_d->editPrompt;
+            QString text = edit->toPlainText();
+            int cursorPos = edit->textCursor().position();
+            auto range = ComfyUIUtils::attentionSegmentRange(text, cursorPos);
+            if (range.first >= 0 && range.second > 0) {
+                QString segment = text.mid(range.first, range.second);
+                double delta = (ke->key() == Qt::Key_Up) ? 0.1 : -0.1;
+                QString newSegment = ComfyUIUtils::editAttentionWeight(segment, delta);
+                if (newSegment != segment) {
+                    QTextCursor cur = edit->textCursor();
+                    cur.setPosition(range.first);
+                    cur.setPosition(range.first + range.second, QTextCursor::KeepAnchor);
+                    cur.insertText(newSegment);
+                }
+                return true;
+            }
+        }
+    }
+    return QDockWidget::eventFilter(obj, event);
 }
 
 void ComfyUIRemoteDock::setViewManager(KisViewManager *viewManager)
@@ -861,11 +2055,100 @@ void ComfyUIRemoteDock::setViewManager(KisViewManager *viewManager)
     m_d->viewManager = viewManager;
 }
 
+// §13.15 / §13.52: document_id annotation; when missing, create; when duplicate across open docs, assign new ID to current (copy handling).
+static void ensureDocumentId(KisImageSP image, KisCanvas2 *canvas)
+{
+    if (!image) return;
+    const QString key = ComfyUIUtils::documentIdAnnotationKey();
+    KisDocument *currentDoc = (canvas && canvas->imageView()) ? canvas->imageView()->document() : nullptr;
+
+    KisAnnotationSP ann = image->annotation(key);
+    if (ann) {
+        QString existingId = QString::fromUtf8(ann->data());
+        if (!existingId.isEmpty() && currentDoc) {
+            const QList<QPointer<KisDocument> > docs = KisPart::instance()->documents();
+            for (const QPointer<KisDocument> &doc : docs) {
+                if (!doc || doc == currentDoc) continue;
+                KisImageSP otherImg = doc->image().toStrongRef();
+                if (!otherImg) continue;
+                KisAnnotationSP otherAnn = otherImg->annotation(key);
+                if (otherAnn && QString::fromUtf8(otherAnn->data()) == existingId) {
+                    QString newUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    image->removeAnnotation(key);
+                    image->addAnnotation(KisAnnotationSP(new KisAnnotation(key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("document_id")), newUuid.toUtf8())));
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
+    QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    image->addAnnotation(KisAnnotationSP(new KisAnnotation(key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("document_id")), uuid.toUtf8())));
+}
+
 void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
 {
     KisCanvas2 *c = dynamic_cast<KisCanvas2 *>(canvas);
     m_d->canvas = c;
     setEnabled(canvas != nullptr);
+    if (c) {
+        KisImageSP img = c->image().toStrongRef();
+        if (img) {
+            ensureDocumentId(img, c);
+            // §13.44: Restore preview layer ID from document annotation (ui.json equivalent)
+            const QString previewKey = ComfyUIUtils::previewLayerAnnotationKey();
+            KisAnnotationSP previewAnn = img->annotation(previewKey);
+            m_d->previewLayerId = previewAnn ? QString::fromUtf8(previewAnn->data()).trimmed() : QString();
+            // §13.149: When in Live workspace, restore live strength from document (ui.json live key)
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2 && m_d->spinStrength) {
+                const QString liveKey = ComfyUIUtils::liveWorkspaceAnnotationKey();
+                KisAnnotationSP liveAnn = img->annotation(liveKey);
+                if (liveAnn && !liveAnn->data().isEmpty()) {
+                    QJsonObject o = QJsonDocument::fromJson(liveAnn->data()).object();
+                    double s = o.value(QStringLiteral("strength")).toDouble(0.75);
+                    m_d->spinStrength->setValue(qBound(1, qRound(s * 100.0), 100));
+                }
+            }
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0) {
+                loadInpaintWorkspaceFromDocument();
+                loadEmbeddedCustomWorkflowFromDocument();
+            }
+            loadDocumentHistoryFromAnnotations();
+            loadAnimationWorkspaceFromDocument();
+        } else {
+            m_d->previewLayerId.clear();
+            m_d->historyEntries.clear();
+            if (m_d->listHistory)
+                m_d->listHistory->clear();
+            updateAnimationResultPreview(QString());
+        }
+        // §13.4: Prompt import from image file — when document is opened from PNG/JPG/WebP and prompts are empty, fill from A1111 parameters
+        KisDocument *doc = c->imageView() ? c->imageView()->document() : nullptr;
+        if (doc && m_d->editPrompt && m_d->editNegative) {
+            QString path = doc->path();
+            if (!path.isEmpty()) {
+                const QString lower = path.toLower();
+                if (lower.endsWith(QLatin1String(".png")) || lower.endsWith(QLatin1String(".jpg")) || lower.endsWith(QLatin1String(".jpeg")) || lower.endsWith(QLatin1String(".webp"))) {
+                    if (m_d->editPrompt->toPlainText().trimmed().isEmpty() && m_d->editNegative->toPlainText().trimmed().isEmpty()) {
+                        QPair<QString, QString> prompts = ComfyUIUtils::readPromptFromImageFile(path);
+                        if (!prompts.first.isEmpty() || !prompts.second.isEmpty()) {
+                            m_d->editPrompt->setPlainText(prompts.first);
+                            m_d->editNegative->setPlainText(prompts.second);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        m_d->previewLayerId.clear();
+        m_d->historyEntries.clear();
+        if (m_d->listHistory)
+            m_d->listHistory->clear();
+        updateAnimationResultPreview(QString());
+    }
+    updateWelcomeVisibility();
+    updateHistoryUsageLabel();
 }
 
 void ComfyUIRemoteDock::unsetCanvas()
@@ -873,594 +2156,352 @@ void ComfyUIRemoteDock::unsetCanvas()
     setCanvas(nullptr);
 }
 
-void ComfyUIRemoteDock::slotPresetChanged(int index)
+void ComfyUIRemoteDock::updateWelcomeVisibility()
 {
-    m_d->btnDeletePreset->setEnabled(index >= Private::builtinPresetCount);
-    if (index <= 0) return; // None
-    if (index < Private::builtinPresetCount) {
-        switch (index) {
-        case 1: // Portrait
-            m_d->editPrompt->setPlainText("portrait, face, detailed skin, soft lighting");
-            m_d->editNegative->setPlainText("blurry, deformed");
-            m_d->spinWidth->setValue(512);
-            m_d->spinHeight->setValue(768);
-            break;
-        case 2: // Landscape
-            m_d->editPrompt->setPlainText("landscape, scenery, detailed environment, atmosphere");
-            m_d->editNegative->setPlainText("blurry, text");
-            m_d->spinWidth->setValue(768);
-            m_d->spinHeight->setValue(512);
-            break;
-        case 3: // Anime
-            m_d->editPrompt->setPlainText("anime style, vibrant colors, clean lines");
-            m_d->editNegative->setPlainText("realistic, photo");
-            m_d->spinWidth->setValue(512);
-            m_d->spinHeight->setValue(512);
-            break;
-        case 4: // Realistic
-            m_d->editPrompt->setPlainText("photorealistic, 8k, detailed, high quality");
-            m_d->editNegative->setPlainText("cartoon, anime, painting");
-            m_d->spinWidth->setValue(512);
-            m_d->spinHeight->setValue(512);
-            break;
-        default:
-            break;
-        }
-        return;
+    if (!m_d->mainStack || m_d->mainStack->count() < 2) return;
+    const bool showWelcome = !m_d->canvas || !m_d->isConnected;
+    m_d->mainStack->setCurrentIndex(showWelcome ? 0 : 1);
+    if (showWelcome && !m_d->updateCheckRequested)
+        QTimer::singleShot(200, this, &ComfyUIRemoteDock::startUpdateCheck);
+    if (showWelcome)
+        QTimer::singleShot(500, this, &ComfyUIRemoteDock::startNewsFetch);
+    // §13.190: At most one of update / news / connection visible; order: update → news → connection
+    if (m_d->welcomeUpdateWidget && m_d->welcomeNewsWidget && m_d->welcomeConnectionWidget) {
+        m_d->welcomeUpdateWidget->setVisible(m_d->hasUpdateAvailable);
+        m_d->welcomeNewsWidget->setVisible(!m_d->hasUpdateAvailable && m_d->hasUnseenNews);
+        m_d->welcomeConnectionWidget->setVisible(!m_d->hasUpdateAvailable && !m_d->hasUnseenNews);
     }
-    // Custom preset: load from config
-    QString name = m_d->comboPreset->itemText(index);
-    KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote_Preset_" + name);
-    m_d->editPrompt->setPlainText(cfg.readEntry("Prompt", ""));
-    m_d->editNegative->setPlainText(cfg.readEntry("Negative", ""));
-    m_d->spinWidth->setValue(cfg.readEntry("Width", 512));
-    m_d->spinHeight->setValue(cfg.readEntry("Height", 512));
-    m_d->spinSteps->setValue(cfg.readEntry("Steps", 20));
-    m_d->spinCfg->setValue(cfg.readEntry("Cfg", 8.0));
-    m_d->comboSampler->setCurrentText(cfg.readEntry("Sampler", "euler"));
-    QString ckpt = cfg.readEntry("Checkpoint", "");
-    if (!ckpt.isEmpty()) {
-        int i = m_d->comboCheckpoint->findText(ckpt);
-        if (i >= 0) m_d->comboCheckpoint->setCurrentIndex(i);
-        else m_d->comboCheckpoint->setCurrentText(ckpt);
-    }
-}
-
-void ComfyUIRemoteDock::slotSaveAsPreset()
-{
-    QString name = QInputDialog::getText(this, i18n("Save preset"), i18n("Preset name:"), QLineEdit::Normal, QString());
-    if (name.trimmed().isEmpty()) return;
-    name = name.trimmed();
-    KConfigGroup mainCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-    QStringList names = mainCfg.readEntry("PresetNames", QStringList());
-    if (!names.contains(name)) names << name;
-    mainCfg.writeEntry("PresetNames", names);
-    KConfigGroup presetCfg = KSharedConfig::openConfig()->group("ComfyUIRemote_Preset_" + name);
-    presetCfg.writeEntry("Prompt", m_d->editPrompt->toPlainText());
-    presetCfg.writeEntry("Negative", m_d->editNegative->toPlainText());
-    presetCfg.writeEntry("Width", m_d->spinWidth->value());
-    presetCfg.writeEntry("Height", m_d->spinHeight->value());
-    presetCfg.writeEntry("Steps", m_d->spinSteps->value());
-    presetCfg.writeEntry("Cfg", m_d->spinCfg->value());
-    presetCfg.writeEntry("Sampler", m_d->comboSampler->currentText());
-    presetCfg.writeEntry("Checkpoint", m_d->comboCheckpoint->currentText());
-    mainCfg.config()->sync();
-    if (m_d->comboPreset->findText(name) < 0)
-        m_d->comboPreset->addItem(name);
-    m_d->comboPreset->setCurrentText(name);
-    m_d->labelStatus->setText(i18n("Saved preset \"%1\".", name));
-}
-
-void ComfyUIRemoteDock::slotDeletePreset()
-{
-    int idx = m_d->comboPreset->currentIndex();
-    if (idx < Private::builtinPresetCount) return;
-    QString name = m_d->comboPreset->currentText();
-    KConfigGroup mainCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-    QStringList names = mainCfg.readEntry("PresetNames", QStringList());
-    names.removeAll(name);
-    mainCfg.writeEntry("PresetNames", names);
-    KSharedConfig::openConfig()->deleteGroup("ComfyUIRemote_Preset_" + name);
-    mainCfg.config()->sync();
-    m_d->comboPreset->removeItem(idx);
-    m_d->comboPreset->setCurrentIndex(0);
-    m_d->labelStatus->setText(i18n("Deleted preset \"%1\".", name));
-}
-
-void ComfyUIRemoteDock::slotLoadWorkflowFromFile()
-{
-    QString path = QFileDialog::getOpenFileName(this, i18n("Load workflow"), QString(), i18n("JSON files (*.json);;All files (*)"));
-    if (path.isEmpty()) return;
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, i18n("Load workflow"), i18n("Could not open file: %1", f.errorString()));
-        return;
-    }
-    m_d->editCustomWorkflow->setPlainText(QString::fromUtf8(f.readAll()));
-    m_d->labelStatus->setText(i18n("Loaded workflow from file."));
-}
-
-void ComfyUIRemoteDock::slotRefreshSamplers()
-{
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL first."));
-        return;
-    }
-    QUrl url(urlStr);
-    if (!url.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
-    QString path = url.path();
-    if (path.isEmpty() || path == "/") url.setPath("/object_info");
-    else if (!path.endsWith('/')) url.setPath(path + "/object_info");
-    else url.setPath(path + "object_info");
-    m_d->labelStatus->setText(i18n("Loading samplers…"));
-    m_d->btnRefreshSamplers->setEnabled(false);
-    QNetworkRequest req(url);
-    QNetworkReply *reply = m_d->nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        m_d->btnRefreshSamplers->setEnabled(true);
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Failed to load samplers: %1", reply->errorString()));
-            return;
-        }
-        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        QJsonObject root = doc.object();
-        QJsonObject nodeInfo = root.value("KSampler").toObject();
-        QJsonObject input = nodeInfo.value("input").toObject();
-        QJsonObject required = input.value("required").toObject();
-        QJsonValue samplerVal = required.value("sampler_name");
-        QStringList names;
-        if (samplerVal.isArray()) {
-            QJsonArray arr = samplerVal.toArray();
-            if (!arr.isEmpty() && arr.at(0).isArray()) {
-                for (const QJsonValue &v : arr.at(0).toArray())
-                    names << v.toString();
+    if (m_d->welcomeStatusLabel) {
+        if (m_d->updateCheckInProgress) {
+            m_d->welcomeStatusLabel->setText(i18n("Checking for updates..."));
+            if (m_d->welcomeErrorLabel) {
+                m_d->welcomeErrorLabel->clear();
+                m_d->welcomeErrorLabel->hide();
+            }
+        } else if (m_d->isConnecting) {
+            m_d->welcomeStatusLabel->setText(i18n("Connecting to server..."));
+            if (m_d->welcomeErrorLabel) {
+                m_d->welcomeErrorLabel->clear();
+                m_d->welcomeErrorLabel->hide();
+            }
+        } else if (m_d->isConnected && !m_d->editServerUrl->text().trimmed().isEmpty()) {
+            m_d->welcomeStatusLabel->setText(i18n("Connected to server at %1. Create a new document or open an existing image to start!", m_d->editServerUrl->text().trimmed()));
+            if (m_d->welcomeErrorLabel) {
+                m_d->welcomeErrorLabel->clear();
+                m_d->welcomeErrorLabel->hide();
+            }
+        } else {
+            m_d->welcomeStatusLabel->setText(i18n("Not connected to server."));
+            if (m_d->welcomeErrorLabel) {
+                if (m_d->connectionErrorOccurred) {
+                    m_d->welcomeErrorLabel->setText(i18n("Connection attempt failed! Click below to configure and reconnect."));
+                    m_d->welcomeErrorLabel->show();
+                } else {
+                    m_d->welcomeErrorLabel->clear();
+                    m_d->welcomeErrorLabel->hide();
+                }
             }
         }
-        if (!names.isEmpty()) {
-            QString current = m_d->comboSampler->currentText();
-            m_d->comboSampler->clear();
-            m_d->comboSampler->addItems(names);
-            int idx = m_d->comboSampler->findText(current);
-            if (idx >= 0) m_d->comboSampler->setCurrentIndex(idx);
-            else m_d->comboSampler->setCurrentIndex(0);
-            m_d->labelStatus->setText(i18n("Loaded %1 samplers.", names.size()));
-        } else {
-            m_d->labelStatus->setText(i18n("No sampler list in server response."));
-        }
-    });
+    }
+    if (!showWelcome && m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 1) {
+        updateUpscaleTargetSize();
+    }
 }
 
-void ComfyUIRemoteDock::slotRandomSeed()
+void ComfyUIRemoteDock::slotCheckForUpdates()
 {
-    m_d->spinSeed->setValue(static_cast<int>(QRandomGenerator::global()->bounded(2147483647)));
+    m_d->updateCheckRequested = false;
+    startUpdateCheck();
 }
 
-void ComfyUIRemoteDock::slotRefreshCheckpoints()
+void ComfyUIRemoteDock::startUpdateCheck()
 {
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL first."));
-        return;
-    }
-    QUrl url(urlStr);
-    if (!url.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
-    QString path = url.path();
-    if (path.isEmpty() || path == "/") url.setPath("/object_info");
-    else if (!path.endsWith('/')) url.setPath(path + "/object_info");
-    else url.setPath(path + "object_info");
-    m_d->labelStatus->setText(i18n("Loading checkpoints…"));
-    m_d->btnRefreshCheckpoints->setEnabled(false);
+    // §13.37 / §13.160: GET {api_url}/plugin/latest?version={current}; if response.version != current, show update
+    if (m_d->updateCheckRequested || !m_d->nam) return;
+    QJsonObject settings = ComfyUIUtils::loadSettingsJson();
+    bool autoUpdate = settings.value(QStringLiteral("auto_update")).toBool(true);
+    if (!autoUpdate) return;
+    m_d->updateCheckRequested = true;
+    m_d->updateCheckInProgress = true;
+    updateWelcomeVisibility();
+    QString currentVer = ComfyUIUtils::pluginVersion();
+    QUrl url(QStringLiteral("https://api.interstice.cloud/plugin/latest"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("version"), currentVer);
+    url.setQuery(q);
     QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply *reply = m_d->nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        m_d->btnRefreshCheckpoints->setEnabled(true);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, currentVer]() {
         reply->deleteLater();
+        m_d->updateCheckInProgress = false;
         if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Failed to load checkpoints: %1", reply->errorString()));
+            updateWelcomeVisibility();
             return;
         }
-        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        QJsonObject root = doc.object();
-        QJsonObject nodeInfo = root.value("CheckpointLoaderSimple").toObject();
-        QJsonObject input = nodeInfo.value("input").toObject();
-        QJsonObject required = input.value("required").toObject();
-        QJsonValue ckptVal = required.value("ckpt_name");
-        QStringList names;
-        if (ckptVal.isArray()) {
-            QJsonArray arr = ckptVal.toArray();
-            if (!arr.isEmpty() && arr.at(0).isArray()) {
-                for (const QJsonValue &v : arr.at(0).toArray())
-                    names << v.toString();
-            }
+        QByteArray data = reply->readAll();
+        QJsonParseError err;
+        QJsonObject obj = QJsonDocument::fromJson(data, &err).object();
+        if (err.error != QJsonParseError::NoError || obj.isEmpty()) {
+            updateWelcomeVisibility();
+            return;
         }
-        m_d->comboCheckpoint->clear();
-        if (names.isEmpty()) {
-            m_d->comboCheckpoint->addItem("v1-5-pruned-emaonly.safetensors");
-            m_d->labelStatus->setText(i18n("No checkpoint list in server response (use custom name)."));
-        } else {
-            m_d->comboCheckpoint->addItems(names);
-            m_d->labelStatus->setText(i18n("Loaded %1 checkpoints.", names.size()));
+        QString latestVer = obj.value(QStringLiteral("version")).toString();
+        if (latestVer.isEmpty() || latestVer == currentVer) {
+            updateWelcomeVisibility();
+            return;
         }
-        m_d->comboCheckpoint->setCurrentIndex(0);
+        QString urlStr = obj.value(QStringLiteral("url")).toString();
+        m_d->hasUpdateAvailable = true;
+        m_d->updateDownloadUrl = urlStr;
+        updateWelcomeVisibility();
     });
 }
 
-void ComfyUIRemoteDock::slotTestConnection()
+void ComfyUIRemoteDock::startNewsFetch()
 {
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL."));
-        return;
-    }
-    QUrl url(urlStr);
-    if (!url.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
-    // ComfyUI GET /system_stats returns server info; use it to test connection
-    QString path = url.path();
-    if (path.isEmpty() || path == "/") url.setPath("/system_stats");
-    else if (!path.endsWith('/')) url.setPath(path + "/system_stats");
-    else url.setPath(path + "system_stats");
-    m_d->labelStatus->setText(i18n("Connecting…"));
-    m_d->btnTest->setEnabled(false);
+    // §13.38: GET plugin news from API; digest = first 16 chars of SHA256(text); show NewsWidget when digest != last_news
+    if (!m_d->nam || !m_d->welcomeNewsLabel) return;
+    QUrl url(QStringLiteral("https://api.interstice.cloud/plugin/news"));
     QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply *reply = m_d->nam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        m_d->btnTest->setEnabled(true);
         reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200) {
-            m_d->labelStatus->setText(i18n("Connected to ComfyUI."));
-        } else {
-            m_d->labelStatus->setText(i18n("Connection failed: %1", reply->errorString()));
+        if (reply->error() != QNetworkReply::NoError) return;
+        QByteArray data = reply->readAll();
+        QJsonParseError err;
+        QJsonObject obj = QJsonDocument::fromJson(data, &err).object();
+        if (err.error != QJsonParseError::NoError || obj.isEmpty()) return;
+        QString text = obj.value(QStringLiteral("text")).toString();
+        if (text.isEmpty()) return;
+        QString digest = obj.value(QStringLiteral("digest")).toString();
+        if (digest.isEmpty()) {
+            QByteArray hash = QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha256);
+            digest = QString::fromLatin1(hash.toHex().left(16));
         }
+        QString lastNews = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("last_news")).toString();
+        if (digest == lastNews) return;
+        m_d->hasUnseenNews = true;
+        m_d->lastNewsDigest = digest;
+        m_d->welcomeNewsLabel->setText(text);
+        updateWelcomeVisibility();
     });
 }
 
-void ComfyUIRemoteDock::slotGenerate()
+void ComfyUIRemoteDock::updateUpscaleTargetSize()
 {
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL."));
-        return;
-    }
-    QUrl baseUrl(urlStr);
-    if (!baseUrl.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
+    if (!m_d->labelUpscaleTargetSize) return;
     if (!m_d->viewManager || !m_d->viewManager->image()) {
-        m_d->labelStatus->setText(i18n("Open a document first."));
+        m_d->labelUpscaleTargetSize->setText(i18n("Target size: — × —"));
         return;
     }
-
-    QString customJson = m_d->editCustomWorkflow->toPlainText().trimmed();
-    if (!customJson.isEmpty() && m_d->checkUseReferenceImage->isChecked()) {
-        KisImageSP image = m_d->viewManager->image();
-        QImage refImg = getCanvasAsQImage(image);
-        if (refImg.isNull()) {
-            m_d->labelStatus->setText(i18n("Could not export canvas for reference."));
-            return;
-        }
-        QTemporaryFile *tmp = new QTemporaryFile(this);
-        tmp->setFileTemplate(tmp->fileTemplate() + ".png");
-        tmp->open();
-        tmp->close();
-        if (!refImg.save(tmp->fileName())) {
-            m_d->labelStatus->setText(i18n("Could not save temp image."));
-            return;
-        }
-        m_d->labelStatus->setText(i18n("Uploading reference image…"));
-        m_d->btnGenerate->setEnabled(false);
-        QUrl uploadUrl(urlStr);
-        QString up = uploadUrl.path();
-        if (up.isEmpty() || up == "/") uploadUrl.setPath("/upload/image");
-        else if (!up.endsWith('/')) uploadUrl.setPath(up + "/upload/image");
-        else uploadUrl.setPath(up + "upload/image");
-        tmp->open();
-        QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-        QHttpPart part;
-        part.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant("form-data; name=\"image\"; filename=\"reference.png\""));
-        part.setBodyDevice(tmp);
-        tmp->setParent(multiPart);
-        multiPart->append(part);
-        QNetworkRequest reqUp(uploadUrl);
-        QNetworkReply *replyUp = m_d->nam->post(reqUp, multiPart);
-        multiPart->setParent(replyUp);
-        connect(replyUp, &QNetworkReply::finished, this, [this, replyUp, urlStr, baseUrl]() {
-            replyUp->deleteLater();
-            if (replyUp->error() != QNetworkReply::NoError) {
-                m_d->labelStatus->setText(i18n("Upload error: %1", replyUp->errorString()));
-                m_d->btnGenerate->setEnabled(true);
-                return;
-            }
-            QString refName = QJsonDocument::fromJson(replyUp->readAll()).object().value("name").toString();
-            if (refName.isEmpty()) {
-                m_d->labelStatus->setText(i18n("Server did not return image name."));
-                m_d->btnGenerate->setEnabled(true);
-                return;
-            }
-            QString workflowText = m_d->editCustomWorkflow->toPlainText().replace(QStringLiteral("REFERENCE_IMAGE"), refName);
-            QJsonParseError err;
-            QJsonObject workflow = QJsonDocument::fromJson(workflowText.toUtf8(), &err).object();
-            if (err.error != QJsonParseError::NoError) {
-                m_d->labelStatus->setText(i18n("Workflow JSON error after reference replace."));
-                m_d->btnGenerate->setEnabled(true);
-                return;
-            }
-            int batchCount = m_d->spinBatchCount->value();
-            int queueMode = m_d->comboQueueMode->currentData().toInt();
-            if (queueMode == 2) {
-                m_d->pollTimer->stop();
-                for (const QString &id : m_d->jobQueue) m_d->pendingHistoryByPromptId.remove(id);
-                if (!m_d->currentPromptId.isEmpty()) m_d->pendingHistoryByPromptId.remove(m_d->currentPromptId);
-                m_d->jobQueue.clear();
-                m_d->currentPromptId.clear();
-                QUrl interruptUrl(baseUrl);
-                QString ip = interruptUrl.path();
-                if (ip.isEmpty() || ip == "/") interruptUrl.setPath("/interrupt");
-                else if (!ip.endsWith('/')) interruptUrl.setPath(ip + "/interrupt");
-                else interruptUrl.setPath(ip + "interrupt");
-                m_d->nam->post(QNetworkRequest(interruptUrl), QByteArray("{}"));
-            }
-            m_d->batchCollectIds.clear();
-            m_d->batchSubmitIndex = 0;
-            m_d->batchCountTarget = qMax(1, batchCount);
-            m_d->batchQueueMode = queueMode;
-            m_d->batchBaseUrl = baseUrl;
-            QString path = baseUrl.path();
-            if (path.isEmpty() || path == "/") m_d->batchBaseUrl.setPath("/prompt");
-            else if (!path.endsWith('/')) m_d->batchBaseUrl.setPath(path + "/prompt");
-            else m_d->batchBaseUrl.setPath(path + "prompt");
-            m_d->batchUseCustomWorkflow = true;
-            m_d->batchCustomWorkflow = workflow;
-            m_d->progressBar->setValue(0);
-            slotBatchSubmitNext();
-        });
-        return;
-    }
-
-    QJsonObject workflow;
-    if (!customJson.isEmpty()) {
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(customJson.toUtf8(), &err);
-        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
-            m_d->labelStatus->setText(i18n("Custom workflow JSON error: %1", err.errorString()));
-            return;
-        }
-        workflow = doc.object();
-    } else {
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(defaultWorkflow), &err);
-        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
-            m_d->labelStatus->setText(i18n("Workflow JSON error."));
-            return;
-        }
-        workflow = doc.object();
-        {
-            QJsonObject n3 = workflow["3"].toObject();
-            QJsonObject i3 = n3["inputs"].toObject();
-            qint64 seed = m_d->checkFixedSeed->isChecked()
-                ? static_cast<qint64>(m_d->spinSeed->value())
-                : static_cast<qint64>(QRandomGenerator::global()->bounded(2147483647));
-            i3["seed"] = static_cast<double>(seed);
-            i3["steps"] = m_d->spinSteps->value();
-            i3["cfg"] = m_d->spinCfg->value();
-            i3["sampler_name"] = m_d->comboSampler->currentText().trimmed().isEmpty()
-                ? QString("euler") : m_d->comboSampler->currentText().trimmed();
-            n3["inputs"] = i3;
-            workflow["3"] = n3;
-        }
-        {
-            QJsonObject n4 = workflow["4"].toObject();
-            QJsonObject i4 = n4["inputs"].toObject();
-            QString ckpt = m_d->comboCheckpoint->currentText().trimmed();
-            i4["ckpt_name"] = ckpt.isEmpty() ? QString("v1-5-pruned-emaonly.safetensors") : ckpt;
-            n4["inputs"] = i4;
-            workflow["4"] = n4;
-        }
-        {
-            QJsonObject n5 = workflow["5"].toObject();
-            QJsonObject i5 = n5["inputs"].toObject();
-            int w = m_d->spinWidth->value();
-            int h = m_d->spinHeight->value();
-            double mul = (m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier);
-            mul = qMax(0.3, qMin(mul, 3.0));
-            w = static_cast<int>(w * mul);
-            h = static_cast<int>(h * mul);
-            w = qBound(64, w, 8192);
-            h = qBound(64, h, 8192);
-            i5["width"] = w;
-            i5["height"] = h;
-            n5["inputs"] = i5;
-            workflow["5"] = n5;
-        }
-        {
-            QJsonObject n6 = workflow["6"].toObject();
-            QJsonObject i6 = n6["inputs"].toObject();
-            QString promptText = m_d->editPrompt->toPlainText().trimmed();
-            i6["text"] = promptText.isEmpty() ? QString("a beautiful painting") : promptText;
-            n6["inputs"] = i6;
-            workflow["6"] = n6;
-        }
-        {
-            QJsonObject n7 = workflow["7"].toObject();
-            QJsonObject i7 = n7["inputs"].toObject();
-            i7["text"] = m_d->editNegative->toPlainText().trimmed();
-            n7["inputs"] = i7;
-            workflow["7"] = n7;
-        }
-    }
-
-    int batchCount = m_d->spinBatchCount->value();
-    int queueMode = m_d->comboQueueMode->currentData().toInt();
-    if (queueMode == 2) { // Replace
-        m_d->pollTimer->stop();
-        for (const QString &id : m_d->jobQueue)
-            m_d->pendingHistoryByPromptId.remove(id);
-        if (!m_d->currentPromptId.isEmpty())
-            m_d->pendingHistoryByPromptId.remove(m_d->currentPromptId);
-        m_d->jobQueue.clear();
-        m_d->currentPromptId.clear();
-        QUrl interruptUrl(baseUrl);
-        QString ip = interruptUrl.path();
-        if (ip.isEmpty() || ip == "/") interruptUrl.setPath("/interrupt");
-        else if (!ip.endsWith('/')) interruptUrl.setPath(ip + "/interrupt");
-        else interruptUrl.setPath(ip + "interrupt");
-        QNetworkRequest reqI(interruptUrl);
-        reqI.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        m_d->nam->post(reqI, QByteArray("{}"));
-    }
-
-    m_d->batchCollectIds.clear();
-    m_d->batchSubmitIndex = 0;
-    m_d->batchCountTarget = qMax(1, batchCount);
-    m_d->batchQueueMode = queueMode;
-    m_d->batchBaseUrl = baseUrl;
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") m_d->batchBaseUrl.setPath("/prompt");
-    else if (!path.endsWith('/')) m_d->batchBaseUrl.setPath(path + "/prompt");
-    else m_d->batchBaseUrl.setPath(path + "prompt");
-    m_d->batchUseCustomWorkflow = !customJson.isEmpty();
-    if (m_d->batchUseCustomWorkflow)
-        m_d->batchCustomWorkflow = workflow;
-
-    m_d->labelStatus->setText(i18n("Submitting…"));
-    m_d->progressBar->setValue(0);
-    m_d->btnGenerate->setEnabled(false);
-    slotBatchSubmitNext();
+    QSize size = m_d->viewManager->image()->size();
+    int w = qRound(size.width() * m_d->upscaleFactor);
+    int h = qRound(size.height() * m_d->upscaleFactor);
+    m_d->labelUpscaleTargetSize->setText(i18n("Target size: %1 × %2", w, h));
 }
 
-void ComfyUIRemoteDock::slotBatchSubmitNext()
+void ComfyUIRemoteDock::updateAnimationButtonLabel()
 {
-    if (m_d->batchSubmitIndex >= m_d->batchCountTarget) {
-        // Batch complete: apply enqueue mode
-        if (m_d->batchQueueMode == 0) // Back
-            m_d->jobQueue.append(m_d->batchCollectIds);
-        else if (m_d->batchQueueMode == 1) { // Front
-            for (int i = m_d->batchCollectIds.size() - 1; i >= 0; i--)
-                m_d->jobQueue.prepend(m_d->batchCollectIds.at(i));
-        } else // Replace
-            m_d->jobQueue = m_d->batchCollectIds;
-        m_d->batchCollectIds.clear();
-        m_d->batchCountTarget = 0;
-        if (m_d->currentPromptId.isEmpty() && !m_d->jobQueue.isEmpty()) {
-            m_d->currentPromptId = m_d->jobQueue.takeFirst();
-            m_d->pollCount = 0;
-            startPolling();
+    if (!m_d->btnGenerateAnimation) return;
+    const bool fullAnimation = m_d->radioFullAnimation && m_d->radioFullAnimation->isChecked();
+    if (fullAnimation) {
+        m_d->btnGenerateAnimation->setText(i18n("Generate Animation"));
+        m_d->btnGenerateAnimation->setToolTip(i18n("Generate multiple frames with sequential seeds as new layers."));
+    } else {
+        m_d->btnGenerateAnimation->setText(i18n("Generate Frame"));
+        m_d->btnGenerateAnimation->setToolTip(i18n("Generate a single frame at current time."));
+    }
+}
+
+static void collectPaintLayerNodes(KisNodeSP node, QVector<QPair<QString, QString>> *out)
+{
+    if (!node || !out)
+        return;
+    if (dynamic_cast<KisPaintLayer *>(node.data())) {
+        const QString id = node->uuid().toString(QUuid::WithoutBraces);
+        out->append(qMakePair(id, node->name()));
+    }
+    for (int i = 0; i < node->childCount(); ++i)
+        collectPaintLayerNodes(node->child(i), out);
+}
+
+QJsonObject ComfyUIRemoteDock::animationWorkspaceToJson() const
+{
+    QJsonObject o;
+    if (m_d->radioFullAnimation)
+        o.insert(QStringLiteral("batch_mode"), m_d->radioFullAnimation->isChecked());
+    if (m_d->comboQuality) {
+        const QString sq = (m_d->comboQuality->currentIndex() == 0) ? QStringLiteral("fast") : QStringLiteral("quality");
+        o.insert(QStringLiteral("sampling_quality"), sq);
+    }
+    if (m_d->comboAnimationTargetLayer) {
+        const QString id = m_d->comboAnimationTargetLayer->currentData().toString();
+        if (!id.isEmpty())
+            o.insert(QStringLiteral("target_layer"), id);
+    }
+    return o;
+}
+
+void ComfyUIRemoteDock::refreshAnimationTargetLayerCombo()
+{
+    if (!m_d->comboAnimationTargetLayer)
+        return;
+    const QString prev = m_d->comboAnimationTargetLayer->currentData().toString();
+    m_d->comboAnimationTargetLayer->blockSignals(true);
+    m_d->comboAnimationTargetLayer->clear();
+    m_d->comboAnimationTargetLayer->addItem(i18n("(None)"), QString());
+    KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
+    if (img) {
+        QVector<QPair<QString, QString>> items;
+        KisNodeSP root = img->rootLayer();
+        if (root)
+            collectPaintLayerNodes(root, &items);
+        std::sort(items.begin(), items.end(), [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
+            return QString::localeAwareCompare(a.second, b.second) < 0;
+        });
+        int selectAt = 0;
+        for (int i = 0; i < items.size(); ++i) {
+            m_d->comboAnimationTargetLayer->addItem(items.at(i).second, items.at(i).first);
+            if (items.at(i).first == prev)
+                selectAt = i + 1;
         }
-        updateQueueStatus();
+        m_d->comboAnimationTargetLayer->setCurrentIndex(selectAt);
+    } else {
+        m_d->comboAnimationTargetLayer->setCurrentIndex(0);
+    }
+    m_d->comboAnimationTargetLayer->blockSignals(false);
+}
+
+void ComfyUIRemoteDock::updateAnimationTargetLayerRowVisibility()
+{
+    const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1;
+    const bool animWorkspace = (ws == 3);
+    const bool singleFrame = m_d->radioSingleFrame && m_d->radioSingleFrame->isChecked();
+    const bool show = animWorkspace && singleFrame;
+    if (m_d->animationTargetRow)
+        m_d->animationTargetRow->setVisible(show);
+    if (m_d->animationPreviewRow) {
+        m_d->animationPreviewRow->setVisible(show);
+        if (!show)
+            updateAnimationResultPreview(QString());
+    }
+}
+
+void ComfyUIRemoteDock::updateAnimationResultPreview(const QString &imagePath)
+{
+    if (!m_d->labelAnimationPreview)
+        return;
+    if (imagePath.isEmpty() || !QFile::exists(imagePath)) {
+        m_d->labelAnimationPreview->clear();
+        m_d->labelAnimationPreview->setPixmap(QPixmap());
         return;
     }
-
-    QJsonObject workflow;
-    if (m_d->batchUseCustomWorkflow) {
-        workflow = m_d->batchCustomWorkflow;
-    } else {
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(defaultWorkflow), &err);
-        if (err.error != QJsonParseError::NoError || !doc.isObject()) return;
-        workflow = doc.object();
-        qint64 seed = m_d->checkFixedSeed->isChecked()
-            ? static_cast<qint64>(m_d->spinSeed->value()) + m_d->batchSubmitIndex
-            : static_cast<qint64>(QRandomGenerator::global()->bounded(2147483647));
-        QJsonObject n3 = workflow["3"].toObject();
-        QJsonObject i3 = n3["inputs"].toObject();
-        i3["seed"] = static_cast<double>(seed);
-        i3["steps"] = m_d->spinSteps->value();
-        i3["cfg"] = m_d->spinCfg->value();
-        i3["sampler_name"] = m_d->comboSampler->currentText().trimmed().isEmpty()
-            ? QString("euler") : m_d->comboSampler->currentText().trimmed();
-        n3["inputs"] = i3;
-        workflow["3"] = n3;
-        QJsonObject n4 = workflow["4"].toObject();
-        QJsonObject i4 = n4["inputs"].toObject();
-        i4["ckpt_name"] = m_d->comboCheckpoint->currentText().trimmed().isEmpty()
-            ? QString("v1-5-pruned-emaonly.safetensors") : m_d->comboCheckpoint->currentText().trimmed();
-        n4["inputs"] = i4;
-        workflow["4"] = n4;
-        QJsonObject n5 = workflow["5"].toObject();
-        QJsonObject i5 = n5["inputs"].toObject();
-        i5["width"] = m_d->spinWidth->value();
-        i5["height"] = m_d->spinHeight->value();
-        n5["inputs"] = i5;
-        workflow["5"] = n5;
-        QJsonObject n6 = workflow["6"].toObject();
-        QJsonObject i6 = n6["inputs"].toObject();
-        QString promptText = m_d->editPrompt->toPlainText().trimmed();
-        i6["text"] = promptText.isEmpty() ? QString("a beautiful painting") : promptText;
-        n6["inputs"] = i6;
-        workflow["6"] = n6;
-        QJsonObject n7 = workflow["7"].toObject();
-        QJsonObject i7 = n7["inputs"].toObject();
-        i7["text"] = m_d->editNegative->toPlainText().trimmed();
-        n7["inputs"] = i7;
-        workflow["7"] = n7;
+    QPixmap pm;
+    if (!pm.load(imagePath)) {
+        m_d->labelAnimationPreview->clear();
+        return;
     }
+    const int maxW = 280;
+    if (pm.width() > maxW)
+        pm = pm.scaledToWidth(maxW, Qt::SmoothTransformation);
+    m_d->labelAnimationPreview->setPixmap(pm);
+}
 
-    QJsonObject payload;
-    payload["prompt"] = workflow;
-    QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    QNetworkRequest req(m_d->batchBaseUrl);
-    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    QNetworkReply *reply = m_d->nam->post(req, body);
-    int index = m_d->batchSubmitIndex;
-    connect(reply, &QNetworkReply::finished, this, [this, reply, index]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Submit error: %1", reply->errorString()));
-            m_d->btnGenerate->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            m_d->batchCountTarget = 0;
-            return;
-        }
-        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        QJsonObject obj = doc.object();
-        if (obj.contains("error")) {
-            m_d->labelStatus->setText(i18n("Server error: %1", obj["error"].toString()));
-            m_d->btnGenerate->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            m_d->batchCountTarget = 0;
-            return;
-        }
-        QString promptId = obj["prompt_id"].toString();
-        if (promptId.isEmpty()) {
-            m_d->labelStatus->setText(i18n("No prompt_id in response."));
-            m_d->btnGenerate->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            m_d->batchCountTarget = 0;
-            return;
-        }
-        Private::HistoryEntry entry;
-        entry.prompt = m_d->editPrompt->toPlainText();
-        entry.negative = m_d->editNegative->toPlainText();
-        entry.checkpoint = m_d->comboCheckpoint->currentText();
-        entry.width = m_d->spinWidth->value();
-        entry.height = m_d->spinHeight->value();
-        entry.steps = m_d->spinSteps->value();
-        entry.cfg = m_d->spinCfg->value();
-        entry.samplerName = m_d->comboSampler->currentText().trimmed();
-        entry.seed = m_d->checkFixedSeed->isChecked()
-            ? static_cast<qint64>(m_d->spinSeed->value()) + index
-            : static_cast<qint64>(QRandomGenerator::global()->bounded(2147483647));
-        m_d->pendingHistoryByPromptId.insert(promptId, entry);
-        m_d->batchCollectIds.append(promptId);
-        m_d->batchSubmitIndex++;
-        slotBatchSubmitNext();
-    });
+void ComfyUIRemoteDock::loadAnimationWorkspaceFromDocument()
+{
+    KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
+    if (!img) {
+        refreshAnimationTargetLayerCombo();
+        updateAnimationTargetLayerRowVisibility();
+        return;
+    }
+    const QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
+    const QJsonObject anim = ui.value(QStringLiteral("animation")).toObject();
+    if (anim.isEmpty()) {
+        refreshAnimationTargetLayerCombo();
+        updateAnimationTargetLayerRowVisibility();
+        return;
+    }
+    QSignalBlocker bFull(m_d->radioFullAnimation);
+    QSignalBlocker bSingle(m_d->radioSingleFrame);
+    QSignalBlocker bQual(m_d->comboQuality);
+    QSignalBlocker bTarget(m_d->comboAnimationTargetLayer);
+
+    if (anim.contains(QStringLiteral("batch_mode"))) {
+        const bool full = anim.value(QStringLiteral("batch_mode")).toBool();
+        if (m_d->radioFullAnimation)
+            m_d->radioFullAnimation->setChecked(full);
+        if (m_d->radioSingleFrame)
+            m_d->radioSingleFrame->setChecked(!full);
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("FullAnimation", full);
+    }
+    const QString sq = anim.value(QStringLiteral("sampling_quality")).toString();
+    if (!sq.isEmpty() && m_d->comboQuality) {
+        const int idx = (sq == QStringLiteral("fast")) ? 0 : 1;
+        m_d->comboQuality->setCurrentIndex(idx);
+    }
+    refreshAnimationTargetLayerCombo();
+    const QString tl = anim.value(QStringLiteral("target_layer")).toString();
+    if (m_d->comboAnimationTargetLayer && !tl.isEmpty()) {
+        const int ix = m_d->comboAnimationTargetLayer->findData(tl);
+        if (ix >= 0)
+            m_d->comboAnimationTargetLayer->setCurrentIndex(ix);
+    }
+    updateAnimationButtonLabel();
+    updateAnimationTargetLayerRowVisibility();
+}
+
+void ComfyUIRemoteDock::setProgressBarKind(bool isUpload)
+{
+    if (!m_d->progressBar) return;
+    // §13.18: upload = theme.progress_alt (amber); generation = default highlight
+    if (isUpload) {
+        m_d->progressBar->setStyleSheet(QStringLiteral(
+            "QProgressBar::chunk { background: #ca8a04; border-radius: 2px; }"
+        ));
+    } else {
+        m_d->progressBar->setStyleSheet(QString());
+    }
+}
+
+void ComfyUIRemoteDock::setLiveProgress(int percent)
+{
+    auto *w = qobject_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
+    if (w) w->setProgress(percent);
+}
+
+void ComfyUIRemoteDock::startLiveSpinner()
+{
+    auto *w = qobject_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
+    if (w) w->startAnimation();
+}
+
+void ComfyUIRemoteDock::stopLiveSpinner()
+{
+    auto *w = qobject_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
+    if (w) w->stopAnimation();
+}
+
+void ComfyUIRemoteDock::setStatusMessage(const QString &msg, bool isError, bool isWarning)
+{
+    if (!m_d->labelStatus) return;
+    m_d->labelStatus->setText(msg);
+    // §13.27: theme colors — red for error, yellow for warning
+    if (isError) {
+        m_d->labelStatus->setStyleSheet(QStringLiteral("color: #dc2626;"));
+    } else if (isWarning) {
+        m_d->labelStatus->setStyleSheet(QStringLiteral("color: #b58900;"));
+    } else {
+        m_d->labelStatus->setStyleSheet(QString());
+    }
 }
 
 void ComfyUIRemoteDock::startPolling()
 {
-    m_d->labelStatus->setText(i18n("Generating… %1", m_d->pollCount));
+    setProgressBarKind(false);  // §13.18: generation progress
+    setStatusMessage(i18n("Generating… %1", m_d->pollCount));
     m_d->pollTimer->start(1000);
 }
 
@@ -1486,135 +2527,408 @@ void ComfyUIRemoteDock::updateQueueStatus()
     }
     if (running + queued > 0) {
         if (queued > 0) {
-            m_d->labelStatus->setText(i18n("Queue: 1 running, %1 queued.", queued));
+            setStatusMessage(i18n("Queue: 1 running, %1 queued.", queued));
         } else {
-            m_d->labelStatus->setText(i18n("Generating… %1", m_d->pollCount));
+            setStatusMessage(i18n("Generating… %1", m_d->pollCount));
         }
     } else {
-        m_d->labelStatus->setText(i18n("Ready."));
+        setStatusMessage(i18n("Ready."));
     }
     m_d->btnCancelQueue->setEnabled(running + queued > 0);
+}
+
+QString ComfyUIRemoteDock::pathForCurrentHistoryRow(int *outEntryIndex, int *outImageIndex) const
+{
+    int row = m_d->listHistory->currentRow();
+    if (row < 0) return QString();
+    QListWidgetItem *item = m_d->listHistory->item(row);
+    if (!item) return QString();
+    QString jobId = item->data(Qt::UserRole).toString();
+    int imageIndex = item->data(Qt::UserRole + 1).toInt();
+    for (int i = 0; i < m_d->historyEntries.size(); i++) {
+        const Private::HistoryEntry &e = m_d->historyEntries.at(i);
+        if (e.jobId != jobId) continue;
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        if (imageIndex >= 0 && imageIndex < paths.size()) {
+            if (outEntryIndex) *outEntryIndex = i;
+            if (outImageIndex) *outImageIndex = imageIndex;
+            return paths.at(imageIndex);
+        }
+        return QString();
+    }
+    return QString();
 }
 
 void ComfyUIRemoteDock::refreshHistoryList()
 {
     m_d->listHistory->clear();
     const QSize iconSize = m_d->listHistory->iconSize();
+    const int thumbW = iconSize.width();
+    const int thumbH = iconSize.height();
+    // §13.28a: applied overlay at (thumb.extent.width - 28, 4), 24×24 star
+    const int starX = thumbW - 28;
+    const int starY = 4;
+    const int starSize = 24;
+    QIcon starIcon = KisIconUtils::loadIcon("rating");  // star for applied indicator
+    QPixmap starPix = starIcon.pixmap(starSize, starSize);
+    // §13.131: One row per image (job_id + index); multi-image entries show multiple rows
     for (const Private::HistoryEntry &e : m_d->historyEntries) {
-        QString snippet = e.prompt.left(40);
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        if (paths.isEmpty()) continue;
+        QString snippet = ComfyUIUtils::sanitizePrompt(e.prompt);  // §13.132: safe label for history
         if (e.prompt.size() > 40) snippet += "…";
-        QString tip = QString("%1 (%2×%3)\nSeed: %4").arg(snippet).arg(e.width).arg(e.height).arg(e.seed);
-        QListWidgetItem *item = new QListWidgetItem();
-        if (!e.resultImagePath.isEmpty() && QFile::exists(e.resultImagePath)) {
-            QPixmap pix(e.resultImagePath);
-            if (!pix.isNull())
-                item->setIcon(QIcon(pix.scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        for (int imageIndex = 0; imageIndex < paths.size(); imageIndex++) {
+            QString path = paths.at(imageIndex);
+            QString tip = QString("%1 (%2×%3)\nSeed: %4").arg(snippet).arg(e.width).arg(e.height).arg(e.seed);
+            if (paths.size() > 1)
+                tip = i18n("Image %1 of %2", imageIndex + 1, paths.size()) + QStringLiteral("\n") + tip;
+            QListWidgetItem *item = new QListWidgetItem();
+            if (!path.isEmpty() && QFile::exists(path)) {
+                QPixmap pix(path);
+                if (!pix.isNull()) {
+                    pix = pix.scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                    if (e.imageInUse.value(imageIndex, false) && !starPix.isNull()) {
+                        QPixmap composite(thumbW, thumbH);
+                        composite.fill(Qt::transparent);
+                        QPainter p(&composite);
+                        p.drawPixmap(0, 0, pix);
+                        p.drawPixmap(starX, starY, starPix);
+                        p.end();
+                        item->setIcon(QIcon(composite));
+                    } else {
+                        item->setIcon(QIcon(pix));
+                    }
+                }
+            }
+            if (item->icon().isNull())
+                item->setText(paths.size() > 1 ? snippet + QStringLiteral(" [%1/%2]").arg(imageIndex + 1).arg(paths.size()) : snippet);
+            item->setToolTip(tip);
+            item->setData(Qt::UserRole, e.jobId);
+            item->setData(Qt::UserRole + 1, imageIndex);
+            m_d->listHistory->addItem(item);
         }
-        if (item->icon().isNull())
-            item->setText(snippet);
-        item->setToolTip(tip);
-        m_d->listHistory->addItem(item);
     }
 }
 
-void ComfyUIRemoteDock::slotHistoryItemSelected()
+void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
 {
-    bool hasSelection = m_d->listHistory->currentRow() >= 0;
-    m_d->btnHistoryReRun->setEnabled(hasSelection);
-    m_d->btnHistoryApply->setEnabled(hasSelection);
+    QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    const bool liveWs = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2;
+    const int lines = qBound(
+        1,
+        liveWs ? s.value(QStringLiteral("prompt_line_count_live")).toInt(2)
+               : s.value(QStringLiteral("prompt_line_count")).toInt(2),
+        10);
+    if (m_d->editPrompt) {
+        const QFontMetrics fm(m_d->editPrompt->font());
+        const int h = qBound(40, fm.lineSpacing() * lines + fm.height() / 2, 800);
+        m_d->editPrompt->setFixedHeight(h);
+    }
+    const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(true);
+    if (m_d->negativePromptBlock)
+        m_d->negativePromptBlock->setVisible(showNeg);
+    const bool showSt = s.value(QStringLiteral("show_steps")).toBool(true);
+    if (m_d->stepsParametersWidget)
+        m_d->stepsParametersWidget->setVisible(showSt);
 }
 
-void ComfyUIRemoteDock::slotHistoryApply()
+void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
 {
-    int row = m_d->listHistory->currentRow();
-    if (row < 0 || row >= m_d->historyEntries.size()) return;
-    const Private::HistoryEntry &e = m_d->historyEntries.at(row);
-    if (e.resultImagePath.isEmpty() || !QFile::exists(e.resultImagePath)) {
-        m_d->labelStatus->setText(i18n("No result image to apply."));
+    if (!m_d->labelNegativePromptAlert || !m_d->comboPreset) return;
+    const int index = m_d->comboPreset->currentIndex();
+    const int firstCustom = firstCustomPresetIndex();
+    bool showAlert = false;
+    if (index == 0) {
+        showAlert = true;  // "None" — no style selected, may not use negative prompt
+    } else if (index >= firstCustom) {
+        QString name = m_d->comboPreset->itemText(index);
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote_Preset_" + name);
+        showAlert = !cfg.readEntry("UsesNegativePrompt", true);
+    }
+    m_d->labelNegativePromptAlert->setVisible(showAlert);
+}
+
+int ComfyUIRemoteDock::firstCustomPresetIndex() const
+{
+    const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
+    return showBuiltin ? Private::builtinPresetCount : 1;
+}
+
+void ComfyUIRemoteDock::rebuildPresetComboItems()
+{
+    if (!m_d->comboPreset) return;
+    const QString prevText = m_d->comboPreset->currentText();
+    m_d->comboPreset->blockSignals(true);
+    m_d->comboPreset->clear();
+    m_d->comboPreset->addItem(i18n("None"));
+    m_d->comboPreset->setItemIcon(0, KisIconUtils::loadIcon("document-new"));
+    const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
+    if (showBuiltin) {
+        m_d->comboPreset->addItem(i18n("Portrait"));
+        m_d->comboPreset->addItem(i18n("Landscape"));
+        m_d->comboPreset->addItem(i18n("Anime"));
+        m_d->comboPreset->addItem(i18n("Realistic"));
+        m_d->comboPreset->setItemIcon(1, KisIconUtils::loadIcon("user-identity"));
+        m_d->comboPreset->setItemIcon(2, KisIconUtils::loadIcon("view-landscape"));
+        m_d->comboPreset->setItemIcon(3, KisIconUtils::loadIcon("draw-brush"));
+        m_d->comboPreset->setItemIcon(4, KisIconUtils::loadIcon("camera-photo"));
+    }
+    KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+    const QStringList customNames = cfg.readEntry("PresetNames", QStringList());
+    for (const QString &name : customNames) {
+        if (!name.isEmpty()) m_d->comboPreset->addItem(name);
+    }
+    int restoreIdx = 0;
+    if (!prevText.isEmpty()) {
+        const int fi = m_d->comboPreset->findText(prevText);
+        if (fi >= 0) restoreIdx = fi;
+    }
+    m_d->comboPreset->setCurrentIndex(restoreIdx);
+    m_d->comboPreset->blockSignals(false);
+    if (m_d->btnDeletePreset)
+        m_d->btnDeletePreset->setEnabled(m_d->comboPreset->currentIndex() >= firstCustomPresetIndex());
+    updateNegativePromptAlertVisibility();
+}
+
+bool ComfyUIRemoteDock::renameCustomPreset(const QString &oldName, const QString &newName)
+{
+    const QString o = oldName.trimmed();
+    const QString n = newName.trimmed();
+    if (o.isEmpty() || n.isEmpty() || o == n || !m_d->comboPreset)
+        return false;
+
+    KSharedConfig::Ptr cfgPtr = KSharedConfig::openConfig();
+    KConfigGroup mainGrp(cfgPtr, QStringLiteral("ComfyUIRemote"));
+    QStringList names = mainGrp.readEntry(QStringLiteral("PresetNames"), QStringList());
+    const int nameIdx = names.indexOf(o);
+    if (nameIdx < 0 || names.contains(n))
+        return false;
+
+    KConfigGroup fromGrp(cfgPtr, QStringLiteral("ComfyUIRemote_Preset_") + o);
+    if (!fromGrp.exists())
+        return false;
+    KConfigGroup toGrp(cfgPtr, QStringLiteral("ComfyUIRemote_Preset_") + n);
+    if (toGrp.exists())
+        return false;
+
+    const QMap<QString, QString> em = fromGrp.entryMap();
+    for (auto it = em.constBegin(); it != em.constEnd(); ++it)
+        toGrp.writeEntry(it.key(), it.value());
+
+    fromGrp.deleteGroup();
+    names[nameIdx] = n;
+    mainGrp.writeEntry(QStringLiteral("PresetNames"), names);
+    cfgPtr->sync();
+
+    rebuildPresetComboItems();
+    const int ni = m_d->comboPreset->findText(n);
+    if (ni >= 0)
+        m_d->comboPreset->setCurrentIndex(ni);
+    return true;
+}
+
+void ComfyUIRemoteDock::applyQualitySamplerPresetFromSettings()
+{
+    const QString key =
+        ComfyUIUtils::loadSettingsJson().value(QStringLiteral("quality_sampler_preset")).toString().trimmed();
+    applyQualitySamplerPresetKey(key);
+}
+
+void ComfyUIRemoteDock::applyQualitySamplerPresetKey(const QString &presetName)
+{
+    const QString key = presetName.trimmed();
+    if (key.isEmpty()) {
+        m_d->ksamplerScheduler = QStringLiteral("normal");
         return;
     }
-    if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
-        m_d->labelStatus->setText(i18n("Open a document first."));
+    QString sampler, scheduler;
+    int steps = 20;
+    int minSteps = 1;
+    double cfg = 8.0;
+    const QJsonObject root = ComfyUIUtils::builtinSamplerPresetsRoot();
+    if (!ComfyUIUtils::samplerPresetLookup(root, key, &sampler, &scheduler, &steps, &minSteps, &cfg)) {
+        m_d->ksamplerScheduler = QStringLiteral("normal");
         return;
     }
-    qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(e.resultImagePath), "KisPaintLayer");
-    if (n > 0) {
-        if (m_d->canvas) m_d->canvas->updateCanvas();
-        m_d->labelStatus->setText(i18n("Applied result as new layer."));
+    if (m_d->comboSampler)
+        m_d->comboSampler->setCurrentText(sampler);
+    if (m_d->spinSteps)
+        m_d->spinSteps->setValue(qMax(steps, minSteps));
+    if (m_d->spinCfg)
+        m_d->spinCfg->setValue(cfg);
+    m_d->ksamplerScheduler = scheduler;
+}
+
+void ComfyUIRemoteDock::refreshStylesTabLoraWarning()
+{
+    QLabel *w = m_d->stylesTabLoraWarningLabel.data();
+    QListWidget *list = m_d->stylesTabLoraListWidget.data();
+    if (!w || !list) {
+        return;
+    }
+    QListWidgetItem *it = list->currentItem();
+    if (!it) {
+        w->hide();
+        return;
+    }
+    const QString fn = it->data(Qt::UserRole).toString().trimmed();
+    if (fn.isEmpty() || !m_d->isConnected || m_d->comfyServerLoraFilenames.isEmpty()) {
+        w->hide();
+        return;
+    }
+    const bool onServer = ComfyUIUtils::loraFilenameKnownOnServer(fn, m_d->comfyServerLoraFilenames);
+    if (fn.startsWith(QStringLiteral("lora-"), Qt::CaseInsensitive)) {
+        w->setText(i18n("This LoRA is a reserved or server-managed resource."));
+        w->setStyleSheet(QStringLiteral("color: #b8860b;"));
+        w->setWordWrap(true);
+        w->show();
+    } else if (!onServer) {
+        w->setText(i18n("The LoRA file is not installed on the server."));
+        w->setStyleSheet(QStringLiteral("color: #b8860b;"));
+        w->setWordWrap(true);
+        w->show();
     } else {
-        m_d->labelStatus->setText(i18n("Could not import image."));
+        w->hide();
     }
 }
 
-void ComfyUIRemoteDock::slotHistoryContextMenu(QPoint pos)
+void ComfyUIRemoteDock::applyStylesTabLoraListFilter()
 {
-    QListWidgetItem *item = m_d->listHistory->itemAt(pos);
-    if (!item) return;
-    int row = m_d->listHistory->row(item);
-    if (row < 0 || row >= m_d->historyEntries.size()) return;
-    QMenu menu(this);
-    menu.addAction(i18n("Apply"), this, &ComfyUIRemoteDock::slotHistoryApply);
-    menu.addAction(i18n("Copy prompt"), this, &ComfyUIRemoteDock::slotHistoryCopyPrompt);
-    menu.addAction(i18n("Copy seed"), this, &ComfyUIRemoteDock::slotHistoryCopySeed);
-    menu.addSeparator();
-    menu.addAction(i18n("Discard"), this, &ComfyUIRemoteDock::slotHistoryDiscard);
-    menu.addAction(i18n("Clear history"), this, &ComfyUIRemoteDock::slotHistoryClear);
-    menu.exec(m_d->listHistory->mapToGlobal(pos));
-}
-
-void ComfyUIRemoteDock::slotHistoryCopyPrompt()
-{
-    int row = m_d->listHistory->currentRow();
-    if (row < 0 || row >= m_d->historyEntries.size()) return;
-    QString text = m_d->historyEntries.at(row).prompt;
-    if (QClipboard *cb = QApplication::clipboard())
-        cb->setText(text);
-    m_d->labelStatus->setText(i18n("Prompt copied to clipboard."));
-}
-
-void ComfyUIRemoteDock::slotHistoryCopySeed()
-{
-    int row = m_d->listHistory->currentRow();
-    if (row < 0 || row >= m_d->historyEntries.size()) return;
-    qint64 seed = m_d->historyEntries.at(row).seed;
-    if (QClipboard *cb = QApplication::clipboard())
-        cb->setText(QString::number(seed));
-    m_d->labelStatus->setText(i18n("Seed copied to clipboard."));
-}
-
-void ComfyUIRemoteDock::slotHistoryDiscard()
-{
-    int row = m_d->listHistory->currentRow();
-    if (row < 0 || row >= m_d->historyEntries.size()) return;
-    Private::HistoryEntry e = m_d->historyEntries.takeAt(row);
-    if (!e.resultImagePath.isEmpty() && QFile::exists(e.resultImagePath))
-        QFile::remove(e.resultImagePath);
-    refreshHistoryList();
-    m_d->labelStatus->setText(i18n("Discarded from history."));
-}
-
-void ComfyUIRemoteDock::slotHistoryClear()
-{
-    if (m_d->historyEntries.isEmpty()) return;
-    if (QMessageBox::question(this, i18n("Clear history"),
-            i18n("Discard all %1 generated images from history?", m_d->historyEntries.size()),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    QListWidget *list = m_d->stylesTabLoraListWidget.data();
+    if (!list) {
         return;
-    for (const Private::HistoryEntry &e : m_d->historyEntries) {
-        if (!e.resultImagePath.isEmpty() && QFile::exists(e.resultImagePath))
-            QFile::remove(e.resultImagePath);
     }
-    m_d->historyEntries.clear();
+    const int mode = m_d->stylesTabLoraFilterMode;
+    const bool haveServer = m_d->isConnected && !m_d->comfyServerLoraFilenames.isEmpty();
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem *it = list->item(i);
+        if (!it) {
+            continue;
+        }
+        const QString fn = it->data(Qt::UserRole).toString();
+        const bool onServer = ComfyUIUtils::loraFilenameKnownOnServer(fn, m_d->comfyServerLoraFilenames);
+        bool hide = false;
+        if (mode == 1 && haveServer && !onServer)
+            hide = true;
+        else if (mode == 2 && haveServer && onServer)
+            hide = true;
+        list->setRowHidden(i, hide);
+    }
+}
+
+qint64 ComfyUIRemoteDock::historyResultStorageBytes() const
+{
+    qint64 total = 0;
+    for (const Private::HistoryEntry &e : m_d->historyEntries) {
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        for (const QString &p : paths) {
+            if (!p.isEmpty()) {
+                QFileInfo info(p);
+                if (info.exists()) total += info.size();
+            }
+        }
+    }
+    return total;
+}
+
+void ComfyUIRemoteDock::pruneHistoryToStorageLimit()
+{
+    QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    // §4.8: Active history size (RAM cache of thumbnails) — prefer history_active_mb, else legacy history_storage
+    int limitMb = s.value(QStringLiteral("history_active_mb")).toInt(0);
+    if (limitMb <= 0)
+        limitMb = s.value(QStringLiteral("history_storage")).toInt(20);
+    limitMb = qBound(5, limitMb, 20000);
+    const qint64 limitBytes = static_cast<qint64>(limitMb) * 1024 * 1024;
+    while (m_d->historyEntries.size() > 0 && historyResultStorageBytes() > limitBytes) {
+        Private::HistoryEntry e = m_d->historyEntries.takeLast();
+        evictDocumentEmbeddedSlotIfAny(e.documentSlot);
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        for (const QString &p : paths) {
+            if (!p.isEmpty() && QFile::exists(p)) QFile::remove(p);
+        }
+    }
     refreshHistoryList();
-    m_d->btnHistoryReRun->setEnabled(false);
-    m_d->btnHistoryApply->setEnabled(false);
-    m_d->labelStatus->setText(i18n("History cleared."));
+    updateHistoryUsageLabel();
+}
+
+void ComfyUIRemoteDock::updateHistoryUsageLabel()
+{
+    if (m_d->labelHistoryUsageMb) {
+        const qint64 bytes = historyResultStorageBytes();
+        const double mb = bytes / (1024.0 * 1024.0);
+        m_d->labelHistoryUsageMb->setText(i18n("Currently using %1 MB", QString::number(mb, 'f', 1)));
+    }
+    if (m_d->labelStoredHistoryMb) {
+        KisImageSP img = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+        const qint64 docBytes = ComfyUIUtils::documentEmbeddedHistoryStorageBytes(img);
+        const double docMb = docBytes / (1024.0 * 1024.0);
+        m_d->labelStoredHistoryMb->setText(i18n("Currently using %1 MB", QString::number(docMb, 'f', 1)));
+    }
+}
+
+void ComfyUIRemoteDock::syncPerformanceFromAutoPreset()
+{
+    QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    if (s.value(QStringLiteral("performance_preset")).toString() != QLatin1String("auto"))
+        return;
+    int b = m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1;
+    double m = m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier;
+    ComfyUIUtils::generationPerformanceBatchResolution(s, m_d->lastComfySystemStats, b, m, &b, &m);
+    b = qBound(1, b, 16);
+    m = qMax(0.3, qMin(m <= 0.0 ? 1.0 : m, 3.0));
+    if (m_d->spinBatchCount)
+        m_d->spinBatchCount->setValue(qBound(m_d->spinBatchCount->minimum(), b, m_d->spinBatchCount->maximum()));
+    m_d->resolutionMultiplier = m;
+    if (m_d->sliderResolutionMultiplier) {
+        const int sv = qRound(m * 10.0);
+        m_d->sliderResolutionMultiplier->setValue(
+            qBound(m_d->sliderResolutionMultiplier->minimum(), sv, m_d->sliderResolutionMultiplier->maximum()));
+    }
+    if (m_d->labelResolutionMultiplier)
+        m_d->labelResolutionMultiplier->setText(QString::number(m, 'f', 1) + QLatin1String("×"));
+    KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+    cfg.writeEntry("BatchCount", m_d->spinBatchCount ? m_d->spinBatchCount->value() : b);
+    cfg.writeEntry("ResolutionMultiplier", m_d->resolutionMultiplier);
+    refreshQueueResolutionRowVisibility();
+}
+
+void ComfyUIRemoteDock::applyPromptHeader()
+{
+    if (!m_d->regionsGroupBox || !m_d->regionHeaderLabel) return;
+    const int mode = qBound(0, m_d->promptHeaderMode, 2);
+    if (mode == 0) {
+        m_d->regionsGroupBox->setTitle(i18n("Regions"));
+        m_d->regionHeaderLabel->setPixmap(QPixmap());
+        m_d->regionHeaderLabel->setText(i18n("Different prompt per area (layer or selection):"));
+        m_d->regionHeaderLabel->show();
+    } else if (mode == 1) {
+        m_d->regionsGroupBox->setTitle(QString());
+        m_d->regionHeaderLabel->setText(QString());
+        m_d->regionHeaderLabel->setPixmap(KisIconUtils::loadIcon("view-preview").pixmap(16, 16));
+        m_d->regionHeaderLabel->show();
+    } else {
+        m_d->regionsGroupBox->setTitle(QString());
+        m_d->regionHeaderLabel->setText(QString());
+        m_d->regionHeaderLabel->setPixmap(QPixmap());
+        m_d->regionHeaderLabel->hide();
+    }
 }
 
 void ComfyUIRemoteDock::refreshRegionsList()
 {
+    if (!m_d->listRegions)
+        return;
     m_d->listRegions->clear();
-    for (const Private::RegionEntry &r : m_d->regionEntries) {
+    for (const Private::RegionEntry &r : comfyActiveRegionEntries(m_d)) {
         QString src = r.maskSource == "selection" ? i18n("(selection)") : r.maskSource;
         m_d->listRegions->addItem(r.name + " — " + r.prompt.left(30) + (r.prompt.size() > 30 ? "…" : "") + " " + src);
     }
@@ -1633,6 +2947,16 @@ void ComfyUIRemoteDock::loadRegionsFromConfig()
         if (!e.name.isEmpty())
             m_d->regionEntries.append(e);
     }
+    int ne = cfg.readEntry("EditRegionsCount", 0);
+    m_d->editRegionEntries.clear();
+    for (int i = 0; i < ne; i++) {
+        Private::RegionEntry e;
+        e.name = cfg.readEntry(QString("EditRegion_%1_Name").arg(i), QString());
+        e.prompt = cfg.readEntry(QString("EditRegion_%1_Prompt").arg(i), QString());
+        e.maskSource = cfg.readEntry(QString("EditRegion_%1_MaskSource").arg(i), QStringLiteral("selection"));
+        if (!e.name.isEmpty())
+            m_d->editRegionEntries.append(e);
+    }
 }
 
 void ComfyUIRemoteDock::saveRegionsToConfig()
@@ -1645,1362 +2969,28 @@ void ComfyUIRemoteDock::saveRegionsToConfig()
         cfg.writeEntry(QString("Region_%1_Prompt").arg(i), e.prompt);
         cfg.writeEntry(QString("Region_%1_MaskSource").arg(i), e.maskSource);
     }
+    cfg.writeEntry("EditRegionsCount", m_d->editRegionEntries.size());
+    for (int i = 0; i < m_d->editRegionEntries.size(); i++) {
+        const Private::RegionEntry &e = m_d->editRegionEntries.at(i);
+        cfg.writeEntry(QString("EditRegion_%1_Name").arg(i), e.name);
+        cfg.writeEntry(QString("EditRegion_%1_Prompt").arg(i), e.prompt);
+        cfg.writeEntry(QString("EditRegion_%1_MaskSource").arg(i), e.maskSource);
+    }
     cfg.config()->sync();
 }
 
-void ComfyUIRemoteDock::slotAddRegion()
+void ComfyUIRemoteDock::savePreviewLayerIdToDocument(const QString &layerId)
 {
-    QStringList maskSources;
-    maskSources << "selection";
-    if (m_d->viewManager && m_d->viewManager->image()) {
-        KisImageSP image = m_d->viewManager->image();
-        if (image->rootLayer()) {
-            QList<KisNodeSP> nodes;
-            nodes.append(image->rootLayer());
-            while (!nodes.isEmpty()) {
-                KisNodeSP n = nodes.takeFirst();
-                if (KisLayerSP layer = dynamic_cast<KisLayer*>(n.data())) {
-                    if (!layer->name().isEmpty())
-                        maskSources << "layer:" + layer->name();
-                }
-                for (int i = 0; i < static_cast<int>(n->childCount()); i++)
-                    nodes.append(n->at(i));
-            }
-        }
+    if (!m_d->canvas) return;
+    KisImageSP img = m_d->canvas->image().toStrongRef();
+    if (!img) return;
+    const QString key = ComfyUIUtils::previewLayerAnnotationKey();
+    if (layerId.isEmpty()) {
+        img->removeAnnotation(key);
+    } else {
+        img->removeAnnotation(key);
+        img->addAnnotation(KisAnnotationSP(new KisAnnotation(key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("preview_layer")), layerId.toUtf8())));
     }
-    QDialog dlg(this);
-    dlg.setWindowTitle(i18n("Add region"));
-    QFormLayout *form = new QFormLayout(&dlg);
-    QLineEdit *editName = new QLineEdit();
-    editName->setPlaceholderText(i18n("e.g. Background"));
-    QLineEdit *editPrompt = new QLineEdit();
-    editPrompt->setPlaceholderText(i18n("Prompt for this area"));
-    QComboBox *comboMask = new QComboBox();
-    comboMask->addItem(i18n("Current selection"), "selection");
-    for (const QString &s : maskSources) {
-        if (s == "selection") continue;
-        comboMask->addItem(s, s);
-    }
-    form->addRow(i18n("Name:"), editName);
-    form->addRow(i18n("Prompt:"), editPrompt);
-    form->addRow(i18n("Mask source:"), comboMask);
-    QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    form->addRow(box);
-    if (dlg.exec() != QDialog::Accepted) return;
-    Private::RegionEntry e;
-    e.name = editName->text().trimmed().isEmpty() ? i18n("Region %1", m_d->regionEntries.size() + 1) : editName->text().trimmed();
-    e.prompt = editPrompt->text().trimmed();
-    e.maskSource = comboMask->currentData().toString();
-    m_d->regionEntries.append(e);
-    saveRegionsToConfig();
-    refreshRegionsList();
-    m_d->labelStatus->setText(i18n("Added region \"%1\".", e.name));
+    m_d->previewLayerId = layerId;
 }
 
-void ComfyUIRemoteDock::slotRemoveRegion()
-{
-    int row = m_d->listRegions->currentRow();
-    if (row < 0 || row >= m_d->regionEntries.size()) return;
-    QString name = m_d->regionEntries.at(row).name;
-    m_d->regionEntries.removeAt(row);
-    saveRegionsToConfig();
-    refreshRegionsList();
-    m_d->labelStatus->setText(i18n("Removed region \"%1\".", name));
-}
-
-void ComfyUIRemoteDock::slotMoveRegionUp()
-{
-    int row = m_d->listRegions->currentRow();
-    if (row <= 0 || row >= m_d->regionEntries.size()) return;
-    m_d->regionEntries.move(row, row - 1);
-    saveRegionsToConfig();
-    refreshRegionsList();
-    m_d->listRegions->setCurrentRow(row - 1);
-}
-
-void ComfyUIRemoteDock::slotMoveRegionDown()
-{
-    int row = m_d->listRegions->currentRow();
-    if (row < 0 || row >= m_d->regionEntries.size() - 1) return;
-    m_d->regionEntries.move(row, row + 1);
-    saveRegionsToConfig();
-    refreshRegionsList();
-    m_d->listRegions->setCurrentRow(row + 1);
-}
-
-void ComfyUIRemoteDock::slotEditRegion()
-{
-    int row = m_d->listRegions->currentRow();
-    if (row < 0 || row >= m_d->regionEntries.size()) return;
-    QStringList maskSources;
-    maskSources << "selection";
-    if (m_d->viewManager && m_d->viewManager->image()) {
-        KisImageSP image = m_d->viewManager->image();
-        if (image->rootLayer()) {
-            QList<KisNodeSP> nodes;
-            nodes.append(image->rootLayer());
-            while (!nodes.isEmpty()) {
-                KisNodeSP n = nodes.takeFirst();
-                if (KisLayerSP layer = dynamic_cast<KisLayer*>(n.data())) {
-                    if (!layer->name().isEmpty())
-                        maskSources << "layer:" + layer->name();
-                }
-                for (int i = 0; i < static_cast<int>(n->childCount()); i++)
-                    nodes.append(n->at(i));
-            }
-        }
-    }
-    QDialog dlg(this);
-    dlg.setWindowTitle(i18n("Edit region"));
-    QFormLayout *form = new QFormLayout(&dlg);
-    QLineEdit *editName = new QLineEdit(m_d->regionEntries.at(row).name);
-    QLineEdit *editPrompt = new QLineEdit(m_d->regionEntries.at(row).prompt);
-    QComboBox *comboMask = new QComboBox();
-    comboMask->addItem(i18n("Current selection"), "selection");
-    for (const QString &s : maskSources) {
-        if (s == "selection") continue;
-        comboMask->addItem(s, s);
-    }
-    int idx = comboMask->findData(m_d->regionEntries.at(row).maskSource);
-    if (idx >= 0) comboMask->setCurrentIndex(idx);
-    else comboMask->setCurrentText(m_d->regionEntries.at(row).maskSource);
-    form->addRow(i18n("Name:"), editName);
-    form->addRow(i18n("Prompt:"), editPrompt);
-    form->addRow(i18n("Mask source:"), comboMask);
-    QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    form->addRow(box);
-    if (dlg.exec() != QDialog::Accepted) return;
-    m_d->regionEntries[row].name = editName->text().trimmed().isEmpty() ? m_d->regionEntries[row].name : editName->text().trimmed();
-    m_d->regionEntries[row].prompt = editPrompt->text().trimmed();
-    m_d->regionEntries[row].maskSource = comboMask->currentData().toString();
-    saveRegionsToConfig();
-    refreshRegionsList();
-}
-
-namespace
-{
-QImage getCanvasAsQImage(KisImageSP image)
-{
-    if (!image || !image->projection()) return QImage();
-    QRect bounds = image->bounds();
-    if (bounds.isEmpty()) return QImage();
-    const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
-    return image->projection()->convertToQImage(profile, bounds,
-        KoColorConversionTransformation::internalRenderingIntent(),
-        KoColorConversionTransformation::internalConversionFlags());
-}
-
-QImage getMaskAsQImage(KisImageSP image, KisViewManager *viewManager, const QString &maskSource)
-{
-    QRect bounds = image->bounds();
-    if (bounds.isEmpty()) return QImage();
-    QImage maskImage(bounds.width(), bounds.height(), QImage::Format_Grayscale8);
-    maskImage.fill(0);
-
-    if (maskSource == "selection") {
-        KisSelectionSP sel = viewManager ? viewManager->selection() : nullptr;
-        if (!sel || !sel->pixelSelection()) return QImage();
-        QRect rect = sel->selectedExactRect();
-        rect &= bounds;
-        if (rect.isEmpty()) return QImage();
-        KisPaintDeviceSP dev = sel->pixelSelection();
-        int ps = dev->pixelSize();
-        QVector<quint8> data(rect.width() * rect.height() * ps);
-        dev->readBytes(data.data(), rect.x(), rect.y(), rect.width(), rect.height());
-        for (int y = 0; y < rect.height(); y++) {
-            for (int x = 0; x < rect.width(); x++) {
-                int srcIdx = (y * rect.width() + x) * ps;
-                quint8 v = ps > 0 ? data.value(srcIdx, 0) : 0;
-                maskImage.setPixel(rect.x() + x, rect.y() + y, qRgb(v, v, v));
-            }
-        }
-        return maskImage;
-    }
-
-    if (maskSource.startsWith("layer:")) {
-        QString layerName = maskSource.mid(6);
-        KisNodeSP root = image->rootLayer();
-        if (!root) return QImage();
-        QList<KisNodeSP> nodes;
-        nodes.append(root);
-        KisNodeSP foundNode;
-        while (!nodes.isEmpty()) {
-            KisNodeSP n = nodes.takeFirst();
-            if (n->name() == layerName) { foundNode = n; break; }
-            for (int i = 0; i < static_cast<int>(n->childCount()); i++) nodes.append(n->at(i));
-        }
-        KisLayer *foundLayer = foundNode ? dynamic_cast<KisLayer*>(foundNode.data()) : nullptr;
-        if (!foundLayer || !foundLayer->projection()) return QImage();
-        const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
-        QImage rgba = foundLayer->projection()->convertToQImage(profile, bounds,
-            KoColorConversionTransformation::internalRenderingIntent(),
-            KoColorConversionTransformation::internalConversionFlags());
-        if (rgba.isNull() || rgba.size() != maskImage.size()) return QImage();
-        for (int y = 0; y < rgba.height(); y++) {
-            for (int x = 0; x < rgba.width(); x++) {
-                int a = qAlpha(rgba.pixel(x, y));
-                maskImage.setPixel(x, y, qRgb(a, a, a));
-            }
-        }
-        return maskImage;
-    }
-    return QImage();
-}
-
-// Composite result over current using mask (mask white = use result pixel).
-void compositeWithMask(QImage &current, const QImage &result, const QImage &mask)
-{
-    if (current.size() != result.size() || current.size() != mask.size() || result.format() != QImage::Format_RGB32) return;
-    if (current.format() != QImage::Format_ARGB32 && current.format() != QImage::Format_RGB32)
-        current = current.convertToFormat(QImage::Format_ARGB32);
-    QImage res = result.format() == QImage::Format_ARGB32 ? result : result.convertToFormat(QImage::Format_ARGB32);
-    for (int y = 0; y < current.height(); y++) {
-        for (int x = 0; x < current.width(); x++) {
-            int m = qGray(mask.pixel(x, y));
-            if (m <= 0) continue;
-            QRgb cur = current.pixel(x, y);
-            QRgb resPix = res.pixel(x, y);
-            if (m >= 255) {
-                current.setPixel(x, y, resPix);
-            } else {
-                int inv = 255 - m;
-                current.setPixel(x, y, qRgba(
-                    (qRed(cur) * inv + qRed(resPix) * m) / 255,
-                    (qGreen(cur) * inv + qGreen(resPix) * m) / 255,
-                    (qBlue(cur) * inv + qBlue(resPix) * m) / 255,
-                    (qAlpha(cur) * inv + qAlpha(resPix) * m) / 255));
-            }
-        }
-    }
-}
-} // namespace
-
-void ComfyUIRemoteDock::slotGenerateRegions()
-{
-    if (m_d->regionEntries.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Add at least one region (name, prompt, mask source)."));
-        return;
-    }
-    if (!m_d->viewManager || !m_d->viewManager->image()) {
-        m_d->labelStatus->setText(i18n("Open a document first."));
-        return;
-    }
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL."));
-        return;
-    }
-    QUrl baseUrl(urlStr);
-    if (!baseUrl.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
-    KisImageSP image = m_d->viewManager->image();
-    m_d->regionCurrentImage = getCanvasAsQImage(image);
-    if (m_d->regionCurrentImage.isNull()) {
-        m_d->labelStatus->setText(i18n("Could not export canvas."));
-        return;
-    }
-    m_d->regionCurrentImage = m_d->regionCurrentImage.convertToFormat(QImage::Format_ARGB32);
-    m_d->regionIndex = 0;
-    m_d->regionUploadedImageName.clear();
-    m_d->regionUploadedImageSubfolder.clear();
-    m_d->btnGenerateRegions->setEnabled(false);
-
-    auto setUploadPath = [baseUrl](QUrl &url, const QString &pathSuffix) {
-        QString p = url.path();
-        if (p.isEmpty() || p == "/") url.setPath("/" + pathSuffix);
-        else if (!p.endsWith('/')) url.setPath(p + "/" + pathSuffix);
-        else url.setPath(p + pathSuffix);
-    };
-
-    // Step 1: Upload canvas image (once).
-    QUrl uploadUrl = baseUrl;
-    setUploadPath(uploadUrl, "upload/image");
-    QTemporaryFile *tmpImage = new QTemporaryFile(this);
-    tmpImage->setFileTemplate(tmpImage->fileTemplate() + ".png");
-    tmpImage->open();
-    tmpImage->write(QByteArray()); // ensure file exists
-    tmpImage->close();
-    if (!m_d->regionCurrentImage.save(tmpImage->fileName())) {
-        m_d->labelStatus->setText(i18n("Could not save temp image."));
-        m_d->btnGenerateRegions->setEnabled(true);
-        return;
-    }
-    tmpImage->open();
-    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart imagePart;
-    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-        QVariant("form-data; name=\"image\"; filename=\"krita_region_canvas.png\""));
-    imagePart.setBodyDevice(tmpImage);
-    tmpImage->setParent(multiPart);
-    multiPart->append(imagePart);
-    QNetworkRequest req(uploadUrl);
-    QNetworkReply *reply = m_d->nam->post(req, multiPart);
-    multiPart->setParent(reply);
-    m_d->labelStatus->setText(i18n("Uploading canvas…"));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Upload error: %1", reply->errorString()));
-            m_d->btnGenerateRegions->setEnabled(true);
-            return;
-        }
-        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        QJsonObject obj = doc.object();
-        m_d->regionUploadedImageName = obj.value("name").toString();
-        m_d->regionUploadedImageSubfolder = obj.value("subfolder").toString();
-        if (m_d->regionUploadedImageName.isEmpty()) {
-            m_d->labelStatus->setText(i18n("Server did not return image name."));
-            m_d->btnGenerateRegions->setEnabled(true);
-            return;
-        }
-        runNextRegionInpainting();
-    });
-}
-
-void ComfyUIRemoteDock::runNextRegionInpainting()
-{
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) { m_d->btnGenerateRegions->setEnabled(true); return; }
-    QUrl baseUrl(urlStr);
-    if (!baseUrl.isValid()) { m_d->btnGenerateRegions->setEnabled(true); return; }
-
-    if (m_d->regionIndex >= m_d->regionEntries.size()) {
-        if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
-            m_d->labelStatus->setText(i18n("Regions done (no document to paste)."));
-            m_d->btnGenerateRegions->setEnabled(true);
-            return;
-        }
-        QTemporaryFile tmp;
-        tmp.setFileTemplate(tmp.fileTemplate() + ".png");
-        if (!tmp.open() || !m_d->regionCurrentImage.save(tmp.fileName())) {
-            m_d->labelStatus->setText(i18n("Could not save result."));
-            m_d->btnGenerateRegions->setEnabled(true);
-            return;
-        }
-        tmp.close();
-        qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
-        if (n > 0 && m_d->canvas) m_d->canvas->updateCanvas();
-        m_d->labelStatus->setText(i18n("Regions done. Result added as new layer."));
-        m_d->btnGenerateRegions->setEnabled(true);
-        return;
-    }
-
-    const Private::RegionEntry &region = m_d->regionEntries.at(m_d->regionIndex);
-    KisImageSP image = m_d->viewManager->image();
-    QImage maskImg = getMaskAsQImage(image, m_d->viewManager, region.maskSource);
-    if (maskImg.isNull()) {
-        m_d->labelStatus->setText(i18n("Region \"%1\": could not get mask.", region.name));
-        m_d->regionIndex++;
-        QTimer::singleShot(0, this, &ComfyUIRemoteDock::runNextRegionInpainting);
-        return;
-    }
-    m_d->labelStatus->setText(i18n("Region %1/%2: %3…", m_d->regionIndex + 1, m_d->regionEntries.size(), region.name));
-
-    // Save mask as PNG with alpha (ComfyUI uses alpha: 0 = inpaint after invert).
-    QImage maskPng(maskImg.size(), QImage::Format_ARGB32);
-    for (int y = 0; y < maskImg.height(); y++)
-        for (int x = 0; x < maskImg.width(); x++) {
-            int g = qGray(maskImg.pixel(x, y));
-            maskPng.setPixel(x, y, qRgba(255, 255, 255, 255 - g));
-        }
-    QTemporaryFile *tmpMask = new QTemporaryFile(this);
-    tmpMask->setFileTemplate(tmpMask->fileTemplate() + ".png");
-    tmpMask->open();
-    tmpMask->close();
-    if (!maskPng.save(tmpMask->fileName())) {
-        m_d->regionIndex++;
-        QTimer::singleShot(0, this, &ComfyUIRemoteDock::runNextRegionInpainting);
-        return;
-    }
-    tmpMask->open();
-    QUrl uploadUrl(baseUrl);
-    QString upPath = uploadUrl.path();
-    if (upPath.isEmpty() || upPath == "/") uploadUrl.setPath("/upload/image");
-    else if (!upPath.endsWith('/')) uploadUrl.setPath(upPath + "/upload/image");
-    else uploadUrl.setPath(upPath + "upload/image");
-    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart part;
-    part.setHeader(QNetworkRequest::ContentDispositionHeader,
-        QVariant("form-data; name=\"image\"; filename=\"krita_region_mask.png\""));
-    part.setBodyDevice(tmpMask);
-    tmpMask->setParent(multiPart);
-    multiPart->append(part);
-    QNetworkRequest req(uploadUrl);
-    QNetworkReply *reply = m_d->nam->post(req, multiPart);
-    multiPart->setParent(reply);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Mask upload error: %1", reply->errorString()));
-            m_d->regionIndex++;
-            runNextRegionInpainting();
-            return;
-        }
-        QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-        m_d->regionMaskUploadedName = obj.value("name").toString();
-        m_d->regionMaskUploadedSubfolder = obj.value("subfolder").toString();
-        if (m_d->regionMaskUploadedName.isEmpty()) {
-            m_d->regionIndex++;
-            runNextRegionInpainting();
-            return;
-        }
-        const Private::RegionEntry &r = m_d->regionEntries.at(m_d->regionIndex);
-        QJsonParseError err;
-        QJsonObject workflow = QJsonDocument::fromJson(QByteArray(inpaintingWorkflowTemplate), &err).object();
-        if (err.error != QJsonParseError::NoError) {
-            m_d->regionIndex++;
-            runNextRegionInpainting();
-            return;
-        }
-        QJsonObject n1 = workflow["1"].toObject();
-        QJsonObject i1 = n1["inputs"].toObject();
-        i1["image"] = m_d->regionUploadedImageName;
-        n1["inputs"] = i1;
-        workflow["1"] = n1;
-        QJsonObject n2 = workflow["2"].toObject();
-        QJsonObject i2 = n2["inputs"].toObject();
-        i2["image"] = m_d->regionMaskUploadedName;
-        n2["inputs"] = i2;
-        workflow["2"] = n2;
-        QJsonObject n4 = workflow["4"].toObject();
-        QJsonObject i4 = n4["inputs"].toObject();
-        i4["ckpt_name"] = m_d->comboCheckpoint->currentText().trimmed().isEmpty() ? QString("v1-5-pruned-emaonly.safetensors") : m_d->comboCheckpoint->currentText().trimmed();
-        n4["inputs"] = i4;
-        workflow["4"] = n4;
-        QJsonObject n5 = workflow["5"].toObject();
-        QJsonObject i5 = n5["inputs"].toObject();
-        i5["text"] = r.prompt.trimmed().isEmpty() ? QString("a beautiful painting") : r.prompt.trimmed();
-        n5["inputs"] = i5;
-        workflow["5"] = n5;
-        QJsonObject n6 = workflow["6"].toObject();
-        QJsonObject i6 = n6["inputs"].toObject();
-        i6["text"] = m_d->editNegative->toPlainText().trimmed();
-        n6["inputs"] = i6;
-        workflow["6"] = n6;
-        QJsonObject n8 = workflow["8"].toObject();
-        QJsonObject i8 = n8["inputs"].toObject();
-        i8["seed"] = static_cast<double>(QRandomGenerator::global()->bounded(2147483647));
-        n8["inputs"] = i8;
-        workflow["8"] = n8;
-        QJsonObject payload;
-        payload["prompt"] = workflow;
-        QUrl promptUrl(m_d->editServerUrl->text().trimmed());
-        QString p = promptUrl.path();
-        if (p.isEmpty() || p == "/") promptUrl.setPath("/prompt");
-        else if (!p.endsWith('/')) promptUrl.setPath(p + "/prompt");
-        else promptUrl.setPath(p + "prompt");
-        QNetworkRequest reqPrompt(promptUrl);
-        reqPrompt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *replyPrompt = m_d->nam->post(reqPrompt, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        connect(replyPrompt, &QNetworkReply::finished, this, [this, replyPrompt]() {
-            replyPrompt->deleteLater();
-            if (replyPrompt->error() != QNetworkReply::NoError) {
-                m_d->labelStatus->setText(i18n("Submit error: %1", replyPrompt->errorString()));
-                m_d->regionIndex++;
-                runNextRegionInpainting();
-                return;
-            }
-            QJsonObject obj = QJsonDocument::fromJson(replyPrompt->readAll()).object();
-            if (obj.contains("error")) {
-                m_d->labelStatus->setText(i18n("Server: %1", obj["error"].toString()));
-                m_d->regionIndex++;
-                runNextRegionInpainting();
-                return;
-            }
-            m_d->regionPromptId = obj["prompt_id"].toString();
-            if (m_d->regionPromptId.isEmpty()) {
-                m_d->regionIndex++;
-                runNextRegionInpainting();
-                return;
-            }
-            m_d->regionPollCount = 0;
-            pollRegionHistory();
-        });
-    });
-}
-
-void ComfyUIRemoteDock::pollRegionHistory()
-{
-    if (m_d->regionPromptId.isEmpty()) return;
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) return;
-    QUrl baseUrl(urlStr);
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") baseUrl.setPath("/history/" + m_d->regionPromptId);
-    else if (!path.endsWith('/')) baseUrl.setPath(path + "/history/" + m_d->regionPromptId);
-    else baseUrl.setPath(path + "history/" + m_d->regionPromptId);
-    QNetworkRequest req(baseUrl);
-    QNetworkReply *reply = m_d->nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("History error: %1", reply->errorString()));
-            m_d->regionIndex++;
-            runNextRegionInpainting();
-            return;
-        }
-        QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->regionPromptId).toObject();
-        QJsonObject outputs = hist.value("outputs").toObject();
-        if (outputs.isEmpty()) {
-            m_d->regionPollCount++;
-            if (m_d->regionPollCount >= Private::regionMaxPollCount) {
-                m_d->labelStatus->setText(i18n("Region generation timed out."));
-                m_d->regionIndex++;
-                runNextRegionInpainting();
-                return;
-            }
-            QTimer::singleShot(1000, this, &ComfyUIRemoteDock::pollRegionHistory);
-            return;
-        }
-        QString filename, subfolder;
-        for (const QString &nodeId : outputs.keys()) {
-            QJsonArray images = outputs.value(nodeId).toObject().value("images").toArray();
-            if (!images.isEmpty()) {
-                QJsonObject img = images.at(0).toObject();
-                filename = img.value("filename").toString();
-                subfolder = img.value("subfolder").toString();
-                break;
-            }
-        }
-        if (filename.isEmpty()) {
-            m_d->regionIndex++;
-            runNextRegionInpainting();
-            return;
-        }
-        QUrl viewUrl(m_d->editServerUrl->text().trimmed());
-        QString vp = viewUrl.path();
-        if (!vp.endsWith('/')) vp += '/';
-        vp += "view";
-        viewUrl.setPath(vp);
-        QUrlQuery q;
-        q.addQueryItem("filename", filename);
-        if (!subfolder.isEmpty()) q.addQueryItem("subfolder", subfolder);
-        viewUrl.setQuery(q);
-        QNetworkRequest reqView(viewUrl);
-        QNetworkReply *replyView = m_d->nam->get(reqView);
-        connect(replyView, &QNetworkReply::finished, this, [this, replyView]() {
-            replyView->deleteLater();
-            if (replyView->error() != QNetworkReply::NoError) {
-                m_d->regionIndex++;
-                runNextRegionInpainting();
-                return;
-            }
-            QImage result;
-            result.loadFromData(replyView->readAll());
-            if (!result.isNull() && result.size() == m_d->regionCurrentImage.size()) {
-                QImage maskImg = getMaskAsQImage(m_d->viewManager->image(), m_d->viewManager, m_d->regionEntries.at(m_d->regionIndex).maskSource);
-                if (!maskImg.isNull())
-                    compositeWithMask(m_d->regionCurrentImage, result.convertToFormat(QImage::Format_ARGB32), maskImg);
-            }
-            m_d->regionPromptId.clear();
-            m_d->regionIndex++;
-            runNextRegionInpainting();
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotInpaint()
-{
-    if (!m_d->viewManager || !m_d->viewManager->image()) {
-        m_d->labelStatus->setText(i18n("Open a document first."));
-        return;
-    }
-    KisSelectionSP sel = m_d->viewManager->selection();
-    if (!sel || !sel->pixelSelection()) {
-        m_d->labelStatus->setText(i18n("Make a selection to inpaint."));
-        return;
-    }
-    QRect rect = sel->pixelSelection()->selectedExactRect();
-    if (rect.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Selection is empty. Draw a selection first."));
-        return;
-    }
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL first."));
-        return;
-    }
-    QUrl baseUrl(urlStr);
-    if (!baseUrl.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
-    KisImageSP image = m_d->viewManager->image();
-    m_d->inpaintCurrentImage = getCanvasAsQImage(image);
-    if (m_d->inpaintCurrentImage.isNull()) {
-        m_d->labelStatus->setText(i18n("Could not export canvas."));
-        return;
-    }
-    m_d->inpaintCurrentImage = m_d->inpaintCurrentImage.convertToFormat(QImage::Format_ARGB32);
-    QImage maskImg = getMaskAsQImage(image, m_d->viewManager, QString("selection"));
-    if (maskImg.isNull()) {
-        m_d->labelStatus->setText(i18n("Could not get selection mask."));
-        return;
-    }
-    // Mask for ComfyUI VAEEncodeForInpaint: white = area to inpaint
-    QImage maskPng(maskImg.size(), QImage::Format_ARGB32);
-    for (int y = 0; y < maskImg.height(); y++)
-        for (int x = 0; x < maskImg.width(); x++) {
-            int g = qGray(maskImg.pixel(x, y));
-            maskPng.setPixel(x, y, qRgba(255, 255, 255, 255 - g));
-        }
-    QTemporaryFile *tmpImage = new QTemporaryFile(this);
-    tmpImage->setFileTemplate(tmpImage->fileTemplate() + ".png");
-    tmpImage->open();
-    tmpImage->close();
-    if (!m_d->inpaintCurrentImage.save(tmpImage->fileName())) {
-        m_d->labelStatus->setText(i18n("Could not save temp image."));
-        return;
-    }
-    QTemporaryFile *tmpMask = new QTemporaryFile(this);
-    tmpMask->setFileTemplate(tmpMask->fileTemplate() + ".png");
-    tmpMask->open();
-    tmpMask->close();
-    if (!maskPng.save(tmpMask->fileName())) {
-        m_d->labelStatus->setText(i18n("Could not save temp mask."));
-        return;
-    }
-    m_d->btnInpaint->setEnabled(false);
-    m_d->progressBar->setValue(0);
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") baseUrl.setPath("/upload/image");
-    else if (!path.endsWith('/')) baseUrl.setPath(path + "/upload/image");
-    else baseUrl.setPath(path + "upload/image");
-    tmpImage->open();
-    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart imagePart;
-    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-        QVariant("form-data; name=\"image\"; filename=\"krita_inpaint.png\""));
-    imagePart.setBodyDevice(tmpImage);
-    tmpImage->setParent(multiPart);
-    multiPart->append(imagePart);
-    QNetworkRequest req(baseUrl);
-    QNetworkReply *reply = m_d->nam->post(req, multiPart);
-    multiPart->setParent(reply);
-    m_d->labelStatus->setText(i18n("Uploading image…"));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, tmpMask, baseUrl]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Upload error: %1", reply->errorString()));
-            m_d->btnInpaint->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-        m_d->inpaintUploadedImageName = obj.value("name").toString();
-        m_d->inpaintUploadedImageSubfolder = obj.value("subfolder").toString();
-        if (m_d->inpaintUploadedImageName.isEmpty()) {
-            m_d->labelStatus->setText(i18n("Server did not return image name."));
-            m_d->btnInpaint->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QUrl uploadUrl(m_d->editServerUrl->text().trimmed());
-        QString up = uploadUrl.path();
-        if (up.isEmpty() || up == "/") uploadUrl.setPath("/upload/image");
-        else if (!up.endsWith('/')) uploadUrl.setPath(up + "/upload/image");
-        else uploadUrl.setPath(up + "upload/image");
-        tmpMask->open();
-        QHttpMultiPart *maskPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-        QHttpPart part;
-        part.setHeader(QNetworkRequest::ContentDispositionHeader,
-            QVariant("form-data; name=\"image\"; filename=\"krita_inpaint_mask.png\""));
-        part.setBodyDevice(tmpMask);
-        tmpMask->setParent(maskPart);
-        maskPart->append(part);
-        QNetworkRequest reqMask(uploadUrl);
-        QNetworkReply *replyMask = m_d->nam->post(reqMask, maskPart);
-        maskPart->setParent(replyMask);
-        m_d->labelStatus->setText(i18n("Uploading mask…"));
-        connect(replyMask, &QNetworkReply::finished, this, [this, replyMask]() {
-            replyMask->deleteLater();
-            if (replyMask->error() != QNetworkReply::NoError) {
-                m_d->labelStatus->setText(i18n("Mask upload error: %1", replyMask->errorString()));
-                m_d->btnInpaint->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            QJsonObject obj = QJsonDocument::fromJson(replyMask->readAll()).object();
-            m_d->inpaintUploadedMaskName = obj.value("name").toString();
-            m_d->inpaintUploadedMaskSubfolder = obj.value("subfolder").toString();
-            if (m_d->inpaintUploadedMaskName.isEmpty()) {
-                m_d->labelStatus->setText(i18n("Server did not return mask name."));
-                m_d->btnInpaint->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            QJsonParseError err;
-            QJsonObject workflow = QJsonDocument::fromJson(QByteArray(inpaintingWorkflowTemplate), &err).object();
-            if (err.error != QJsonParseError::NoError) {
-                m_d->labelStatus->setText(i18n("Inpainting workflow error."));
-                m_d->btnInpaint->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            QJsonObject n1 = workflow["1"].toObject();
-            QJsonObject i1 = n1["inputs"].toObject();
-            i1["image"] = m_d->inpaintUploadedImageName;
-            n1["inputs"] = i1;
-            workflow["1"] = n1;
-            QJsonObject n2 = workflow["2"].toObject();
-            QJsonObject i2 = n2["inputs"].toObject();
-            i2["image"] = m_d->inpaintUploadedMaskName;
-            n2["inputs"] = i2;
-            workflow["2"] = n2;
-            QJsonObject n4 = workflow["4"].toObject();
-            QJsonObject i4 = n4["inputs"].toObject();
-            i4["ckpt_name"] = m_d->comboCheckpoint->currentText().trimmed().isEmpty()
-                ? QString("v1-5-pruned-emaonly.safetensors") : m_d->comboCheckpoint->currentText().trimmed();
-            n4["inputs"] = i4;
-            workflow["4"] = n4;
-            QJsonObject n5 = workflow["5"].toObject();
-            QJsonObject i5 = n5["inputs"].toObject();
-            i5["text"] = m_d->editPrompt->toPlainText().trimmed().isEmpty()
-                ? QString("a beautiful painting") : m_d->editPrompt->toPlainText().trimmed();
-            n5["inputs"] = i5;
-            workflow["5"] = n5;
-            QJsonObject n6 = workflow["6"].toObject();
-            QJsonObject i6 = n6["inputs"].toObject();
-            i6["text"] = m_d->editNegative->toPlainText().trimmed();
-            n6["inputs"] = i6;
-            workflow["6"] = n6;
-            QJsonObject n8 = workflow["8"].toObject();
-            QJsonObject i8 = n8["inputs"].toObject();
-            i8["seed"] = static_cast<double>(QRandomGenerator::global()->bounded(2147483647));
-            n8["inputs"] = i8;
-            workflow["8"] = n8;
-            QJsonObject payload;
-            payload["prompt"] = workflow;
-            QUrl promptUrl(m_d->editServerUrl->text().trimmed());
-            QString p = promptUrl.path();
-            if (p.isEmpty() || p == "/") promptUrl.setPath("/prompt");
-            else if (!p.endsWith('/')) promptUrl.setPath(p + "/prompt");
-            else promptUrl.setPath(p + "prompt");
-            QNetworkRequest reqPrompt(promptUrl);
-            reqPrompt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-            QNetworkReply *replyPrompt = m_d->nam->post(reqPrompt, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-            connect(replyPrompt, &QNetworkReply::finished, this, [this, replyPrompt]() {
-                replyPrompt->deleteLater();
-                if (replyPrompt->error() != QNetworkReply::NoError) {
-                    m_d->labelStatus->setText(i18n("Submit error: %1", replyPrompt->errorString()));
-                    m_d->btnInpaint->setEnabled(true);
-                    m_d->progressBar->setValue(0);
-                    return;
-                }
-                QJsonObject obj = QJsonDocument::fromJson(replyPrompt->readAll()).object();
-                if (obj.contains("error")) {
-                    m_d->labelStatus->setText(i18n("Server: %1", obj["error"].toString()));
-                    m_d->btnInpaint->setEnabled(true);
-                    m_d->progressBar->setValue(0);
-                    return;
-                }
-                m_d->inpaintPromptId = obj["prompt_id"].toString();
-                if (m_d->inpaintPromptId.isEmpty()) {
-                    m_d->btnInpaint->setEnabled(true);
-                    m_d->progressBar->setValue(0);
-                    return;
-                }
-                m_d->inpaintPollCount = 0;
-                m_d->labelStatus->setText(i18n("Inpainting…"));
-                m_d->inpaintPollTimer->start(1000);
-            });
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotInpaintPoll()
-{
-    if (m_d->inpaintPromptId.isEmpty()) return;
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->inpaintPromptId.clear();
-        m_d->btnInpaint->setEnabled(true);
-        m_d->progressBar->setValue(0);
-        return;
-    }
-    QUrl baseUrl(urlStr);
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") baseUrl.setPath("/history/" + m_d->inpaintPromptId);
-    else if (!path.endsWith('/')) baseUrl.setPath(path + "/history/" + m_d->inpaintPromptId);
-    else baseUrl.setPath(path + "history/" + m_d->inpaintPromptId);
-    QNetworkRequest req(baseUrl);
-    QNetworkReply *reply = m_d->nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("History error: %1", reply->errorString()));
-            m_d->inpaintPromptId.clear();
-            m_d->btnInpaint->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->inpaintPromptId).toObject();
-        QJsonObject outputs = hist.value("outputs").toObject();
-        if (outputs.isEmpty()) {
-            m_d->inpaintPollCount++;
-            if (m_d->inpaintPollCount >= Private::inpaintMaxPollCount) {
-                m_d->labelStatus->setText(i18n("Inpaint timed out."));
-                m_d->inpaintPromptId.clear();
-                m_d->btnInpaint->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            m_d->inpaintPollTimer->start(1000);
-            return;
-        }
-        QString filename, subfolder;
-        for (const QString &nodeId : outputs.keys()) {
-            QJsonArray images = outputs.value(nodeId).toObject().value("images").toArray();
-            if (!images.isEmpty()) {
-                QJsonObject img = images.at(0).toObject();
-                filename = img.value("filename").toString();
-                subfolder = img.value("subfolder").toString();
-                break;
-            }
-        }
-        if (filename.isEmpty()) {
-            m_d->inpaintPromptId.clear();
-            m_d->btnInpaint->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QUrl viewUrl(m_d->editServerUrl->text().trimmed());
-        QString vp = viewUrl.path();
-        if (!vp.endsWith('/')) vp += '/';
-        vp += "view";
-        viewUrl.setPath(vp);
-        QUrlQuery q;
-        q.addQueryItem("filename", filename);
-        if (!subfolder.isEmpty()) q.addQueryItem("subfolder", subfolder);
-        viewUrl.setQuery(q);
-        QNetworkRequest reqView(viewUrl);
-        QNetworkReply *replyView = m_d->nam->get(reqView);
-        connect(replyView, &QNetworkReply::finished, this, [this, replyView]() {
-            replyView->deleteLater();
-            if (replyView->error() != QNetworkReply::NoError) {
-                m_d->inpaintPromptId.clear();
-                m_d->btnInpaint->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            QImage result;
-            result.loadFromData(replyView->readAll());
-            KisImageSP image = m_d->viewManager->image();
-            QImage maskImg = getMaskAsQImage(image, m_d->viewManager, QString("selection"));
-            if (!result.isNull() && result.size() == m_d->inpaintCurrentImage.size() && !maskImg.isNull()) {
-                compositeWithMask(m_d->inpaintCurrentImage, result.convertToFormat(QImage::Format_ARGB32), maskImg);
-            } else if (!result.isNull()) {
-                m_d->inpaintCurrentImage = result.convertToFormat(QImage::Format_ARGB32);
-            }
-            QTemporaryFile tmp;
-            tmp.setFileTemplate(tmp.fileTemplate() + ".png");
-            if (!tmp.open() || !m_d->inpaintCurrentImage.save(tmp.fileName())) {
-                m_d->inpaintPromptId.clear();
-                m_d->btnInpaint->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            tmp.close();
-            if (m_d->viewManager->imageManager()) {
-                m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
-                if (m_d->canvas) m_d->canvas->updateCanvas();
-            }
-            m_d->labelStatus->setText(i18n("Inpaint done. Result added as new layer."));
-            m_d->progressBar->setValue(100);
-            m_d->inpaintPromptId.clear();
-            m_d->btnInpaint->setEnabled(true);
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotUpscale()
-{
-    if (!m_d->viewManager || !m_d->viewManager->image()) {
-        m_d->labelStatus->setText(i18n("Open a document first."));
-        return;
-    }
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->labelStatus->setText(i18n("Enter a server URL first."));
-        return;
-    }
-    QUrl baseUrl(urlStr);
-    if (!baseUrl.isValid()) {
-        m_d->labelStatus->setText(i18n("Invalid URL."));
-        return;
-    }
-    KisImageSP image = m_d->viewManager->image();
-    QImage canvasImg = getCanvasAsQImage(image);
-    if (canvasImg.isNull()) {
-        m_d->labelStatus->setText(i18n("Could not export canvas."));
-        return;
-    }
-    int w = canvasImg.width();
-    int h = canvasImg.height();
-    int w2 = w * 2;
-    int h2 = h * 2;
-    QTemporaryFile *tmpImage = new QTemporaryFile(this);
-    tmpImage->setFileTemplate(tmpImage->fileTemplate() + ".png");
-    tmpImage->open();
-    tmpImage->close();
-    if (!canvasImg.save(tmpImage->fileName())) {
-        m_d->labelStatus->setText(i18n("Could not save temp image."));
-        return;
-    }
-    m_d->btnUpscale->setEnabled(false);
-    m_d->progressBar->setValue(0);
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") baseUrl.setPath("/upload/image");
-    else if (!path.endsWith('/')) baseUrl.setPath(path + "/upload/image");
-    else baseUrl.setPath(path + "upload/image");
-    tmpImage->open();
-    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart imagePart;
-    imagePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-        QVariant("form-data; name=\"image\"; filename=\"krita_upscale.png\""));
-    imagePart.setBodyDevice(tmpImage);
-    tmpImage->setParent(multiPart);
-    multiPart->append(imagePart);
-    QNetworkRequest req(baseUrl);
-    QNetworkReply *reply = m_d->nam->post(req, multiPart);
-    multiPart->setParent(reply);
-    m_d->labelStatus->setText(i18n("Uploading for upscale…"));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, w2, h2]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("Upload error: %1", reply->errorString()));
-            m_d->btnUpscale->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-        m_d->upscaleUploadedImageName = obj.value("name").toString();
-        if (m_d->upscaleUploadedImageName.isEmpty()) {
-            m_d->labelStatus->setText(i18n("Server did not return image name."));
-            m_d->btnUpscale->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QJsonParseError err;
-        QJsonObject workflow = QJsonDocument::fromJson(QByteArray(upscaleWorkflowTemplate), &err).object();
-        if (err.error != QJsonParseError::NoError) {
-            m_d->labelStatus->setText(i18n("Upscale workflow error."));
-            m_d->btnUpscale->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QJsonObject n1 = workflow["1"].toObject();
-        QJsonObject i1 = n1["inputs"].toObject();
-        i1["image"] = m_d->upscaleUploadedImageName;
-        n1["inputs"] = i1;
-        workflow["1"] = n1;
-        QJsonObject n2 = workflow["2"].toObject();
-        QJsonObject i2 = n2["inputs"].toObject();
-        i2["width"] = w2;
-        i2["height"] = h2;
-        n2["inputs"] = i2;
-        workflow["2"] = n2;
-        QJsonObject payload;
-        payload["prompt"] = workflow;
-        QUrl promptUrl(m_d->editServerUrl->text().trimmed());
-        QString p = promptUrl.path();
-        if (p.isEmpty() || p == "/") promptUrl.setPath("/prompt");
-        else if (!p.endsWith('/')) promptUrl.setPath(p + "/prompt");
-        else promptUrl.setPath(p + "prompt");
-        QNetworkRequest reqPrompt(promptUrl);
-        reqPrompt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *replyPrompt = m_d->nam->post(reqPrompt, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        connect(replyPrompt, &QNetworkReply::finished, this, [this, replyPrompt]() {
-            replyPrompt->deleteLater();
-            if (replyPrompt->error() != QNetworkReply::NoError) {
-                m_d->labelStatus->setText(i18n("Submit error: %1", replyPrompt->errorString()));
-                m_d->btnUpscale->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            QJsonObject obj = QJsonDocument::fromJson(replyPrompt->readAll()).object();
-            if (obj.contains("error")) {
-                m_d->labelStatus->setText(i18n("Server: %1", obj["error"].toString()));
-                m_d->btnUpscale->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            m_d->upscalePromptId = obj["prompt_id"].toString();
-            if (m_d->upscalePromptId.isEmpty()) {
-                m_d->btnUpscale->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            m_d->upscalePollCount = 0;
-            m_d->labelStatus->setText(i18n("Upscaling…"));
-            m_d->upscalePollTimer->start(1000);
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotUpscalePoll()
-{
-    if (m_d->upscalePromptId.isEmpty()) return;
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) {
-        m_d->upscalePromptId.clear();
-        m_d->btnUpscale->setEnabled(true);
-        m_d->progressBar->setValue(0);
-        return;
-    }
-    QUrl baseUrl(urlStr);
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") baseUrl.setPath("/history/" + m_d->upscalePromptId);
-    else if (!path.endsWith('/')) baseUrl.setPath(path + "/history/" + m_d->upscalePromptId);
-    else baseUrl.setPath(path + "history/" + m_d->upscalePromptId);
-    QNetworkRequest req(baseUrl);
-    QNetworkReply *reply = m_d->nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_d->labelStatus->setText(i18n("History error: %1", reply->errorString()));
-            m_d->upscalePromptId.clear();
-            m_d->btnUpscale->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->upscalePromptId).toObject();
-        QJsonObject outputs = hist.value("outputs").toObject();
-        if (outputs.isEmpty()) {
-            m_d->upscalePollCount++;
-            if (m_d->upscalePollCount >= Private::upscaleMaxPollCount) {
-                m_d->labelStatus->setText(i18n("Upscale timed out."));
-                m_d->upscalePromptId.clear();
-                m_d->btnUpscale->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            m_d->upscalePollTimer->start(1000);
-            return;
-        }
-        QString filename, subfolder;
-        for (const QString &nodeId : outputs.keys()) {
-            QJsonArray images = outputs.value(nodeId).toObject().value("images").toArray();
-            if (!images.isEmpty()) {
-                QJsonObject img = images.at(0).toObject();
-                filename = img.value("filename").toString();
-                subfolder = img.value("subfolder").toString();
-                break;
-            }
-        }
-        if (filename.isEmpty()) {
-            m_d->upscalePromptId.clear();
-            m_d->btnUpscale->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
-        }
-        QUrl viewUrl(m_d->editServerUrl->text().trimmed());
-        QString vp = viewUrl.path();
-        if (!vp.endsWith('/')) vp += '/';
-        vp += "view";
-        viewUrl.setPath(vp);
-        QUrlQuery q;
-        q.addQueryItem("filename", filename);
-        if (!subfolder.isEmpty()) q.addQueryItem("subfolder", subfolder);
-        viewUrl.setQuery(q);
-        QNetworkRequest reqView(viewUrl);
-        QNetworkReply *replyView = m_d->nam->get(reqView);
-        connect(replyView, &QNetworkReply::finished, this, [this, replyView]() {
-            replyView->deleteLater();
-            if (replyView->error() != QNetworkReply::NoError) {
-                m_d->upscalePromptId.clear();
-                m_d->btnUpscale->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            QTemporaryFile tmp;
-            tmp.setFileTemplate(tmp.fileTemplate() + ".png");
-            if (!tmp.open()) {
-                m_d->upscalePromptId.clear();
-                m_d->btnUpscale->setEnabled(true);
-                m_d->progressBar->setValue(0);
-                return;
-            }
-            tmp.write(replyView->readAll());
-            tmp.close();
-            if (m_d->viewManager->imageManager()) {
-                m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
-                if (m_d->canvas) m_d->canvas->updateCanvas();
-            }
-            m_d->labelStatus->setText(i18n("Upscale done. Result added as new layer."));
-            m_d->progressBar->setValue(100);
-            m_d->upscalePromptId.clear();
-            m_d->btnUpscale->setEnabled(true);
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotGenerateAnimation()
-{
-    m_d->spinBatchCount->setValue(m_d->spinAnimationFrames->value());
-    m_d->checkFixedSeed->setChecked(true);
-    slotGenerate();
-}
-
-void ComfyUIRemoteDock::slotConfigureHelp()
-{
-    if (!m_d->settingsDialog) {
-        QDialog *dlg = new QDialog(this);
-        dlg->setWindowTitle(i18n("AI Image (ComfyUI) Settings"));
-        dlg->resize(520, 420);
-        m_d->settingsDialog = dlg;
-
-        QVBoxLayout *mainLayout = new QVBoxLayout(dlg);
-        QTabWidget *tabs = new QTabWidget(dlg);
-        mainLayout->addWidget(tabs);
-
-        // Connection tab
-        QWidget *connPage = new QWidget(dlg);
-        QVBoxLayout *connLayout = new QVBoxLayout(connPage);
-
-        QFormLayout *connForm = new QFormLayout();
-        connForm->addRow(i18n("ComfyUI server URL:"), m_d->editServerUrl);
-        connLayout->addLayout(connForm);
-
-        QHBoxLayout *connButtons = new QHBoxLayout();
-        m_d->btnTest = new QPushButton(i18n("Test connection"), connPage);
-        m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
-        connect(m_d->btnTest, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotTestConnection);
-
-        QPushButton *docsButton = new QPushButton(i18n("Open documentation"), connPage);
-        docsButton->setIcon(KisIconUtils::loadIcon("help-contents"));
-        connect(docsButton, &QPushButton::clicked, this, []() {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://docs.interstice.cloud")));
-        });
-
-        connButtons->addWidget(m_d->btnTest);
-        connButtons->addWidget(docsButton);
-        connButtons->addStretch();
-        connLayout->addLayout(connButtons);
-        connLayout->addStretch();
-
-        tabs->addTab(connPage, i18n("Connection"));
-
-        // Workflow tab
-        QWidget *workflowPage = new QWidget(dlg);
-        QVBoxLayout *workflowLayout = new QVBoxLayout(workflowPage);
-        workflowLayout->addWidget(new QLabel(i18n("Custom workflow (optional, API JSON):"), workflowPage));
-        workflowLayout->addWidget(m_d->checkUseReferenceImage);
-        workflowLayout->addWidget(m_d->editCustomWorkflow);
-        workflowLayout->addWidget(m_d->btnLoadWorkflow);
-        workflowLayout->addStretch();
-
-        tabs->addTab(workflowPage, i18n("Workflow"));
-    }
-
-    if (m_d->settingsDialog) {
-        m_d->settingsDialog->show();
-        m_d->settingsDialog->raise();
-        m_d->settingsDialog->activateWindow();
-    }
-}
-
-void ComfyUIRemoteDock::slotLiveTick()
-{
-    if (!m_d->checkLiveMode->isChecked() || !m_d->viewManager || !m_d->viewManager->image()) return;
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) { m_d->liveTimer->start(30000); return; }
-    KisImageSP image = m_d->viewManager->image();
-    QImage canvasImg = getCanvasAsQImage(image);
-    if (canvasImg.isNull()) { m_d->liveTimer->start(30000); return; }
-    QTemporaryFile *tmp = new QTemporaryFile(this);
-    tmp->setFileTemplate(tmp->fileTemplate() + ".png");
-    tmp->open();
-    tmp->close();
-    if (!canvasImg.save(tmp->fileName())) { m_d->liveTimer->start(30000); return; }
-    QUrl uploadUrl(m_d->editServerUrl->text().trimmed());
-    QString up = uploadUrl.path();
-    if (up.isEmpty() || up == "/") uploadUrl.setPath("/upload/image");
-    else if (!up.endsWith('/')) uploadUrl.setPath(up + "/upload/image");
-    else uploadUrl.setPath(up + "upload/image");
-    tmp->open();
-    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart part;
-    part.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant("form-data; name=\"image\"; filename=\"krita_live.png\""));
-    part.setBodyDevice(tmp);
-    tmp->setParent(multiPart);
-    multiPart->append(part);
-    QNetworkRequest req(uploadUrl);
-    QNetworkReply *reply = m_d->nam->post(req, multiPart);
-    multiPart->setParent(reply);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (!m_d->checkLiveMode->isChecked() || reply->error() != QNetworkReply::NoError) {
-            if (m_d->checkLiveMode->isChecked()) m_d->liveTimer->start(30000);
-            return;
-        }
-        m_d->liveUploadedImageName = QJsonDocument::fromJson(reply->readAll()).object().value("name").toString();
-        if (m_d->liveUploadedImageName.isEmpty()) { m_d->liveTimer->start(30000); return; }
-        QJsonParseError err;
-        QJsonObject workflow = QJsonDocument::fromJson(QByteArray(img2imgWorkflowTemplate), &err).object();
-        if (err.error != QJsonParseError::NoError) { m_d->liveTimer->start(30000); return; }
-        QJsonObject n1 = workflow["1"].toObject();
-        QJsonObject i1 = n1["inputs"].toObject();
-        i1["image"] = m_d->liveUploadedImageName;
-        n1["inputs"] = i1;
-        workflow["1"] = n1;
-        QJsonObject n3 = workflow["3"].toObject();
-        QJsonObject i3 = n3["inputs"].toObject();
-        i3["ckpt_name"] = m_d->comboCheckpoint->currentText().trimmed().isEmpty() ? QString("v1-5-pruned-emaonly.safetensors") : m_d->comboCheckpoint->currentText().trimmed();
-        n3["inputs"] = i3;
-        workflow["3"] = n3;
-        QJsonObject n4 = workflow["4"].toObject();
-        QJsonObject i4 = n4["inputs"].toObject();
-        i4["text"] = m_d->editPrompt->toPlainText().trimmed().isEmpty() ? QString("a beautiful painting") : m_d->editPrompt->toPlainText().trimmed();
-        n4["inputs"] = i4;
-        workflow["4"] = n4;
-        QJsonObject n5 = workflow["5"].toObject();
-        QJsonObject i5 = n5["inputs"].toObject();
-        i5["text"] = m_d->editNegative->toPlainText().trimmed();
-        n5["inputs"] = i5;
-        workflow["5"] = n5;
-        QJsonObject n6 = workflow["6"].toObject();
-        QJsonObject i6 = n6["inputs"].toObject();
-        i6["seed"] = static_cast<double>(QRandomGenerator::global()->bounded(2147483647));
-        n6["inputs"] = i6;
-        workflow["6"] = n6;
-        QJsonObject payload;
-        payload["prompt"] = workflow;
-        QUrl promptUrl(m_d->editServerUrl->text().trimmed());
-        QString p = promptUrl.path();
-        if (p.isEmpty() || p == "/") promptUrl.setPath("/prompt");
-        else if (!p.endsWith('/')) promptUrl.setPath(p + "/prompt");
-        else promptUrl.setPath(p + "prompt");
-        QNetworkRequest reqP(promptUrl);
-        reqP.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *replyP = m_d->nam->post(reqP, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        connect(replyP, &QNetworkReply::finished, this, [this, replyP]() {
-            replyP->deleteLater();
-            if (!m_d->checkLiveMode->isChecked() || replyP->error() != QNetworkReply::NoError) {
-                if (m_d->checkLiveMode->isChecked()) m_d->liveTimer->start(30000);
-                return;
-            }
-            m_d->livePromptId = QJsonDocument::fromJson(replyP->readAll()).object().value("prompt_id").toString();
-            if (m_d->livePromptId.isEmpty()) { m_d->liveTimer->start(30000); return; }
-            m_d->livePollCount = 0;
-            m_d->livePollTimer->start(1000);
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotLivePoll()
-{
-    if (m_d->livePromptId.isEmpty() || !m_d->checkLiveMode->isChecked()) return;
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) { m_d->livePromptId.clear(); m_d->liveTimer->start(30000); return; }
-    QUrl baseUrl(urlStr);
-    QString path = baseUrl.path();
-    if (path.isEmpty() || path == "/") baseUrl.setPath("/history/" + m_d->livePromptId);
-    else if (!path.endsWith('/')) baseUrl.setPath(path + "/history/" + m_d->livePromptId);
-    else baseUrl.setPath(path + "history/" + m_d->livePromptId);
-    QNetworkRequest req(baseUrl);
-    QNetworkReply *reply = m_d->nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (!m_d->checkLiveMode->isChecked()) { m_d->livePromptId.clear(); return; }
-        if (reply->error() != QNetworkReply::NoError) { m_d->livePromptId.clear(); m_d->liveTimer->start(30000); return; }
-        QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->livePromptId).toObject();
-        QJsonObject outputs = hist.value("outputs").toObject();
-        if (outputs.isEmpty()) {
-            m_d->livePollCount++;
-            if (m_d->livePollCount >= Private::liveMaxPollCount) { m_d->livePromptId.clear(); m_d->liveTimer->start(30000); return; }
-            m_d->livePollTimer->start(1000);
-            return;
-        }
-        QString filename, subfolder;
-        for (const QString &nodeId : outputs.keys()) {
-            QJsonArray images = outputs.value(nodeId).toObject().value("images").toArray();
-            if (!images.isEmpty()) {
-                QJsonObject img = images.at(0).toObject();
-                filename = img.value("filename").toString();
-                subfolder = img.value("subfolder").toString();
-                break;
-            }
-        }
-        if (filename.isEmpty()) { m_d->livePromptId.clear(); m_d->liveTimer->start(30000); return; }
-        QUrl viewUrl(m_d->editServerUrl->text().trimmed());
-        QString vp = viewUrl.path();
-        if (!vp.endsWith('/')) vp += '/';
-        viewUrl.setPath(vp + "view");
-        QUrlQuery q;
-        q.addQueryItem("filename", filename);
-        if (!subfolder.isEmpty()) q.addQueryItem("subfolder", subfolder);
-        viewUrl.setQuery(q);
-        QNetworkRequest reqV(viewUrl);
-        QNetworkReply *replyV = m_d->nam->get(reqV);
-        connect(replyV, &QNetworkReply::finished, this, [this, replyV]() {
-            replyV->deleteLater();
-            if (!m_d->checkLiveMode->isChecked()) { m_d->livePromptId.clear(); return; }
-            if (replyV->error() != QNetworkReply::NoError) { m_d->livePromptId.clear(); m_d->liveTimer->start(30000); return; }
-            QTemporaryFile tmp;
-            tmp.setFileTemplate(tmp.fileTemplate() + ".png");
-            if (tmp.open()) {
-                tmp.write(replyV->readAll());
-                tmp.close();
-                if (m_d->viewManager->imageManager()) {
-                    m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
-                    if (m_d->canvas) m_d->canvas->updateCanvas();
-                }
-            }
-            m_d->livePromptId.clear();
-            if (m_d->checkLiveMode->isChecked()) m_d->liveTimer->start(30000);
-        });
-    });
-}
-
-void ComfyUIRemoteDock::slotHistoryReRun()
-{
-    int row = m_d->listHistory->currentRow();
-    if (row < 0 || row >= m_d->historyEntries.size()) return;
-    const Private::HistoryEntry &e = m_d->historyEntries.at(row);
-    m_d->editPrompt->setPlainText(e.prompt);
-    m_d->editNegative->setPlainText(e.negative);
-    m_d->spinWidth->setValue(e.width);
-    m_d->spinHeight->setValue(e.height);
-    m_d->spinSteps->setValue(e.steps);
-    m_d->spinCfg->setValue(e.cfg);
-    m_d->comboSampler->setCurrentText(e.samplerName.isEmpty() ? QString("euler") : e.samplerName);
-    m_d->checkFixedSeed->setChecked(true);
-    m_d->spinSeed->setValue(static_cast<int>(e.seed));
-    int i = m_d->comboCheckpoint->findText(e.checkpoint);
-    if (i >= 0) m_d->comboCheckpoint->setCurrentIndex(i);
-    else m_d->comboCheckpoint->setCurrentText(e.checkpoint);
-    slotGenerate();
-}
-
-void ComfyUIRemoteDock::slotCancelQueue()
-{
-    m_d->pollTimer->stop();
-    for (const QString &id : m_d->jobQueue)
-        m_d->pendingHistoryByPromptId.remove(id);
-    if (!m_d->currentPromptId.isEmpty())
-        m_d->pendingHistoryByPromptId.remove(m_d->currentPromptId);
-    m_d->jobQueue.clear();
-    m_d->currentPromptId.clear();
-    m_d->progressBar->setValue(0);
-    m_d->btnGenerate->setEnabled(true);
-    m_d->btnCancelQueue->setEnabled(false);
-    m_d->labelStatus->setText(i18n("Cancelled."));
-    QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) return;
-    QUrl url(urlStr);
-    if (!url.isValid()) return;
-    QString path = url.path();
-    if (path.isEmpty() || path == "/") url.setPath("/interrupt");
-    else if (!path.endsWith('/')) url.setPath(path + "/interrupt");
-    else url.setPath(path + "interrupt");
-    QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    m_d->nam->post(req, QByteArray("{}"));
-}

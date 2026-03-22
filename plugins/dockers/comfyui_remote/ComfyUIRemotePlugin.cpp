@@ -1,9 +1,13 @@
 /*
  * SPDX-FileCopyrightText: 2025 Krita Project
  * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * §13.30 / §13.40: This plugin requires Krita 5.2.0 or newer (documented minimum;
+ * the reference Python implementation does not enforce this at runtime).
  */
 
 #include "ComfyUIRemotePlugin.h"
+#include "ComfyUIUtils.h"
 #include <kpluginfactory.h>
 #include <KoDockFactoryBase.h>
 #include <KoDockRegistry.h>
@@ -36,6 +40,7 @@ public:
 ComfyUIRemotePlugin::ComfyUIRemotePlugin(QObject *parent, const QVariantList &)
     : QObject(parent)
 {
+    ComfyUIUtils::checkPluginInstallationPath();  // §13.165: warn if not in expected location
     KoDockRegistry::instance()->add(new ComfyUIRemoteDockFactory());
 }
 
