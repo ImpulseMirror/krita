@@ -120,6 +120,17 @@ else:
 
 buildEnvironment['KRITA_UNSTABLE_PACKAGE_SUFFIX'] = unstablePackageSuffix
 
+# Host tools from the Craft/_install tree (msgfmt, etc.) link against libs in _install/lib.
+# KDE CI sets LD_LIBRARY_PATH; standalone runs need the same or pofiles / gettext steps fail.
+_install_lib = os.path.join(depsPath, 'lib')
+if os.path.isdir(_install_lib):
+    _ld = buildEnvironment.get('LD_LIBRARY_PATH', '')
+    buildEnvironment['LD_LIBRARY_PATH'] = _install_lib + (os.pathsep + _ld if _ld else '')
+_install_bin = os.path.join(depsPath, 'bin')
+if os.path.isdir(_install_bin):
+    _path = buildEnvironment.get('PATH', '')
+    buildEnvironment['PATH'] = _install_bin + os.pathsep + _path
+
 # ECMAndroidDeployQt's specifydependencies.cmake runs readelf on every MODULE_LIBRARY path
 # in module-plugins. The create-apk custom target does not depend on those plugin targets,
 # so "cmake --build . --target create-apk" alone can run before plugin .so files exist.
