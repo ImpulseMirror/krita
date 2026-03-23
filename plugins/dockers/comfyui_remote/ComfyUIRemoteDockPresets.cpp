@@ -29,7 +29,10 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
     const int firstCustom = firstCustomPresetIndex();
     m_d->btnDeletePreset->setEnabled(index >= firstCustom);
     updateNegativePromptAlertVisibility();  // §13.143: update alert when style changes
-    if (index <= 0) return; // None
+    if (index <= 0) {
+        persistDocumentDefaultsToSettings();  // §13.194
+        return; // None
+    }
     if (index < firstCustom) {
         switch (index) {
         case 1: // Portrait
@@ -60,6 +63,7 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
             break;
         }
         m_d->ksamplerScheduler = QStringLiteral("normal");
+        persistDocumentDefaultsToSettings();  // §13.194
         return;
     }
     // Custom preset: load from config
@@ -81,6 +85,7 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
         if (i >= 0) m_d->comboCheckpoint->setCurrentIndex(i);
         else m_d->comboCheckpoint->setCurrentText(ckpt);
     }
+    persistDocumentDefaultsToSettings();  // §13.194
 }
 
 void ComfyUIRemoteDock::slotSaveAsPreset()

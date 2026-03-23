@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ActionCollection version="2" name="Krita">
+  <Actions category="Krita">
+    <text>AI Image Generation (ComfyUI)</text>
+    <!-- §10.1 / §13.151: activationFlags 0 = settings only; 10000 = other actions (Krita script actions) -->
+    <Action name="ai_diffusion_settings">
+      <icon></icon>
+      <text>Show Settings</text>
+      <whatsThis></whatsThis>
+      <toolTip>Open Configure Image Diffusion</toolTip>
+      <iconText>Show Settings</iconText>
+      <activationFlags>0</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_generate">
+      <icon></icon>
+      <text>Generate image</text>
+      <whatsThis></whatsThis>
+      <toolTip>Generate image</toolTip>
+      <iconText>Generate image</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_cancel">
+      <icon></icon>
+      <text>Cancel current job</text>
+      <whatsThis></whatsThis>
+      <toolTip>Cancel current job</toolTip>
+      <iconText>Cancel current job</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_cancel_queued">
+      <icon></icon>
+      <text>Cancel queued jobs</text>
+      <whatsThis></whatsThis>
+      <toolTip>Cancel queued jobs</toolTip>
+      <iconText>Cancel queued jobs</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_cancel_all">
+      <icon></icon>
+      <text>Cancel all jobs</text>
+      <whatsThis></whatsThis>
+      <toolTip>Cancel all jobs</toolTip>
+      <iconText>Cancel all jobs</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_toggle_preview">
+      <icon></icon>
+      <text>Toggle preview</text>
+      <whatsThis></whatsThis>
+      <toolTip>Toggle preview layer visibility</toolTip>
+      <iconText>Toggle preview</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_apply">
+      <icon></icon>
+      <text>Apply result</text>
+      <whatsThis></whatsThis>
+      <toolTip>Apply result</toolTip>
+      <iconText>Apply result</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_apply_alternative">
+      <icon></icon>
+      <text>Apply result (layer)</text>
+      <whatsThis></whatsThis>
+      <toolTip>Apply live result as a new layer</toolTip>
+      <iconText>Apply result (layer)</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_create_region">
+      <icon></icon>
+      <text>Create region</text>
+      <whatsThis></whatsThis>
+      <toolTip>Create region</toolTip>
+      <iconText>Create region</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_switch_workspace_generation">
+      <icon></icon>
+      <text>Switch workspace: Generate</text>
+      <whatsThis></whatsThis>
+      <toolTip>Switch workspace: Generate</toolTip>
+      <iconText>Switch workspace: Generate</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_switch_workspace_upscaling">
+      <icon></icon>
+      <text>Switch workspace: Upscale</text>
+      <whatsThis></whatsThis>
+      <toolTip>Switch workspace: Upscale</toolTip>
+      <iconText>Switch workspace: Upscale</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_switch_workspace_live">
+      <icon></icon>
+      <text>Switch workspace: Live</text>
+      <whatsThis></whatsThis>
+      <toolTip>Switch workspace: Live</toolTip>
+      <iconText>Switch workspace: Live</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_switch_workspace_graph">
+      <icon></icon>
+      <text>Switch workspace: Graph</text>
+      <whatsThis></whatsThis>
+      <toolTip>Switch workspace: Graph</toolTip>
+      <iconText>Switch workspace: Graph</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_toggle_workspace">
+      <icon></icon>
+      <text>Toggle workspace</text>
+      <whatsThis></whatsThis>
+      <toolTip>Cycle workspace: Generate, Upscale, Live, Animation, Graph</toolTip>
+      <iconText>Toggle workspace</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="ai_diffusion_toggle_edit_mode">
+      <icon></icon>
+      <text>Toggle edit mode</text>
+      <whatsThis></whatsThis>
+      <toolTip>Toggle instruction-based Edit mode (Generate workspace)</toolTip>
+      <iconText>Toggle edit mode</iconText>
+      <activationFlags>10000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+  </Actions>
+</ActionCollection>

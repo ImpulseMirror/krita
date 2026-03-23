@@ -15,6 +15,9 @@ extern const char inpaintingWorkflowTemplate[];
 // Upscale: LoadImage (1), ImageScale (2), SaveImage (3). Uses ComfyUI core ImageScale (width/height).
 extern const char upscaleWorkflowTemplate[];
 
+// Upscale + diffusion refine: LoadImage (1), ImageScale (2), VAEEncode (3), Checkpoint (4), CLIP (5,6), KSampler (7), VAEDecode (8), SaveImage (9).
+extern const char upscaleRefineWorkflowTemplate[];
+
 // img2img for Live: LoadImage (1), VAEEncode (2), Checkpoint (3), CLIP (4,5), KSampler (6), VAEDecode (7), SaveImage (8)
 extern const char img2imgWorkflowTemplate[];
 

@@ -1,6 +1,6 @@
 ---
 name: build-krita
-description: Iteratively aligns the Krita ComfyUI remote docker plugin with the Technical_Specification.md for the Krita AI Diffusion plugin, cataloging each spec section’s completion status and updating the implementation until all required sections are marked complete.
+description: Iteratively aligns the Krita ComfyUI remote docker plugin with the Technical_Specification.md for the Krita AI Diffusion plugin, cataloging each spec section’s completion status, updating the implementation until all required sections are marked complete, and auditing both not_applicable and complete entries so JSON status stays truthful.
 ---
 
 # Build Krita ComfyUI Docker Plugin to Match Spec
@@ -17,9 +17,9 @@ Use this skill whenever:
 - `Technical_Specification.md` at the repo root is the **source of truth** for behavior and UX.
 - `Technical_Specification_Completed.json` at the repo root is the **status map and progress summary**:
   - Keys: top-level or numbered spec section identifiers as strings (e.g. `"1"`, `"2"`, `"3.4"` if needed).
-  - Values: one of `"not_started"`, `"in_progress`, `"complete"`, `"not_applicable"`.
+  - Values: one of `"not_started"`, `"in_progress"`, `"complete"`, `"not_applicable"`.
   - The `possible_values` array documents the meaning of each status string.
-  - The `completion_percentage` and `in_progress_percentage` keys store overall progress as user-facing strings (e.g. `"25%"`, `"3.1%"`), derived from the per-section values.
+  - The `completion_percentage` and `in_progress_percentage` keys store overall progress as user-facing strings (e.g. `"25%"`, `"3.1%"`), derived from the per-section values. Run `./update_spec_completion.sh` after editing the JSON; those percentages use **applicable sections only** (entries whose value is not `"not_applicable"`) as the denominator so **100%** means every portable subsection is `"complete"`.
 - Primary implementation focus:
   - `plugins/dockers/comfyui_remote/ComfyUIRemoteDock.cpp` (and any directly-related headers/sources required to achieve parity).
 
@@ -28,7 +28,7 @@ Use this skill whenever:
 - **"complete"**: Implementation behavior and UI **exactly** match the spec for that section (within the constraints of the C++ dock), including naming, defaults, and interaction flow.
 - **"in_progress"**: Some but not all behaviors in that section are implemented or aligned; do **not** upgrade to `"complete"` until the entire section is satisfied.
 - **"not_started"**: The section has not yet been evaluated or modified in the current port.
-- **"not_applicable"**: The section is about Python-only structure, tooling, or artifacts that have no meaningful counterpart for this C++ dock (e.g. pytest layout, websockets submodule packaging) and cannot/should not be reimplemented here. **These should be verified** in the audit pass (step 10): if a section is actually applicable, set it to `"not_started"`; otherwise treat it as **passed** (leave `"not_applicable"`).
+- **"not_applicable"**: The section is about Python-only structure, tooling, or artifacts that have no meaningful counterpart for this C++ dock (e.g. pytest layout, websockets submodule packaging) and cannot/should not be reimplemented here. **These should be verified** in the audit pass (step 10): if a section is actually applicable, set it to `"not_started"`; otherwise treat it as **passed** (leave `"not_applicable"`). Sections marked **`"complete"`** are also subject to the same audit pass: stale or mistaken `"complete"` entries must be corrected (see step 10).
 
 ## Workflow: Iterative Spec-to-Code Alignment
 
@@ -101,27 +101,38 @@ Follow this loop **aggressively, across many sections in a single `/build-krita`
 9. **Keep Iterating Until Full Coverage (within each `/build-krita` run)**
    - Within a single `/build-krita` invocation, **repeat from step 1 for as many sections as the environment allows**. The agent should:
      - Move through multiple `"not_started"` / `"in_progress"` sections in one go, rather than stopping after the first change.
-     - Only pause when external constraints are reached (e.g., response/tool limits) or when there is no more meaningful work left (all relevant sections are `"complete"` / `"not_applicable"`).
+     - Only pause when external constraints are reached (e.g., response/tool limits) or when there is no more meaningful work left (all relevant sections are `"complete"` / `"not_applicable"` **and** any **step 10** audit batch planned for this run is finished).
    - Overall, repeat from step 1 for the next section until:
      - All behaviorally-relevant sections are `"complete"`, and
      - Non-applicable Python-only infrastructure sections are explicitly `"not_applicable"`, and
      - **Every numbered section in `Technical_Specification.md` that is applicable to the dock has a corresponding entry in `Technical_Specification_Completed.json`**.
 
-10. **Verify not_applicable sections (audit pass)**
-   - Periodically, or when no `"not_started"` / `"in_progress"` sections remain, **go over every section currently marked `"not_applicable"`** and re-verify:
+10. **Audit pass: verify `not_applicable` and `complete`**
+   - Periodically, after large refactors, when the spec changes, or when no `"not_started"` / `"in_progress"` sections remain, run one or both audits below. Treat **JSON status as claims that must be justified** against `Technical_Specification.md` and the current C++ implementation.
+
+   **10a. `not_applicable` sections**
+   - **Go over sections marked `"not_applicable"`** (in batches by chapter if needed: 2.x, 3.x, 4.x, 13.x, etc.):
      - **Re-read the spec** for that section (title and body in `Technical_Specification.md`).
      - **Decide:** Does this section describe behavior, UX, settings, or data that the C++ dock could or should implement (even partially)?
-       - **If yes (actually applicable):** Set the section’s status to **`"not_started"`** in `Technical_Specification_Completed.json`. The section will then be picked up in the main loop (steps 1–9) for implementation.
-       - **If no (truly not applicable):** Consider the ticket **passed** — leave the status as **`"not_applicable"`**. No change to the JSON.
-     - Apply this check to as many `"not_applicable"` sections as practical in one run (e.g. in batches by spec chapter: 2.x, 3.x, 4.x, 13.x).
-   - **Examples of “actually applicable”:** A subsection that describes UI text, a default value, or a user flow that the C++ dock could implement but was previously assumed not applicable (e.g. a 13.x addition that maps to dock behavior).
-   - **Examples of “truly not applicable” (pass):** Python package layout, pytest layout, Git submodules, `pyproject.toml`, websockets bundle, managed server installer, cloud-only APIs with no C++ equivalent, docs build (Astro), or script-only tooling that is not part of the dock’s behavior.
+       - **If yes (actually applicable):** Set the section’s status to **`"not_started"`** in `Technical_Specification_Completed.json`. It will be picked up in the main loop (steps 1–9).
+       - **If no (truly not applicable):** **Pass** — leave **`"not_applicable"`**.
+   - **Examples of “actually applicable”:** UI text, defaults, or flows the dock could implement but was previously assumed not applicable (e.g. a 13.x widget that maps to the dock).
+   - **Examples of “truly not applicable” (pass):** Python package layout, pytest layout, Git submodules, `pyproject.toml`, websockets bundle, managed server installer, cloud-only APIs with no C++ equivalent, docs build (Astro), or script-only tooling outside the dock.
+
+   **10b. `complete` sections (re-verify, do not trust the label blindly)**
+   - **Go over sections marked `"complete"`** using the same rigor as steps 4–6: **re-read the full spec subsection**, then **spot-check or systematically compare** the implementation (UI strings, defaults, flows, persistence) in the docker plugin sources.
+   - **If the section still fully matches the spec:** **Pass** — leave **`"complete"`** (optionally note nothing to fix).
+   - **If anything is missing, wrong, or only partially aligned** (spec updated, regression, or the original mark was optimistic):
+     - **Implement** the minimal fixes needed (step 5), then re-validate (step 6); only after that restore **`"complete"`**.
+     - If you cannot finish fixes in this run, set the section to **`"in_progress"`** (or **`"not_started"`** if untouched) until parity is restored — **do not leave `"complete"` on a section that fails the checklist.**
+   - **Coverage strategy:** In one invocation, audit as many `"complete"` sections as practical (e.g. rotate by chapter, or prioritize areas that recently changed in spec or code). Over successive `/build-krita` runs, aim to **re-touch every `"complete"` key** on a reasonable cadence so drift does not accumulate silently.
 
 ## Guardrails and Priorities
 
--- **Perfect port first**: Always prioritize implementing and validating behavior so that each section can be marked `"complete"`; do not assume the user will manually fix or wire anything outside this skill.
+- **Perfect port first**: Always prioritize implementing and validating behavior so that each section can be marked `"complete"`; do not assume the user will manually fix or wire anything outside this skill.
 - **Spec is authoritative**: Prefer changes that increase fidelity to `Technical_Specification.md` even if they differ from the current C++ dock behavior.
 - **No premature completion**: Only mark `"complete"` when you have systematically checked the entire section against the implementation.
+- **Complete is not permanent without proof**: `"complete"` in JSON is only valid while the implementation matches the spec; use **step 10b** to catch false completes and regressions.
 - **Minimize collateral changes**: Avoid refactors that are not required to achieve spec parity; they belong outside this skill’s scope.
 - **Focus on the docker plugin**: Do not expand the scope to unrelated Krita components unless the spec explicitly requires cross-plugin behavior.
 
@@ -143,9 +154,15 @@ Follow this loop **aggressively, across many sections in a single `/build-krita`
 2. Confirm there is no plausible mapping for these parts to the C++ docker plugin.
 3. In `Technical_Specification_Completed.json`, mark `"2"` as `"not_applicable"` while continuing work on later, behavior-focused sections.
 
-### Example: Verify not_applicable — reclassify or pass (Step 10)
+### Example: Verify not_applicable — reclassify or pass (Step 10a)
 
 1. List all keys in `Technical_Specification_Completed.json` whose value is `"not_applicable"` (e.g. 2.1, 3.2, 13.37).
 2. For section **13.33 InitialSetupWidget (first-time server choice)**: read the spec. It describes the first-run UI where the user picks Online Service / Local Managed Server / Custom ComfyUI. The C++ dock can have equivalent UI (e.g. a setup page or connection tab with the same choices). → **Actually applicable.** Set `"13.33"` to `"not_started"`.
 3. For section **2.10 Git submodules**: read the spec. It describes `.gitmodules` and the websockets/debugpy submodules. The C++ build does not use Python submodules. → **Truly not applicable.** Leave `"2.10"` as `"not_applicable"` (pass).
+
+### Example: Re-verify complete — pass, fix, or downgrade (Step 10b)
+
+1. Pick a section marked `"complete"` (e.g. `"5"` — generation workspace). Read that subsection in `Technical_Specification.md` line by line.
+2. Compare to the dock: labels, defaults, queue behavior, error strings. Suppose the spec now requires a tooltip on a control that the dock lacks → **not actually complete.**
+3. Add the tooltip (or other fix), re-validate, then keep `"5"` as `"complete"`. If you only document the gap without fixing, set `"5"` to `"in_progress"` until the next pass.
 

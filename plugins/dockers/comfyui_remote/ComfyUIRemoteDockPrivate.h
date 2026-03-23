@@ -10,6 +10,7 @@
 
 #include <QPointer>
 #include <QMap>
+#include <QSet>
 #include <QLineEdit>
 #include <QComboBox>
 #include <QPushButton>
@@ -34,8 +35,10 @@
 #include <QRadioButton>
 #include <QStackedWidget>
 #include <QWidget>
+#include <QRect>
 #include <QImage>
 #include <QVector>
+#include <limits>
 
 class QCompleter;
 class QStringListModel;
@@ -59,6 +62,8 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnDeletePreset = nullptr;
     QPlainTextEdit *editPrompt = nullptr;
     QPlainTextEdit *editNegative = nullptr;
+    QWidget *promptResizeHandle = nullptr;   // §13.54
+    QWidget *negativeResizeHandle = nullptr; // §13.54
     QWidget *negativePromptBlock = nullptr;  // §4.7: label row + negative editor (hide when "Show negative" off)
     QWidget *stepsParametersWidget = nullptr;  // §4.7: Steps/CFG/Sampler row (hide when "Show steps" off)
     QLabel *labelNegativePromptAlert = nullptr;  // §13.143: alert icon when style does not use negative prompt
@@ -78,6 +83,10 @@ struct ComfyUIRemoteDock::Private
     QSpinBox *spinSeed = nullptr;
     QCheckBox *checkFixedSeed = nullptr;
     QPushButton *btnRandomSeed = nullptr;
+    /// Queue popup mirrors (§5.4): must not reparent the dock seed widgets into the menu.
+    QCheckBox *queueCheckFixedSeed = nullptr;
+    QSpinBox *queueSpinSeed = nullptr;
+    QPushButton *queueBtnRandomSeed = nullptr;
     QProgressBar *progressBar = nullptr;
     QComboBox *comboWorkspace = nullptr;
     int lastWorkspaceIndex = -1;  // §13.149: track for Live strength persist on leave
@@ -91,6 +100,14 @@ struct ComfyUIRemoteDock::Private
     QToolButton *btnGenerateViewOperations = nullptr; // §13.29: main action menu (Generate / Refine / Edit / …)
     QComboBox *comboInpaintMode = nullptr;  // §13.206: Automatic | Fill | Expand (when not Automatic, overrides detectInpaintMode)
     QComboBox *comboFillMode = nullptr;    // §13.188: None | Neutral | Blur | Border | Inpaint (five options, replace/green internal only)
+    QComboBox *comboInpaintContext = nullptr; // §13.169 / §13.194: selection/crop context (ETN_KritaSelection parity)
+    QCheckBox *checkInpaintUseModel = nullptr;      // §13.107 / §13.169: use_inpaint (dedicated inpaint path when available)
+    QCheckBox *checkInpaintUsePromptFocus = nullptr; // §13.107 / §13.169: use_prompt_focus → use_condition_mask
+    bool inpaintPersistUseModel = true;     // §13.194: CustomInpaint use_inpaint (inpaint annotation)
+    bool inpaintPersistUsePromptFocus = false; // §13.194: use_prompt_focus
+    QSet<QString> documentDefaultsAppliedDocIds; // §13.194: apply document_defaults once per document id
+    QSet<QString> warnedFutureUiJsonVersionDocIds; // §13.199: one user-visible warning per document_id
+    QTimer *documentDefaultsSaveTimer = nullptr; // debounce persist (checkpoint text edits)
     QPushButton *btnUpscale = nullptr;
     QSpinBox *spinAnimationFrames = nullptr;
     QPushButton *btnGenerateAnimation = nullptr;
@@ -116,6 +133,8 @@ struct ComfyUIRemoteDock::Private
     int livePollCount = 0;
     static const int liveMaxPollCount = 120;
     QTimer *livePollTimer = nullptr;
+    /// §10.1: last downloaded Live result on disk (for "Apply result (layer)" action)
+    QString lastLiveResultImagePath;
     // §13.31: debounced save of custom workflow text to document annotation
     QTimer *customWorkflowDocumentSaveTimer = nullptr;
     // §13.19: debounced write of ai_diffusion/ui.json (history list + preserved keys)
@@ -127,7 +146,7 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnHistoryReRun = nullptr;
     QPushButton *btnHistoryApply = nullptr;
     QPlainTextEdit *editCustomWorkflow = nullptr;
-    // §13.25: ETN_Parameter / ETN_KritaStyle — Configure → Workflow tab
+    // §13.25: ETN_Parameter / ETN_KritaStyle / ETN_KritaImageLayer / ETN_KritaMaskLayer — Configure → Workflow tab (layer slots keyed by Comfy node id)
     QGroupBox *customWorkflowParamsGroup = nullptr;
     QFormLayout *customWorkflowParamsForm = nullptr;
     QTimer *customWorkflowParamsRefreshTimer = nullptr;
@@ -196,6 +215,13 @@ struct ComfyUIRemoteDock::Private
 
     QNetworkAccessManager *nam = nullptr;
     QTimer *pollTimer = nullptr;
+    // §13.93: document poll (selection_bounds + current_time), ~20 ms while canvas open
+    QTimer *documentSyncPoller = nullptr;
+    QTimer *animationPreviewDebounce = nullptr;
+    bool documentPollInitialized = false;
+    QRect lastPolledSelectionBounds;
+    bool lastPolledHadSelection = false;
+    int lastPolledCurrentTime = (std::numeric_limits<int>::min)();
     QString clientId;             // §13.59: one UUID per session; used in prompt/queue HTTP bodies (and WebSocket URL when WS implemented)
     QString currentPromptId;      // the one we're currently polling (§9.3 Job.id)
     QStringList jobQueue;         // prompt_ids waiting, first is running (§9.3 JobQueue)
@@ -260,10 +286,21 @@ struct ComfyUIRemoteDock::Private
     QComboBox *comboTileOverlapMode = nullptr;
     QSpinBox *spinTileOverlap = nullptr;
     QWidget *upscaleTileOverlapRow = nullptr;
+    // §5.5 Upscale view — refine block (persistence + ui.json + Comfy upscaleRefineWorkflowTemplate when refine enabled)
+    QWidget *upscaleRefineBlock = nullptr;
+    QCheckBox *checkUpscaleRefine = nullptr;
+    QWidget *upscaleRefineDetails = nullptr;
+    QComboBox *comboUpscaleRefinementModel = nullptr;
+    QSlider *sliderUpscaleRefineStrength = nullptr;
+    QLabel *labelUpscaleRefineStrength = nullptr;
+    QSlider *sliderUpscaleRefineGuidance = nullptr;
+    QLabel *labelUpscaleRefineGuidance = nullptr;
+    QCheckBox *checkUpscaleUsePrompt = nullptr;
 
     QString upscaleUploadedImageName;
     QString upscalePromptId;
     int upscalePollCount = 0;
+    bool upscaleLastSubmitUsedRefine = false;
     static const int upscaleMaxPollCount = 300;
     QTimer *upscalePollTimer = nullptr;
 
@@ -312,6 +349,12 @@ struct ComfyUIRemoteDock::Private
     QString updateDownloadUrl;                // §13.160: url from plugin/latest response (for Download and Install)
     bool updateCheckRequested = false;        // §13.37: avoid duplicate update checks per session
     bool updateCheckInProgress = false;      // §13.37: true while GET plugin/latest is in flight (show "Checking for updates...")
+    /// §4.9 Plugin tab: last successful plugin/latest "version" string (empty until first successful check).
+    QString lastReportedLatestPluginVersion;
+    /// §4.9: show "Update failed" after network/JSON error until the next check starts.
+    bool pluginUpdateCheckHadFailure = false;
+    QPointer<QLabel> pluginTabLatestVersionLabel;
+    QPointer<QPushButton> pluginTabDownloadInstallButton;
     bool hasUnseenNews = false;               // §13.38: set when client.news digest ≠ settings last_news
     QString lastNewsDigest;                   // §13.38: digest of current news (saved to settings when user clicks Ok)
     QLabel *welcomeStatusLabel = nullptr;

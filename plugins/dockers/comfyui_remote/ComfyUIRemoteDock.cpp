@@ -77,6 +77,12 @@
 #include <QSet>
 
 #include <algorithm>
+#include <functional>
+#include <limits>
+
+#include <QMouseEvent>
+#include <kis_action.h>
+#include <kis_action_manager.h>
 #include <KSharedConfig>
 #include <KConfigGroup>
 #include <klocalizedstring.h>
@@ -100,10 +106,72 @@
 #include <KisDocument.h>
 #include <KisImportExportErrorCode.h>
 #include <commands/KisNodeRenameCommand.h>
+#include <kis_image_change_visibility_command.h>
+#include <kis_layer_utils.h>
+#include <KisImageBarrierLock.h>
 #include <kis_undo_adapter.h>
 #include <KoColorSpaceRegistry.h>
 #include <KoColorProfile.h>
 #include <KoColorConversionTransformation.h>
+
+namespace {
+
+/// §13.196: while tag completer popup is visible, Tab must not move focus away from the prompt.
+class ComfyPromptPlainTextEdit : public QPlainTextEdit
+{
+public:
+    explicit ComfyPromptPlainTextEdit(QCompleter *completer, QWidget *parent = nullptr)
+        : QPlainTextEdit(parent)
+        , m_completer(completer)
+    {
+    }
+
+protected:
+    bool focusNextPrevChild(bool next) override
+    {
+        if (!m_completer.isNull()) {
+            QWidget *pop = m_completer->popup();
+            if (pop && pop->isVisible())
+                return false;
+        }
+        return QPlainTextEdit::focusNextPrevChild(next);
+    }
+
+private:
+    QPointer<QCompleter> m_completer;
+};
+
+static QUuid comfyParseLayerUuidString(const QString &layerId)
+{
+    const QString lid = layerId.trimmed();
+    if (lid.isEmpty())
+        return QUuid();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return QUuid::fromString(QStringView{lid});
+#else
+    QString s = lid;
+    if (s.length() == 32 && !s.contains(QLatin1Char('-'))) {
+        s = QStringLiteral("{%1-%2-%3-%4-%5}")
+                .arg(s.mid(0, 8), s.mid(8, 4), s.mid(12, 4), s.mid(16, 4), s.mid(20, 12));
+    }
+    return QUuid(s);
+#endif
+}
+
+static KisPaintLayer *findPaintLayerByUuidInTree(KisNodeSP node, const QString &uuidWithoutBraces)
+{
+    if (!node || uuidWithoutBraces.isEmpty())
+        return nullptr;
+    KisPaintLayer *pl = dynamic_cast<KisPaintLayer *>(node.data());
+    if (pl && node->uuid().toString(QUuid::WithoutBraces) == uuidWithoutBraces)
+        return pl;
+    for (int i = 0; i < node->childCount(); ++i) {
+        if (KisPaintLayer *found = findPaintLayerByUuidInTree(node->child(i), uuidWithoutBraces))
+            return found;
+    }
+    return nullptr;
+}
+} // namespace
 
 // §13.32: Strength spinbox snaps to valid step boundaries (arrow keys / scroll)
 class StrengthSpinBox : public QSpinBox
@@ -159,6 +227,74 @@ private:
     int m_angle;
 };
 
+// §13.54: ResizeHandle — dotted strip under prompt editors; drag updates height, release persists line count (1–10)
+class PromptResizeHandleWidget : public QWidget
+{
+public:
+    using PersistLinesFn = std::function<void(int lines)>;
+    explicit PromptResizeHandleWidget(QPlainTextEdit *editor,
+                                      PersistLinesFn persistLines,
+                                      int minHeightPx = 40,
+                                      QWidget *parent = nullptr)
+        : QWidget(parent)
+        , m_editor(editor)
+        , m_persistLines(std::move(persistLines))
+        , m_minHeightPx(minHeightPx)
+    {
+        setFixedHeight(8);  // §13.54: small strip (~22×8 px style)
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setCursor(Qt::SizeVerCursor);
+        setToolTip(i18n("Drag vertically to resize the text area."));
+    }
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        const QColor c = palette().color(QPalette::Mid);
+        p.setPen(QPen(c, 1, Qt::DotLine));
+        const int y = height() / 2;
+        p.drawLine(6, y, qMax(6, width() - 6), y);
+    }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && m_editor) {
+            m_dragging = true;
+            m_pressGlobalY = e->globalPos().y();
+            m_startHeight = m_editor->height();
+            grabMouse();
+        }
+    }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (!m_dragging || !m_editor)
+            return;
+        const int dy = e->globalPos().y() - m_pressGlobalY;
+        const int nh = qBound(m_minHeightPx, m_startHeight + dy, 800);
+        m_editor->setFixedHeight(nh);
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && m_dragging) {
+            m_dragging = false;
+            ungrabMouse();
+            if (m_editor && m_persistLines) {
+                const QFontMetrics fm(m_editor->font());
+                const int h = m_editor->height();
+                const int ls = qMax(1, fm.lineSpacing());
+                const int lines = qBound(1, static_cast<int>(qRound((h - fm.height() / 2) / double(ls))), 10);
+                m_persistLines(lines);
+            }
+        }
+    }
+private:
+    QPlainTextEdit *m_editor = nullptr;
+    PersistLinesFn m_persistLines;
+    int m_minHeightPx = 40;
+    bool m_dragging = false;
+    int m_pressGlobalY = 0;
+    int m_startHeight = 0;
+};
+
 ComfyUIRemoteDock::ComfyUIRemoteDock()
     : QDockWidget()
     , m_d(new Private)
@@ -178,6 +314,16 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->livePollTimer = new QTimer(this);
     m_d->livePollTimer->setSingleShot(true);
     connect(m_d->livePollTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::slotLivePoll);
+    m_d->documentSyncPoller = new QTimer(this);
+    m_d->documentSyncPoller->setInterval(20);
+    connect(m_d->documentSyncPoller, &QTimer::timeout, this, &ComfyUIRemoteDock::slotDocumentSyncPoll);
+    m_d->animationPreviewDebounce = new QTimer(this);
+    m_d->animationPreviewDebounce->setSingleShot(true);
+    m_d->animationPreviewDebounce->setInterval(100);
+    connect(m_d->animationPreviewDebounce, &QTimer::timeout, this, &ComfyUIRemoteDock::slotDebouncedAnimationTargetPreview);
+    m_d->documentDefaultsSaveTimer = new QTimer(this);
+    m_d->documentDefaultsSaveTimer->setSingleShot(true);
+    connect(m_d->documentDefaultsSaveTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::persistDocumentDefaultsToSettings);
     connect(m_d->pollTimer, &QTimer::timeout, this, [this]() {
         if (m_d->currentPromptId.isEmpty()) return;
         QUrl base(m_d->editServerUrl->text().trimmed());
@@ -593,7 +739,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     updateLayout->addWidget(updateLabel);
     QPushButton *btnUpdate = new QPushButton(i18n("Download and Install"), m_d->welcomeUpdateWidget);
     connect(btnUpdate, &QPushButton::clicked, this, [this]() {
-        QUrl u = !m_d->updateDownloadUrl.isEmpty() ? QUrl(m_d->updateDownloadUrl) : QUrl(QStringLiteral("https://github.com/IntersticeAI/krita-ai-diffusion/releases"));
+        QUrl u = !m_d->updateDownloadUrl.isEmpty() ? QUrl(m_d->updateDownloadUrl)
+                                                   : QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/releases"));
         if (u.isValid()) QDesktopServices::openUrl(u);
     });
     updateLayout->addWidget(btnUpdate);
@@ -640,19 +787,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     linkInterstice->setFlat(true);
     linkInterstice->setCursor(Qt::PointingHandCursor);
     connect(linkInterstice, &QPushButton::clicked, this, []() {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://interstice.cloud")));
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://www.interstice.cloud")));
     });
     QPushButton *linkGitHub = new QPushButton(i18n("GitHub Project"), m_d->welcomePage);
     linkGitHub->setFlat(true);
     linkGitHub->setCursor(Qt::PointingHandCursor);
     connect(linkGitHub, &QPushButton::clicked, this, []() {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/IntersticeAI/krita-ai-diffusion")));
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion")));
     });
     QPushButton *linkDiscord = new QPushButton(QStringLiteral("Discord"), m_d->welcomePage);
     linkDiscord->setFlat(true);
     linkDiscord->setCursor(Qt::PointingHandCursor);
     connect(linkDiscord, &QPushButton::clicked, this, []() {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/krita")));
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));
     });
     footerLinks->addWidget(linkInterstice);
     footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
@@ -706,6 +853,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnRefreshCheckpoints = new QPushButton(i18n("Refresh"));
     m_d->btnRefreshCheckpoints->setToolTip(i18n("Load checkpoint list from server"));
     connect(m_d->btnRefreshCheckpoints, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRefreshCheckpoints);
+    connect(m_d->comboCheckpoint, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        schedulePersistDocumentDefaults();
+    });
+    if (m_d->comboCheckpoint->lineEdit()) {
+        connect(m_d->comboCheckpoint->lineEdit(), &QLineEdit::editingFinished, this, [this]() {
+            schedulePersistDocumentDefaults();
+        });
+    }
 
     m_d->comboPreset = new QComboBox();
     rebuildPresetComboItems();
@@ -775,7 +930,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     m_d->comboWorkspace = new QComboBox();
-    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("rating"), i18n("Generate"));  // §5.3: sparkle/magic icon
+    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon(QStringLiteral("tools-wizard")), i18n("Generate"));
     m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("view-zoom"), i18n("Upscale"));
     m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("view-refresh"), i18n("Live"));
     m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("video-x-generic"), i18n("Animation"));
@@ -829,6 +984,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate);
         if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(isGenerate);
         if (m_d->comboFillMode) m_d->comboFillMode->setVisible(isGenerate);
+        if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(isGenerate);
+        if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(isGenerate);
+        if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(isGenerate);
         if (m_d->btnUpscale) m_d->btnUpscale->setVisible(isUpscale);
         if (m_d->btnGenerateAnimation) m_d->btnGenerateAnimation->setVisible(isAnimation);
         if (m_d->checkLiveMode) m_d->checkLiveMode->setVisible(isLive);
@@ -843,7 +1001,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (isGenerate)
             refreshRegionsList();  // §13.125: show active region set when returning to Generate
         if (m_d->upscaleFactorRow) m_d->upscaleFactorRow->setVisible(isUpscale);
-        if (m_d->upscaleTileOverlapRow) m_d->upscaleTileOverlapRow->setVisible(isUpscale);
+        if (m_d->upscaleRefineBlock) m_d->upscaleRefineBlock->setVisible(isUpscale);
         if (isUpscale) updateUpscaleTargetSize();
         updateAnimationButtonLabel();
 
@@ -895,8 +1053,43 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     });
     genContentLayout->addWidget(m_d->upscaleFactorRow);
     m_d->upscaleFactorRow->setVisible(m_d->comboWorkspace->currentIndex() == 1);
-    // §13.147: Tile Overlap — Automatic (-1) or Custom (pixels)
-    m_d->upscaleTileOverlapRow = new QWidget(genGroup);
+
+    // §5.5 Upscale: Refine upscaled image (tile overlap shown when refine is enabled, per spec)
+    m_d->upscaleRefineBlock = new QWidget(genGroup);
+    QVBoxLayout *refineBlockLay = new QVBoxLayout(m_d->upscaleRefineBlock);
+    refineBlockLay->setContentsMargins(0, 0, 0, 0);
+    m_d->checkUpscaleRefine = new QCheckBox(i18n("Refine upscaled image"), m_d->upscaleRefineBlock);
+    refineBlockLay->addWidget(m_d->checkUpscaleRefine);
+    m_d->upscaleRefineDetails = new QWidget(m_d->upscaleRefineBlock);
+    QVBoxLayout *refineLay = new QVBoxLayout(m_d->upscaleRefineDetails);
+    refineLay->setContentsMargins(0, 0, 0, 0);
+    refineLay->addWidget(new QLabel(i18n("Refinement model:"), m_d->upscaleRefineDetails));
+    m_d->comboUpscaleRefinementModel = new QComboBox(m_d->upscaleRefineDetails);
+    refineLay->addWidget(m_d->comboUpscaleRefinementModel);
+    {
+        QHBoxLayout *strLay = new QHBoxLayout();
+        strLay->addWidget(new QLabel(i18n("Strength:"), m_d->upscaleRefineDetails));
+        m_d->sliderUpscaleRefineStrength = new QSlider(Qt::Horizontal, m_d->upscaleRefineDetails);
+        m_d->sliderUpscaleRefineStrength->setRange(1, 100);
+        strLay->addWidget(m_d->sliderUpscaleRefineStrength, 1);
+        m_d->labelUpscaleRefineStrength = new QLabel(m_d->upscaleRefineDetails);
+        m_d->labelUpscaleRefineStrength->setMinimumWidth(40);
+        strLay->addWidget(m_d->labelUpscaleRefineStrength);
+        refineLay->addLayout(strLay);
+    }
+    {
+        QHBoxLayout *gLay = new QHBoxLayout();
+        gLay->addWidget(new QLabel(i18n("Image guidance:"), m_d->upscaleRefineDetails));
+        m_d->sliderUpscaleRefineGuidance = new QSlider(Qt::Horizontal, m_d->upscaleRefineDetails);
+        m_d->sliderUpscaleRefineGuidance->setRange(1, 100);
+        gLay->addWidget(m_d->sliderUpscaleRefineGuidance, 1);
+        m_d->labelUpscaleRefineGuidance = new QLabel(m_d->upscaleRefineDetails);
+        m_d->labelUpscaleRefineGuidance->setMinimumWidth(40);
+        gLay->addWidget(m_d->labelUpscaleRefineGuidance);
+        refineLay->addLayout(gLay);
+    }
+    // §13.147: Tile Overlap — Automatic or X px (§5.5 — inside refine block)
+    m_d->upscaleTileOverlapRow = new QWidget(m_d->upscaleRefineDetails);
     QHBoxLayout *tileOverlapLayout = new QHBoxLayout(m_d->upscaleTileOverlapRow);
     tileOverlapLayout->setContentsMargins(0, 0, 0, 0);
     tileOverlapLayout->addWidget(new QLabel(i18n("Tile overlap:"), m_d->upscaleTileOverlapRow));
@@ -914,29 +1107,101 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     tileOverlapLayout->addWidget(m_d->comboTileOverlapMode);
     tileOverlapLayout->addWidget(m_d->spinTileOverlap);
     tileOverlapLayout->addStretch();
-    genContentLayout->addWidget(m_d->upscaleTileOverlapRow);
-    m_d->upscaleTileOverlapRow->setVisible(m_d->comboWorkspace->currentIndex() == 1);
+    refineLay->addWidget(m_d->upscaleTileOverlapRow);
+    m_d->checkUpscaleUsePrompt = new QCheckBox(i18n("Use Prompt"), m_d->upscaleRefineDetails);
+    m_d->checkUpscaleUsePrompt->setToolTip(i18n("When refining, include the positive prompt in the diffusion pass (when supported)."));
+    refineLay->addWidget(m_d->checkUpscaleUsePrompt);
+    refineBlockLay->addWidget(m_d->upscaleRefineDetails);
+    genContentLayout->addWidget(m_d->upscaleRefineBlock);
+    m_d->upscaleRefineBlock->setVisible(m_d->comboWorkspace->currentIndex() == 1);
     m_d->spinTileOverlap->setVisible(m_d->tileOverlapMode == 1);
+    {
+        KConfigGroup ucfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        m_d->checkUpscaleRefine->setChecked(ucfg.readEntry("UpscaleRefineEnabled", false));
+        m_d->sliderUpscaleRefineStrength->setValue(ucfg.readEntry("UpscaleRefineStrength", 30));
+        m_d->sliderUpscaleRefineGuidance->setValue(ucfg.readEntry("UpscaleRefineGuidance", 50));
+        m_d->checkUpscaleUsePrompt->setChecked(ucfg.readEntry("UpscaleUsePrompt", false));
+    }
+    auto updateStrengthLabel = [this]() {
+        if (m_d->labelUpscaleRefineStrength && m_d->sliderUpscaleRefineStrength)
+            m_d->labelUpscaleRefineStrength->setText(QString::number(m_d->sliderUpscaleRefineStrength->value()) + QLatin1Char('%'));
+    };
+    auto updateGuidanceLabel = [this]() {
+        if (m_d->labelUpscaleRefineGuidance && m_d->sliderUpscaleRefineGuidance)
+            m_d->labelUpscaleRefineGuidance->setText(QString::number(m_d->sliderUpscaleRefineGuidance->value()) + QLatin1Char('%'));
+    };
+    updateStrengthLabel();
+    updateGuidanceLabel();
+    connect(m_d->sliderUpscaleRefineStrength, &QSlider::valueChanged, this, [this, updateStrengthLabel](int) {
+        updateStrengthLabel();
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefineStrength", m_d->sliderUpscaleRefineStrength->value());
+    });
+    connect(m_d->sliderUpscaleRefineGuidance, &QSlider::valueChanged, this, [this, updateGuidanceLabel](int) {
+        updateGuidanceLabel();
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefineGuidance", m_d->sliderUpscaleRefineGuidance->value());
+    });
+    connect(m_d->checkUpscaleRefine, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_d->upscaleRefineDetails)
+            m_d->upscaleRefineDetails->setVisible(on);
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefineEnabled", on);
+    });
+    connect(m_d->checkUpscaleUsePrompt, &QCheckBox::toggled, this, [](bool on) {
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleUsePrompt", on);
+    });
+    m_d->upscaleRefineDetails->setVisible(m_d->checkUpscaleRefine->isChecked());
     connect(m_d->comboTileOverlapMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         m_d->tileOverlapMode = idx;
         if (m_d->spinTileOverlap) m_d->spinTileOverlap->setVisible(idx == 1);
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("TileOverlapMode", idx);
+        updateUpscaleTargetSize();
     });
     connect(m_d->spinTileOverlap, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
         m_d->tileOverlap = v;
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("TileOverlap", v);
+        updateUpscaleTargetSize();
+    });
+    syncUpscaleRefinementModelFromPresetCombo();
+    connect(m_d->comboUpscaleRefinementModel, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefinementModelIndex", m_d->comboUpscaleRefinementModel->currentIndex());
     });
 
     genContentLayout->addWidget(new QLabel(i18n("Prompt:")));
-    m_d->editPrompt = new QPlainTextEdit();
+    // Tag autocomplete model/completers (must exist before ComfyPromptPlainTextEdit; §13.196 Tab + popup)
+    m_d->tagKeywordModel = new QStringListModel(this);
+    m_d->promptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
+    m_d->promptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_d->promptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_d->negativePromptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
+    m_d->negativePromptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    m_d->negativePromptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_d->editPrompt = new ComfyPromptPlainTextEdit(m_d->promptTagCompleter);
+    m_d->promptTagCompleter->setWidget(m_d->editPrompt);
     m_d->editPrompt->setTabChangesFocus(true);  // §13.196: Tab moves focus, not inserted
-    m_d->editPrompt->installEventFilter(this);  // §13.196: Shift+Enter → Generate
+    m_d->editPrompt->installEventFilter(this);  // §13.196: Shift+Enter → Generate, ShortcutOverride
     m_d->editPrompt->setPlaceholderText(i18n("Describe the content you want to see, or leave empty."));
     m_d->editPrompt->setToolTip(i18n(
         "Tip: (word) for emphasis, [word] to reduce strength. Use commas to separate concepts. Shift+Enter to generate. "
         "Ctrl+Space for tag completion (CSV files in Settings → Interface)."));
     m_d->editPrompt->setMaximumHeight(60);
-    genContentLayout->addWidget(m_d->editPrompt);
+    {
+        QWidget *promptColumn = new QWidget(genGroup);
+        QVBoxLayout *promptColLayout = new QVBoxLayout(promptColumn);
+        promptColLayout->setContentsMargins(0, 0, 0, 0);
+        promptColLayout->setSpacing(0);
+        promptColLayout->addWidget(m_d->editPrompt);
+        m_d->promptResizeHandle = new PromptResizeHandleWidget(
+            m_d->editPrompt,
+            [this](int lines) {
+                QJsonObject st = ComfyUIUtils::loadSettingsJson();
+                const bool live = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2;
+                st.insert(live ? QStringLiteral("prompt_line_count_live") : QStringLiteral("prompt_line_count"), lines);
+                ComfyUIUtils::saveSettingsJson(st);
+            },
+            40,
+            promptColumn);
+        promptColLayout->addWidget(m_d->promptResizeHandle);
+        genContentLayout->addWidget(promptColumn);
+    }
 
     m_d->negativePromptBlock = new QWidget(this);
     QVBoxLayout *negBlockLayout = new QVBoxLayout(m_d->negativePromptBlock);
@@ -950,26 +1215,28 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->labelNegativePromptAlert->setVisible(false);
     negativePromptRow->addWidget(m_d->labelNegativePromptAlert);
     negBlockLayout->addLayout(negativePromptRow);
-    m_d->editNegative = new QPlainTextEdit();
+    m_d->editNegative = new ComfyPromptPlainTextEdit(m_d->negativePromptTagCompleter);
+    m_d->negativePromptTagCompleter->setWidget(m_d->editNegative);
     m_d->editNegative->setTabChangesFocus(true);  // §13.196: Tab moves focus
     m_d->editNegative->setPlaceholderText(i18n("Describe content you want to avoid."));
     m_d->editNegative->setToolTip(i18n("Ctrl+Space: tag completion (same lists as positive prompt)."));
-    m_d->editNegative->setMaximumHeight(40);
+    m_d->editNegative->setMaximumHeight(400);
     m_d->editNegative->installEventFilter(this);
     negBlockLayout->addWidget(m_d->editNegative);
+    m_d->negativeResizeHandle = new PromptResizeHandleWidget(
+        m_d->editNegative,
+        [this](int lines) {
+            QJsonObject st = ComfyUIUtils::loadSettingsJson();
+            st.insert(QStringLiteral("negative_prompt_line_count"), lines);
+            ComfyUIUtils::saveSettingsJson(st);
+        },
+        28,
+        m_d->negativePromptBlock);
+    negBlockLayout->addWidget(m_d->negativeResizeHandle);
     genContentLayout->addWidget(m_d->negativePromptBlock);
     updateNegativePromptAlertVisibility();  // §13.143: initial state (e.g. "None" selected)
 
     // §13.48: Tag autocomplete — shared model, Ctrl+Space in positive/negative prompts
-    m_d->tagKeywordModel = new QStringListModel(this);
-    m_d->promptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
-    m_d->promptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
-    m_d->promptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
-    m_d->promptTagCompleter->setWidget(m_d->editPrompt);
-    m_d->negativePromptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
-    m_d->negativePromptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
-    m_d->negativePromptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
-    m_d->negativePromptTagCompleter->setWidget(m_d->editNegative);
     connect(m_d->promptTagCompleter, QOverload<const QString &>::of(&QCompleter::activated), this, [this](const QString &text) {
         insertPromptTagCompletion(m_d->editPrompt, text);
     });
@@ -1042,7 +1309,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     });
 
     // §5.4: Region-only toggle; when set, only active region mask and prompt are used
-    m_d->checkRegionOnly = new QCheckBox(i18n("Region only"));
+    m_d->checkRegionOnly = new QCheckBox(i18n("Region-only"));
     m_d->checkRegionOnly->setToolTip(i18n("Limit generation to the active region only."));
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -1095,8 +1362,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->spinSeed = new QSpinBox();
     m_d->spinSeed->setRange(0, 2147483647);  // §13.209: 32-bit non-negative (0 to 2^31−1)
     m_d->spinSeed->setValue(0);
-    m_d->btnRandomSeed = new QPushButton(i18n("Random"));
-    m_d->btnRandomSeed->setIcon(KisIconUtils::loadIcon("random"));  // §5.4: dice icon for random seed
+    m_d->btnRandomSeed = new QPushButton();
+    m_d->btnRandomSeed->setIcon(KisIconUtils::loadIcon(QStringLiteral("random")));  // §5.4: dice icon for random seed
+    m_d->btnRandomSeed->setToolTip(i18n("Pick a new random seed."));
+    m_d->btnRandomSeed->setAccessibleName(i18n("Random seed"));
     connect(m_d->btnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
     QHBoxLayout *seedRow = new QHBoxLayout();
     seedRow->addWidget(new QLabel(i18n("Seed:")));
@@ -1135,7 +1404,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     genContentLayout->addLayout(sizeRow);
 
     m_d->btnGenerate = new QPushButton(i18n("Generate"));
-    m_d->btnGenerate->setIcon(KisIconUtils::loadIcon("rating"));  // §5.4: primary button with sparkle icon
+    m_d->btnGenerate->setIcon(KisIconUtils::loadIcon(QStringLiteral("tools-wizard")));  // §5.4: sparkle / magic-style icon
     connect(m_d->btnGenerate, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerate);
     genContentLayout->addWidget(m_d->btnGenerate);
 
@@ -1230,6 +1499,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("InpaintMode", idx);
         if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
             saveInpaintWorkspaceToDocument();
+        schedulePersistDocumentDefaults();
     });
     genContentLayout->addWidget(m_d->comboInpaintMode);
     // §13.188: FillMode UI — five options (None, Neutral, Blur, Border, Inpaint); replace and green are internal only
@@ -1246,11 +1516,62 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("FillMode", idx);
         if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
             saveInpaintWorkspaceToDocument();
+        schedulePersistDocumentDefaults();
     });
     genContentLayout->addWidget(m_d->comboFillMode);
+    // §13.169 / §13.194: Inpaint context (Python InpaintContext; JSON uses underscores)
+    m_d->comboInpaintContext = new QComboBox(genGroup);
+    m_d->comboInpaintContext->addItem(i18n("Automatic"), QStringLiteral("automatic"));
+    m_d->comboInpaintContext->addItem(i18n("Entire image"), QStringLiteral("entire_image"));
+    m_d->comboInpaintContext->addItem(i18n("Mask bounds"), QStringLiteral("mask_bounds"));
+    m_d->comboInpaintContext->addItem(i18n("Layer bounds"), QStringLiteral("layer_bounds"));
+    m_d->comboInpaintContext->setToolTip(i18n("Region of the canvas and mask sent to the server for inpaint / selection."));
+    {
+        const QString savedCtx = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry(QStringLiteral("InpaintContext"), QStringLiteral("automatic"));
+        const int cix = m_d->comboInpaintContext->findData(savedCtx);
+        m_d->comboInpaintContext->setCurrentIndex(cix >= 0 ? cix : 0);
+    }
+    connect(m_d->comboInpaintContext, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry(QStringLiteral("InpaintContext"),
+                                                                       m_d->comboInpaintContext->currentData().toString());
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+            saveInpaintWorkspaceToDocument();
+        schedulePersistDocumentDefaults();
+    });
+    genContentLayout->addWidget(m_d->comboInpaintContext);
+    // §13.107 / §13.169: CustomInpaint toggles (parity with Python CustomInpaintWidget)
+    m_d->checkInpaintUseModel = new QCheckBox(i18n("Use inpaint model"), genGroup);
+    m_d->checkInpaintUseModel->setToolTip(
+        i18n("When enabled, use the dedicated inpaint model / denoise path when the style and checkpoint allow it."));
+    m_d->checkInpaintUseModel->setChecked(
+        KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry(QStringLiteral("InpaintUseModel"), true));
+    m_d->inpaintPersistUseModel = m_d->checkInpaintUseModel->isChecked();
+    connect(m_d->checkInpaintUseModel, &QCheckBox::toggled, this, [this](bool on) {
+        m_d->inpaintPersistUseModel = on;
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry(QStringLiteral("InpaintUseModel"), on);
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+            saveInpaintWorkspaceToDocument();
+        schedulePersistDocumentDefaults();
+    });
+    genContentLayout->addWidget(m_d->checkInpaintUseModel);
+    m_d->checkInpaintUsePromptFocus = new QCheckBox(i18n("Use prompt focus"), genGroup);
+    m_d->checkInpaintUsePromptFocus->setToolTip(
+        i18n("When enabled, apply prompt/condition mask behavior for inpainting (use_condition_mask when supported)."));
+    m_d->checkInpaintUsePromptFocus->setChecked(
+        KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry(QStringLiteral("InpaintUsePromptFocus"), false));
+    m_d->inpaintPersistUsePromptFocus = m_d->checkInpaintUsePromptFocus->isChecked();
+    connect(m_d->checkInpaintUsePromptFocus, &QCheckBox::toggled, this, [this](bool on) {
+        m_d->inpaintPersistUsePromptFocus = on;
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry(QStringLiteral("InpaintUsePromptFocus"), on);
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+            saveInpaintWorkspaceToDocument();
+        schedulePersistDocumentDefaults();
+    });
+    genContentLayout->addWidget(m_d->checkInpaintUsePromptFocus);
 
     m_d->btnUpscale = new QPushButton(i18n("Upscale"));
-    m_d->btnUpscale->setToolTip(i18n("Upscale canvas using the scale factor above. Uses ComfyUI ImageScale (lanczos)."));
+    m_d->btnUpscale->setToolTip(i18n(
+        "Upscale the canvas at the scale factor above (ComfyUI ImageScale). With \"Refine upscaled image\" enabled, runs a diffusion pass after scaling."));
     connect(m_d->btnUpscale, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotUpscale);
     genContentLayout->addWidget(m_d->btnUpscale);
 
@@ -1285,6 +1606,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(m_d->comboAnimationTargetLayer, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         if (m_d->canvas && m_d->canvas->image())
             scheduleDocumentUiJsonSave();
+        if (m_d->animationPreviewRow && m_d->animationPreviewRow->isVisible() && m_d->animationPreviewDebounce) {
+            m_d->animationPreviewDebounce->stop();
+            m_d->animationPreviewDebounce->start();
+        }
     });
     animTargetLayout->addWidget(m_d->comboAnimationTargetLayer, 1);
     genContentLayout->addWidget(m_d->animationTargetRow);
@@ -1427,21 +1752,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(m_d->spinBatchCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("BatchCount", value);
+        schedulePersistDocumentDefaults();
     });
     connect(m_d->comboQueueMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("QueueMode", index);
     });
-    auto saveSeedConfig = [this]() {
-        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-        cfg.writeEntry("FixedSeed", m_d->checkFixedSeed->isChecked());
-        cfg.writeEntry("SeedValue", static_cast<qint64>(m_d->spinSeed->value()));
-    };
-    connect(m_d->checkFixedSeed, &QCheckBox::toggled, this, [saveSeedConfig](bool) {
-        saveSeedConfig();
+    connect(m_d->checkFixedSeed, &QCheckBox::toggled, this, [this](bool) {
+        persistSeedToConfig();
+        syncQueueSeedWidgetsFromMain();
     });
-    connect(m_d->spinSeed, QOverload<int>::of(&QSpinBox::valueChanged), this, [saveSeedConfig](int) {
-        saveSeedConfig();
+    connect(m_d->spinSeed, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        persistSeedToConfig();
+        syncQueueSeedWidgetsFromMain();
     });
     m_d->queueResolutionRow = new QWidget(queueWidget);
     QHBoxLayout *resLayout = new QHBoxLayout(m_d->queueResolutionRow);
@@ -1451,11 +1774,41 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     resLayout->addWidget(m_d->labelResolutionMultiplier);
     queueLayout->addWidget(m_d->queueResolutionRow);
 
+    m_d->queueCheckFixedSeed = new QCheckBox(i18n("Fixed seed"), queueWidget);
+    m_d->queueSpinSeed = new QSpinBox(queueWidget);
+    m_d->queueSpinSeed->setRange(0, 2147483647);
+    m_d->queueSpinSeed->setValue(m_d->spinSeed->value());
+    m_d->queueCheckFixedSeed->setChecked(m_d->checkFixedSeed->isChecked());
+    m_d->queueBtnRandomSeed = new QPushButton(queueWidget);
+    m_d->queueBtnRandomSeed->setIcon(KisIconUtils::loadIcon(QStringLiteral("random")));
+    m_d->queueBtnRandomSeed->setToolTip(i18n("Pick a new random seed."));
+    m_d->queueBtnRandomSeed->setAccessibleName(i18n("Random seed"));
+    connect(m_d->queueBtnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
+    auto copyQueueSeedToMain = [this]() {
+        if (!m_d->queueSpinSeed || !m_d->spinSeed || !m_d->checkFixedSeed || !m_d->queueCheckFixedSeed)
+            return;
+        m_d->checkFixedSeed->blockSignals(true);
+        m_d->spinSeed->blockSignals(true);
+        m_d->checkFixedSeed->setChecked(m_d->queueCheckFixedSeed->isChecked());
+        m_d->spinSeed->setValue(m_d->queueSpinSeed->value());
+        m_d->checkFixedSeed->blockSignals(false);
+        m_d->spinSeed->blockSignals(false);
+        persistSeedToConfig();
+    };
+    connect(m_d->queueSpinSeed, QOverload<int>::of(&QSpinBox::valueChanged), this, [copyQueueSeedToMain](int) {
+        copyQueueSeedToMain();
+    });
+    connect(m_d->queueCheckFixedSeed, &QCheckBox::toggled, this, [copyQueueSeedToMain](bool) {
+        copyQueueSeedToMain();
+    });
+
     QHBoxLayout *seedLayout = new QHBoxLayout();
-    seedLayout->addWidget(m_d->checkFixedSeed);
-    seedLayout->addWidget(m_d->spinSeed, 1);
-    seedLayout->addWidget(m_d->btnRandomSeed);
+    seedLayout->addWidget(m_d->queueCheckFixedSeed);
+    seedLayout->addWidget(m_d->queueSpinSeed, 1);
+    seedLayout->addWidget(m_d->queueBtnRandomSeed);
     queueLayout->addLayout(seedLayout);
+
+    connect(queueMenu, &QMenu::aboutToShow, this, &ComfyUIRemoteDock::syncQueueSeedWidgetsFromMain);
 
     QHBoxLayout *modeLayout = new QHBoxLayout();
     modeLayout->addWidget(new QLabel(i18n("Enqueue:"), queueWidget));
@@ -1686,12 +2039,37 @@ void ComfyUIRemoteDock::loadEmbeddedCustomWorkflowFromDocument()
     KisImageSP img = m_d->canvas->image().toStrongRef();
     if (!img)
         return;
-    KisAnnotationSP ann = img->annotation(ComfyUIUtils::customWorkflowAnnotationKey());
-    if (!ann || ann->data().isEmpty())
+    m_d->customWorkflowParamOverrides.clear();
+    QByteArray wfBytes;
+    if (KisAnnotationSP ann = img->annotation(ComfyUIUtils::customWorkflowAnnotationKey())) {
+        if (!ann->data().isEmpty())
+            wfBytes = ann->data();
+    }
+    if (wfBytes.isEmpty()) {
+        const QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
+        const QJsonObject cust = ui.value(QStringLiteral("custom")).toObject();
+        const QJsonObject wfObj = cust.value(QStringLiteral("workflow")).toObject();
+        if (!wfObj.isEmpty())
+            wfBytes = QJsonDocument(wfObj).toJson(QJsonDocument::Compact);
+        else
+            wfBytes = cust.value(QStringLiteral("workflow_text")).toString().toUtf8();
+        const QJsonObject pr = cust.value(QStringLiteral("params")).toObject();
+        for (auto it = pr.begin(); it != pr.end(); ++it)
+            m_d->customWorkflowParamOverrides.insert(it.key(), it.value().toVariant());
+    }
+    if (wfBytes.isEmpty())
         return;
     QSignalBlocker b(m_d->editCustomWorkflow);
-    m_d->editCustomWorkflow->setPlainText(QString::fromUtf8(ann->data()));
+    m_d->editCustomWorkflow->setPlainText(QString::fromUtf8(wfBytes));
     refreshCustomWorkflowParameterPanel();
+}
+
+static QString comfyCustomWorkflowStorageKey(const ComfyUIUtils::CustomWorkflowParamSlot &sl)
+{
+    using Kind = ComfyUIUtils::CustomWorkflowParamSlot::Kind;
+    if (sl.kind == Kind::KritaImageLayer || sl.kind == Kind::KritaMaskLayer)
+        return sl.nodeId;
+    return sl.paramName;
 }
 
 void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
@@ -1723,12 +2101,12 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
         return;
     }
 
-    QSet<QString> names;
+    QSet<QString> storageKeysInUse;
     for (const auto &s : slots)
-        names.insert(s.paramName);
+        storageKeysInUse.insert(comfyCustomWorkflowStorageKey(s));
     QStringList stale;
     for (auto it = m_d->customWorkflowParamOverrides.constBegin(); it != m_d->customWorkflowParamOverrides.constEnd(); ++it) {
-        if (!names.contains(it.key()))
+        if (!storageKeysInUse.contains(it.key()))
             stale.append(it.key());
     }
     for (const QString &k : stale)
@@ -1738,8 +2116,9 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
     m_d->customWorkflowParamsGroup->setTitle(i18n("Workflow parameters (ETN)"));
 
     for (const ComfyUIUtils::CustomWorkflowParamSlot &sl : slots) {
-        const QVariant cur = m_d->customWorkflowParamOverrides.contains(sl.paramName)
-            ? m_d->customWorkflowParamOverrides.value(sl.paramName)
+        const QString storageKey = comfyCustomWorkflowStorageKey(sl);
+        const QVariant cur = m_d->customWorkflowParamOverrides.contains(storageKey)
+            ? m_d->customWorkflowParamOverrides.value(storageKey)
             : sl.defaultValue;
         QString labelText = sl.paramName;
         if (!sl.typeStr.isEmpty() && sl.kind != ComfyUIUtils::CustomWorkflowParamSlot::Kind::Unsupported)
@@ -1754,11 +2133,11 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
                 std::swap(lo, hi);
             sp->setRange(lo, hi);
             sp->setValue(cur.toInt(sl.defaultValue.toInt()));
-            const QString pname = sl.paramName;
-            connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, pname](int v) {
-                m_d->customWorkflowParamOverrides.insert(pname, v);
+            const QString sk = storageKey;
+            connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, sk](int v) {
+                m_d->customWorkflowParamOverrides.insert(sk, v);
             });
-            m_d->customWorkflowParamOverrides.insert(pname, sp->value());
+            m_d->customWorkflowParamOverrides.insert(sk, sp->value());
             m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), sp);
             break;
         }
@@ -1767,11 +2146,11 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             sp->setDecimals(4);
             sp->setRange(sl.minV, sl.maxV);
             sp->setValue(cur.toDouble(sl.defaultValue.toDouble()));
-            const QString pname = sl.paramName;
-            connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, pname](double v) {
-                m_d->customWorkflowParamOverrides.insert(pname, v);
+            const QString sk = storageKey;
+            connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, sk](double v) {
+                m_d->customWorkflowParamOverrides.insert(sk, v);
             });
-            m_d->customWorkflowParamOverrides.insert(pname, sp->value());
+            m_d->customWorkflowParamOverrides.insert(sk, sp->value());
             m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), sp);
             break;
         }
@@ -1781,11 +2160,11 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             if (!cur.isNull())
                 chk = cur.toBool();
             cb->setChecked(chk);
-            const QString pname = sl.paramName;
-            connect(cb, &QCheckBox::toggled, this, [this, pname](bool on) {
-                m_d->customWorkflowParamOverrides.insert(pname, on);
+            const QString sk = storageKey;
+            connect(cb, &QCheckBox::toggled, this, [this, sk](bool on) {
+                m_d->customWorkflowParamOverrides.insert(sk, on);
             });
-            m_d->customWorkflowParamOverrides.insert(pname, cb->isChecked());
+            m_d->customWorkflowParamOverrides.insert(sk, cb->isChecked());
             m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
             break;
         }
@@ -1794,16 +2173,16 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterPromptNegative: {
             auto *le = new QLineEdit(m_d->customWorkflowParamsGroup);
             le->setText(cur.toString(sl.defaultValue.toString()));
-            const QString pname = sl.paramName;
-            connect(le, &QLineEdit::editingFinished, this, [this, pname, le]() {
-                m_d->customWorkflowParamOverrides.insert(pname, le->text());
+            const QString sk = storageKey;
+            connect(le, &QLineEdit::editingFinished, this, [this, sk, le]() {
+                m_d->customWorkflowParamOverrides.insert(sk, le->text());
             });
-            m_d->customWorkflowParamOverrides.insert(pname, le->text());
+            m_d->customWorkflowParamOverrides.insert(sk, le->text());
             m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), le);
             break;
         }
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterChoice: {
-            const QString pname = sl.paramName;
+            const QString sk = storageKey;
             if (!sl.choices.isEmpty()) {
                 auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
                 for (const QString &ch : sl.choices)
@@ -1813,18 +2192,18 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
                 if (ix < 0)
                     ix = 0;
                 cb->setCurrentIndex(ix);
-                connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, pname, cb](int) {
-                    m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+                connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, sk, cb](int) {
+                    m_d->customWorkflowParamOverrides.insert(sk, cb->currentData().toString());
                 });
-                m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+                m_d->customWorkflowParamOverrides.insert(sk, cb->currentData().toString());
                 m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
             } else {
                 auto *le = new QLineEdit(m_d->customWorkflowParamsGroup);
                 le->setText(cur.toString(sl.defaultValue.toString()));
-                connect(le, &QLineEdit::editingFinished, this, [this, pname, le]() {
-                    m_d->customWorkflowParamOverrides.insert(pname, le->text());
+                connect(le, &QLineEdit::editingFinished, this, [this, sk, le]() {
+                    m_d->customWorkflowParamOverrides.insert(sk, le->text());
                 });
-                m_d->customWorkflowParamOverrides.insert(pname, le->text());
+                m_d->customWorkflowParamOverrides.insert(sk, le->text());
                 m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), le);
             }
             break;
@@ -1839,21 +2218,44 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             if (ix < 0)
                 ix = 0;
             cb->setCurrentIndex(ix);
-            const QString pname = sl.paramName;
-            connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, pname, cb](int) {
-                m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+            const QString sk = storageKey;
+            connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, sk, cb](int) {
+                m_d->customWorkflowParamOverrides.insert(sk, cb->currentData().toString());
             });
-            m_d->customWorkflowParamOverrides.insert(pname, cb->currentData().toString());
+            m_d->customWorkflowParamOverrides.insert(sk, cb->currentData().toString());
             m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
             break;
         }
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaImageLayer:
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaMaskLayer: {
-            auto *lb = new QLabel(
-                i18n("Layer binding is not edited here — use the workflow JSON or the Python plugin for full parity."),
-                m_d->customWorkflowParamsGroup);
-            lb->setWordWrap(true);
-            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), lb);
+            labelText = QStringLiteral("%1 [%2]").arg(
+                sl.paramName,
+                sl.kind == ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaMaskLayer
+                    ? QStringLiteral("mask layer")
+                    : QStringLiteral("image layer"));
+            auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
+            cb->setMinimumContentsLength(18);
+            cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLength);
+            QVector<QPair<QString, QString>> items;
+            KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
+            if (img && img->rootLayer())
+                collectPaintLayerNodes(img->rootLayer(), &items);
+            for (const QPair<QString, QString> &p : items)
+                cb->addItem(p.second, p.first);
+            QString wantUuid = cur.toString();
+            if (wantUuid.isEmpty() && !items.isEmpty())
+                wantUuid = items.first().first;
+            int selIx = cb->findData(wantUuid);
+            if (selIx < 0 && cb->count() > 0)
+                selIx = 0;
+            cb->setCurrentIndex(selIx);
+            const QString sk = storageKey;
+            connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, sk, cb](int) {
+                m_d->customWorkflowParamOverrides.insert(sk, cb->currentData().toString());
+            });
+            if (cb->count() > 0)
+                m_d->customWorkflowParamOverrides.insert(sk, cb->currentData().toString());
+            m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
             break;
         }
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::Unsupported:
@@ -1888,9 +2290,10 @@ void ComfyUIRemoteDock::saveInpaintWorkspaceToDocument()
              m_d->comboInpaintMode ? m_d->comboInpaintMode->currentData().toString() : QStringLiteral("automatic"));
     o.insert(QStringLiteral("fill"),
              m_d->comboFillMode ? m_d->comboFillMode->currentData().toString() : QStringLiteral("blur"));
-    o.insert(QStringLiteral("use_inpaint"), true);
-    o.insert(QStringLiteral("use_prompt_focus"), false);
-    o.insert(QStringLiteral("context"), QStringLiteral("automatic"));
+    o.insert(QStringLiteral("use_inpaint"), m_d->inpaintPersistUseModel);
+    o.insert(QStringLiteral("use_prompt_focus"), m_d->inpaintPersistUsePromptFocus);
+    o.insert(QStringLiteral("context"),
+             m_d->comboInpaintContext ? m_d->comboInpaintContext->currentData().toString() : QStringLiteral("automatic"));
     o.insert(QStringLiteral("context_layer_id"), QString());
     img->removeAnnotation(key);
     img->addAnnotation(KisAnnotationSP(new KisAnnotation(
@@ -1905,10 +2308,15 @@ void ComfyUIRemoteDock::loadInpaintWorkspaceFromDocument()
     KisImageSP img = m_d->canvas->image().toStrongRef();
     if (!img)
         return;
-    KisAnnotationSP ann = img->annotation(ComfyUIUtils::inpaintWorkspaceAnnotationKey());
-    if (!ann || ann->data().isEmpty())
-        return;
-    QJsonObject root = QJsonDocument::fromJson(ann->data()).object();
+    QJsonObject root;
+    if (KisAnnotationSP ann = img->annotation(ComfyUIUtils::inpaintWorkspaceAnnotationKey())) {
+        if (!ann->data().isEmpty())
+            root = QJsonDocument::fromJson(ann->data()).object();
+    }
+    if (root.isEmpty()) {
+        const QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
+        root = ui.value(QStringLiteral("inpaint")).toObject();
+    }
     if (root.isEmpty())
         return;
     const QString mode = root.value(QStringLiteral("mode")).toString();
@@ -1921,6 +2329,251 @@ void ComfyUIRemoteDock::loadInpaintWorkspaceFromDocument()
         QSignalBlocker b(m_d->comboFillMode);
         setComboCurrentItemData(m_d->comboFillMode, fill, 2);
     }
+    m_d->inpaintPersistUseModel = root.value(QStringLiteral("use_inpaint")).toBool(true);
+    m_d->inpaintPersistUsePromptFocus = root.value(QStringLiteral("use_prompt_focus")).toBool(false);
+    if (m_d->checkInpaintUseModel) {
+        QSignalBlocker b(m_d->checkInpaintUseModel);
+        m_d->checkInpaintUseModel->setChecked(m_d->inpaintPersistUseModel);
+    }
+    if (m_d->checkInpaintUsePromptFocus) {
+        QSignalBlocker b(m_d->checkInpaintUsePromptFocus);
+        m_d->checkInpaintUsePromptFocus->setChecked(m_d->inpaintPersistUsePromptFocus);
+    }
+    const QString ctx = root.value(QStringLiteral("context")).toString().trimmed();
+    if (m_d->comboInpaintContext && !ctx.isEmpty()) {
+        QString norm = ctx;
+        norm.replace(QLatin1Char(' '), QLatin1Char('_'));
+        QSignalBlocker b(m_d->comboInpaintContext);
+        int cix = m_d->comboInpaintContext->findData(norm);
+        if (cix < 0)
+            cix = m_d->comboInpaintContext->findData(ctx);
+        if (cix >= 0)
+            m_d->comboInpaintContext->setCurrentIndex(cix);
+    }
+}
+
+void ComfyUIRemoteDock::schedulePersistDocumentDefaults()
+{
+    if (!m_d->documentDefaultsSaveTimer)
+        return;
+    m_d->documentDefaultsSaveTimer->start(350);
+}
+
+QString ComfyUIRemoteDock::encodeStyleIdForDocumentDefaults() const
+{
+    return encodeStyleIdFromPresetCombo(m_d->comboPreset);
+}
+
+QString ComfyUIRemoteDock::encodeStyleIdFromPresetCombo(const QComboBox *cb) const
+{
+    if (!cb)
+        return QStringLiteral("none");
+    const int idx = cb->currentIndex();
+    if (idx <= 0)
+        return QStringLiteral("none");
+    const int fc = firstCustomPresetIndex();
+    if (idx < fc) {
+        switch (idx) {
+        case 1:
+            return QStringLiteral("portrait");
+        case 2:
+            return QStringLiteral("landscape");
+        case 3:
+            return QStringLiteral("anime");
+        case 4:
+            return QStringLiteral("realistic");
+        default:
+            return QStringLiteral("none");
+        }
+    }
+    return QStringLiteral("custom:") + cb->currentText();
+}
+
+void ComfyUIRemoteDock::applyStyleIdFromDocumentDefaults(const QString &styleId)
+{
+    if (!m_d->comboPreset)
+        return;
+    applyStyleIdToPresetCombo(m_d->comboPreset, styleId);
+}
+
+void ComfyUIRemoteDock::applyStyleIdToPresetCombo(QComboBox *cb, const QString &styleId)
+{
+    if (!cb)
+        return;
+    const QString id = styleId.trimmed();
+    if (id.isEmpty() || id == QLatin1String("none")) {
+        cb->setCurrentIndex(0);
+        return;
+    }
+    if (id.startsWith(QLatin1String("custom:"))) {
+        const QString name = id.mid(7);
+        const int fi = cb->findText(name);
+        if (fi >= 0)
+            cb->setCurrentIndex(fi);
+        return;
+    }
+    const int fc = firstCustomPresetIndex();
+    int target = -1;
+    if (id == QLatin1String("portrait"))
+        target = 1;
+    else if (id == QLatin1String("landscape"))
+        target = 2;
+    else if (id == QLatin1String("anime"))
+        target = 3;
+    else if (id == QLatin1String("realistic"))
+        target = 4;
+    if (target > 0 && target < fc)
+        cb->setCurrentIndex(target);
+}
+
+QString ComfyUIRemoteDock::checkpointNameForUpscaleRefinementPreset() const
+{
+    if (!m_d->comboUpscaleRefinementModel)
+        return QString();
+    const int idx = m_d->comboUpscaleRefinementModel->currentIndex();
+    if (idx <= 0)
+        return QString();
+    const int fc = firstCustomPresetIndex();
+    if (idx < fc)
+        return m_d->comboCheckpoint ? m_d->comboCheckpoint->currentText().trimmed() : QString();
+    const QString name = m_d->comboUpscaleRefinementModel->itemText(idx);
+    return KSharedConfig::openConfig()
+        ->group(QStringLiteral("ComfyUIRemote_Preset_") + name)
+        .readEntry(QStringLiteral("Checkpoint"), QString())
+        .trimmed();
+}
+
+void ComfyUIRemoteDock::readUpscaleRefinementSampling(int *outSteps, double *outCfg, QString *outSampler, QString *outScheduler) const
+{
+    Q_ASSERT(outSteps && outCfg && outSampler && outScheduler);
+    *outSteps = m_d->spinSteps ? m_d->spinSteps->value() : 20;
+    *outCfg = m_d->spinCfg ? m_d->spinCfg->value() : 8.0;
+    *outSampler = m_d->comboSampler ? m_d->comboSampler->currentText().trimmed() : QStringLiteral("euler");
+    *outScheduler = m_d->ksamplerScheduler.isEmpty() ? QStringLiteral("normal") : m_d->ksamplerScheduler;
+    if (!m_d->comboUpscaleRefinementModel)
+        return;
+    const int idx = m_d->comboUpscaleRefinementModel->currentIndex();
+    const int fc = firstCustomPresetIndex();
+    if (idx < fc || idx <= 0)
+        return;
+    const QString name = m_d->comboUpscaleRefinementModel->itemText(idx);
+    KConfigGroup cfgG = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote_Preset_") + name);
+    *outSteps = cfgG.readEntry(QStringLiteral("Steps"), *outSteps);
+    *outCfg = cfgG.readEntry(QStringLiteral("Cfg"), *outCfg);
+    const QString ps = cfgG.readEntry(QStringLiteral("Sampler"), QString());
+    if (!ps.isEmpty())
+        *outSampler = ps;
+    const QString sch = cfgG.readEntry(QStringLiteral("Scheduler"), QString());
+    if (!sch.isEmpty())
+        *outScheduler = sch;
+}
+
+void ComfyUIRemoteDock::persistDocumentDefaultsToSettings()
+{
+    QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    QJsonObject dd;
+    dd.insert(QStringLiteral("style"), encodeStyleIdForDocumentDefaults());
+    dd.insert(QStringLiteral("batch_count"), m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1);
+    const QString pt = s.value(QStringLiteral("prompt_translation")).toString();
+    const bool transEn = !pt.isEmpty() && pt != QLatin1String("disabled");
+    dd.insert(QStringLiteral("translation_enabled"), transEn);
+    dd.insert(QStringLiteral("prompt_translation"), transEn ? pt : QStringLiteral("disabled"));
+    if (m_d->comboInpaintMode)
+        dd.insert(QStringLiteral("inpaint_mode"), m_d->comboInpaintMode->currentData().toString());
+    if (m_d->comboFillMode)
+        dd.insert(QStringLiteral("inpaint_fill"), m_d->comboFillMode->currentData().toString());
+    dd.insert(QStringLiteral("inpaint_use_model"), m_d->inpaintPersistUseModel);
+    dd.insert(QStringLiteral("inpaint_use_prompt_focus"), m_d->inpaintPersistUsePromptFocus);
+    if (m_d->comboInpaintContext)
+        dd.insert(QStringLiteral("inpaint_context"), m_d->comboInpaintContext->currentData().toString());
+    if (m_d->comboCheckpoint)
+        dd.insert(QStringLiteral("checkpoint"), m_d->comboCheckpoint->currentText().trimmed());
+    dd.insert(QStringLiteral("upscale_model"), QStringLiteral("default"));
+    s.insert(QStringLiteral("document_defaults"), dd);
+    ComfyUIUtils::saveSettingsJson(s);
+}
+
+void ComfyUIRemoteDock::tryApplyDocumentDefaultsForNewDocument(KisImageSP image)
+{
+    if (!image)
+        return;
+    const QString key = ComfyUIUtils::documentIdAnnotationKey();
+    KisAnnotationSP idAnn = image->annotation(key);
+    const QString docId = idAnn ? QString::fromUtf8(idAnn->data()).trimmed() : QString();
+    if (docId.isEmpty())
+        return;
+    if (m_d->documentDefaultsAppliedDocIds.contains(docId))
+        return;
+    if (ComfyUIUtils::documentHasStoredUiJsonPayload(image)) {
+        m_d->documentDefaultsAppliedDocIds.insert(docId);
+        return;
+    }
+    QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    QJsonObject def = ComfyUIUtils::documentDefaultsFromSettingsRoot(s);
+    m_d->documentDefaultsAppliedDocIds.insert(docId);
+    if (def.isEmpty())
+        return;
+
+    applyStyleIdFromDocumentDefaults(def.value(QStringLiteral("style")).toString());
+    if (m_d->spinBatchCount && def.contains(QStringLiteral("batch_count"))) {
+        const int bc = def.value(QStringLiteral("batch_count")).toInt(1);
+        m_d->spinBatchCount->setValue(qBound(m_d->spinBatchCount->minimum(), bc, m_d->spinBatchCount->maximum()));
+    }
+    const QString ck = def.value(QStringLiteral("checkpoint")).toString().trimmed();
+    if (!ck.isEmpty() && m_d->comboCheckpoint) {
+        const int ci = m_d->comboCheckpoint->findText(ck);
+        if (ci >= 0)
+            m_d->comboCheckpoint->setCurrentIndex(ci);
+        else
+            m_d->comboCheckpoint->setCurrentText(ck);
+    }
+    if (def.contains(QStringLiteral("translation_enabled"))) {
+        const bool tEn = def.value(QStringLiteral("translation_enabled")).toBool(false);
+        QString ptx = def.value(QStringLiteral("prompt_translation")).toString();
+        if (!tEn || ptx == QLatin1String("disabled"))
+            ptx = QStringLiteral("disabled");
+        if (ptx.isEmpty() && tEn)
+            ptx = QStringLiteral("en");
+        s.insert(QStringLiteral("prompt_translation"), ptx);
+        ComfyUIUtils::saveSettingsJson(s);
+        applyInterfaceAppearanceSettings();
+    }
+    if (m_d->comboInpaintMode) {
+        const QString im = def.value(QStringLiteral("inpaint_mode")).toString();
+        if (!im.isEmpty()) {
+            QSignalBlocker b(m_d->comboInpaintMode);
+            setComboCurrentItemData(m_d->comboInpaintMode, im, 0);
+        }
+    }
+    if (m_d->comboFillMode) {
+        const QString fl = def.value(QStringLiteral("inpaint_fill")).toString();
+        if (!fl.isEmpty()) {
+            QSignalBlocker b(m_d->comboFillMode);
+            setComboCurrentItemData(m_d->comboFillMode, fl, 2);
+        }
+    }
+    if (def.contains(QStringLiteral("inpaint_use_model")))
+        m_d->inpaintPersistUseModel = def.value(QStringLiteral("inpaint_use_model")).toBool(true);
+    if (def.contains(QStringLiteral("inpaint_use_prompt_focus")))
+        m_d->inpaintPersistUsePromptFocus = def.value(QStringLiteral("inpaint_use_prompt_focus")).toBool(false);
+    if (m_d->checkInpaintUseModel) {
+        QSignalBlocker b(m_d->checkInpaintUseModel);
+        m_d->checkInpaintUseModel->setChecked(m_d->inpaintPersistUseModel);
+    }
+    if (m_d->checkInpaintUsePromptFocus) {
+        QSignalBlocker b(m_d->checkInpaintUsePromptFocus);
+        m_d->checkInpaintUsePromptFocus->setChecked(m_d->inpaintPersistUsePromptFocus);
+    }
+    if (m_d->comboInpaintContext) {
+        QString ctx = def.value(QStringLiteral("inpaint_context")).toString();
+        ctx = ComfyUIUtils::inpaintContextForFreshDocumentDefaults(ctx);
+        QSignalBlocker b(m_d->comboInpaintContext);
+        const int cix = m_d->comboInpaintContext->findData(ctx);
+        if (cix >= 0)
+            m_d->comboInpaintContext->setCurrentIndex(cix);
+    }
+    updateNegativePromptAlertVisibility();
+    persistDocumentDefaultsToSettings();
 }
 
 ComfyUIRemoteDock::~ComfyUIRemoteDock()
@@ -1967,6 +2620,27 @@ void ComfyUIRemoteDock::refreshQueueResolutionRowVisibility()
     m_d->queueResolutionRow->setVisible(preset == QLatin1String("custom"));
 }
 
+void ComfyUIRemoteDock::persistSeedToConfig()
+{
+    if (!m_d->checkFixedSeed || !m_d->spinSeed)
+        return;
+    KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+    cfg.writeEntry("FixedSeed", m_d->checkFixedSeed->isChecked());
+    cfg.writeEntry("SeedValue", static_cast<qint64>(m_d->spinSeed->value()));
+}
+
+void ComfyUIRemoteDock::syncQueueSeedWidgetsFromMain()
+{
+    if (!m_d->queueSpinSeed || !m_d->queueCheckFixedSeed || !m_d->spinSeed || !m_d->checkFixedSeed)
+        return;
+    m_d->queueSpinSeed->blockSignals(true);
+    m_d->queueCheckFixedSeed->blockSignals(true);
+    m_d->queueSpinSeed->setValue(m_d->spinSeed->value());
+    m_d->queueCheckFixedSeed->setChecked(m_d->checkFixedSeed->isChecked());
+    m_d->queueSpinSeed->blockSignals(false);
+    m_d->queueCheckFixedSeed->blockSignals(false);
+}
+
 void ComfyUIRemoteDock::showPromptTagCompletion(QPlainTextEdit *editor)
 {
     if (!editor)
@@ -2001,7 +2675,7 @@ void ComfyUIRemoteDock::insertPromptTagCompletion(QPlainTextEdit *editor, const 
     if (n > 0)
         tc.setPosition(tc.position() - n, QTextCursor::KeepAnchor);
     tc.removeSelectedText();
-    // §13.138 / §13.1885: literal parentheses in tag names must not break attention syntax
+    // §13.138: literal parentheses in tag names must not break attention syntax
     QString escaped = completion;
     escaped.replace(QLatin1Char('('), QStringLiteral("\\("));
     escaped.replace(QLatin1Char(')'), QStringLiteral("\\)"));
@@ -2011,6 +2685,15 @@ void ComfyUIRemoteDock::insertPromptTagCompletion(QPlainTextEdit *editor, const 
 
 bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
 {
+    // §13.196: Ctrl+Backspace — accept ShortcutOverride so the editor receives a normal Key_Backspace (word delete)
+    if (event->type() == QEvent::ShortcutOverride) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if ((obj == m_d->editPrompt || obj == m_d->editNegative) && ke->key() == Qt::Key_Backspace
+            && (ke->modifiers() & Qt::ControlModifier)) {
+            ke->accept();
+            return true;
+        }
+    }
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         if ((obj == m_d->editPrompt || obj == m_d->editNegative) && (ke->modifiers() & Qt::ControlModifier)
@@ -2019,16 +2702,19 @@ bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
     }
-    // §13.196: Shift+Enter in prompt widget → same as clicking Generate
+    // §13.196: Shift+Enter in main prompt → same as clicking Generate
     if (obj == m_d->editPrompt && event->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && (ke->modifiers() & Qt::ShiftModifier)) {
             slotGenerate();
             return true;
         }
-        // §13.201: Ctrl+Up / Ctrl+Down — adjust attention weight for segment at cursor (parenthesis/angle block or word)
+    }
+    // §8.5 / §13.35 / §13.201: Ctrl+Up / Ctrl+Down — attention weight in positive and negative prompt fields
+    if ((obj == m_d->editPrompt || obj == m_d->editNegative) && event->type() == QEvent::KeyPress) {
+        QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         if ((ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down) && (ke->modifiers() & Qt::ControlModifier)) {
-            QPlainTextEdit *edit = m_d->editPrompt;
+            auto *edit = static_cast<QPlainTextEdit *>(obj);
             QString text = edit->toPlainText();
             int cursorPos = edit->textCursor().position();
             auto range = ComfyUIUtils::attentionSegmentRange(text, cursorPos);
@@ -2053,6 +2739,284 @@ void ComfyUIRemoteDock::setViewManager(KisViewManager *viewManager)
 {
     m_d->connections.clear();
     m_d->viewManager = viewManager;
+    if (!viewManager) {
+        if (m_d->documentSyncPoller)
+            m_d->documentSyncPoller->stop();
+        m_d->documentPollInitialized = false;
+        return;
+    }
+    // §10.1 / §13.151: action IDs and display strings match Python ai_diffusion.action (activation flags in XML)
+    KisActionManager *am = viewManager->actionManager();
+    auto reg = [this, am](const QString &id, void (ComfyUIRemoteDock::*slot)()) {
+        KisAction *a = am->createAction(id);
+        m_d->connections.addConnection(a, &KisAction::triggered, this, slot);
+    };
+    reg(QStringLiteral("ai_diffusion_settings"), &ComfyUIRemoteDock::slotConfigureHelp);
+    reg(QStringLiteral("ai_diffusion_generate"), &ComfyUIRemoteDock::slotAiDiffusionGenerateAction);
+    reg(QStringLiteral("ai_diffusion_cancel"), &ComfyUIRemoteDock::slotAiDiffusionCancelCurrent);
+    reg(QStringLiteral("ai_diffusion_cancel_queued"), &ComfyUIRemoteDock::slotAiDiffusionCancelQueued);
+    reg(QStringLiteral("ai_diffusion_cancel_all"), &ComfyUIRemoteDock::slotAiDiffusionCancelAll);
+    reg(QStringLiteral("ai_diffusion_toggle_preview"), &ComfyUIRemoteDock::slotAiDiffusionTogglePreview);
+    reg(QStringLiteral("ai_diffusion_apply"), &ComfyUIRemoteDock::slotAiDiffusionApply);
+    reg(QStringLiteral("ai_diffusion_apply_alternative"), &ComfyUIRemoteDock::slotAiDiffusionApplyAlternative);
+    reg(QStringLiteral("ai_diffusion_create_region"), &ComfyUIRemoteDock::slotAiDiffusionCreateRegion);
+    reg(QStringLiteral("ai_diffusion_switch_workspace_generation"), &ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceGeneration);
+    reg(QStringLiteral("ai_diffusion_switch_workspace_upscaling"), &ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceUpscaling);
+    reg(QStringLiteral("ai_diffusion_switch_workspace_live"), &ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceLive);
+    reg(QStringLiteral("ai_diffusion_switch_workspace_graph"), &ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceGraph);
+    reg(QStringLiteral("ai_diffusion_toggle_workspace"), &ComfyUIRemoteDock::slotAiDiffusionToggleWorkspace);
+    reg(QStringLiteral("ai_diffusion_toggle_edit_mode"), &ComfyUIRemoteDock::slotAiDiffusionToggleEditMode);
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionToggleWorkspace()
+{
+    if (!m_d->comboWorkspace) {
+        return;
+    }
+    const int n = m_d->comboWorkspace->count();
+    if (n <= 0) {
+        return;
+    }
+    const int next = (m_d->comboWorkspace->currentIndex() + 1) % n;
+    m_d->comboWorkspace->setCurrentIndex(next);
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionToggleEditMode()
+{
+    if (!m_d->checkEditMode) {
+        return;
+    }
+    m_d->checkEditMode->setChecked(!m_d->checkEditMode->isChecked());
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionGenerateAction()
+{
+    if (!m_d->comboWorkspace) {
+        slotGenerate();
+        return;
+    }
+    switch (m_d->comboWorkspace->currentIndex()) {
+    case 0:
+        slotGenerate();
+        break;
+    case 1:
+        slotUpscale();
+        break;
+    case 2:
+        if (m_d->checkLiveMode) {
+            if (!m_d->checkLiveMode->isChecked())
+                m_d->checkLiveMode->setChecked(true);
+            slotLiveTick();
+        }
+        break;
+    case 3:
+        slotGenerateAnimation();
+        break;
+    case 4:
+        slotGenerate();
+        break;
+    default:
+        break;
+    }
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionCancelCurrent()
+{
+    if (m_d->isFullAnimationBatch || !m_d->animationBatchPromptIdToIndex.isEmpty() || m_d->batchNeedsPerFrameReference) {
+        slotCancelQueue();
+        return;
+    }
+    if (cancelCurrentGenerateJob()) {
+        setStatusMessage(i18n("Cancelled current job."));
+        return;
+    }
+    if (!m_d->inpaintPromptId.isEmpty()) {
+        m_d->inpaintPollTimer->stop();
+        m_d->inpaintPromptId.clear();
+        if (m_d->btnInpaint)
+            m_d->btnInpaint->setEnabled(true);
+        m_d->progressBar->setValue(0);
+        QString urlStr = m_d->editServerUrl->text().trimmed();
+        if (!urlStr.isEmpty()) {
+            QUrl interruptUrl(urlStr);
+            QString ip = interruptUrl.path();
+            if (ip.isEmpty() || ip == "/")
+                interruptUrl.setPath("/interrupt");
+            else if (!ip.endsWith('/'))
+                interruptUrl.setPath(ip + "/interrupt");
+            else
+                interruptUrl.setPath(ip + "interrupt");
+            QNetworkRequest reqInt(interruptUrl);
+            ComfyUIUtils::setComfyUIRequestHeaders(reqInt);
+            reqInt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            m_d->nam->post(reqInt, QByteArray("{}"));
+        }
+        setStatusMessage(i18n("Cancelled current job."));
+        return;
+    }
+    if (!m_d->upscalePromptId.isEmpty()) {
+        m_d->upscalePollTimer->stop();
+        m_d->upscalePromptId.clear();
+        if (m_d->btnUpscale)
+            m_d->btnUpscale->setEnabled(true);
+        m_d->progressBar->setValue(0);
+        QString urlStr = m_d->editServerUrl->text().trimmed();
+        if (!urlStr.isEmpty()) {
+            QUrl interruptUrl(urlStr);
+            QString ip = interruptUrl.path();
+            if (ip.isEmpty() || ip == "/")
+                interruptUrl.setPath("/interrupt");
+            else if (!ip.endsWith('/'))
+                interruptUrl.setPath(ip + "/interrupt");
+            else
+                interruptUrl.setPath(ip + "interrupt");
+            QNetworkRequest reqInt(interruptUrl);
+            ComfyUIUtils::setComfyUIRequestHeaders(reqInt);
+            reqInt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            m_d->nam->post(reqInt, QByteArray("{}"));
+        }
+        setStatusMessage(i18n("Cancelled current job."));
+        return;
+    }
+    if (!m_d->livePromptId.isEmpty()) {
+        m_d->livePollTimer->stop();
+        m_d->livePromptId.clear();
+        stopLiveSpinner();
+        QString urlStr = m_d->editServerUrl->text().trimmed();
+        if (!urlStr.isEmpty()) {
+            QUrl interruptUrl(urlStr);
+            QString ip = interruptUrl.path();
+            if (ip.isEmpty() || ip == "/")
+                interruptUrl.setPath("/interrupt");
+            else if (!ip.endsWith('/'))
+                interruptUrl.setPath(ip + "/interrupt");
+            else
+                interruptUrl.setPath(ip + "interrupt");
+            QNetworkRequest reqInt(interruptUrl);
+            ComfyUIUtils::setComfyUIRequestHeaders(reqInt);
+            reqInt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+            m_d->nam->post(reqInt, QByteArray("{}"));
+        }
+        setStatusMessage(i18n("Cancelled current job."));
+    }
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionCancelQueued()
+{
+    if (m_d->jobQueue.isEmpty())
+        return;
+    cancelQueuedGenerateJobs();
+    setStatusMessage(i18n("Cancelled queued jobs."));
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionCancelAll()
+{
+    slotCancelQueue();
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionTogglePreview()
+{
+    if (m_d->previewLayerId.trimmed().isEmpty()) {
+        setStatusMessage(i18n("No preview layer is set for this document."), false, true);
+        return;
+    }
+    if (!m_d->viewManager || !m_d->viewManager->image()) {
+        setStatusMessage(i18n("Open a document first."), true);
+        return;
+    }
+    KisImageSP image = m_d->viewManager->image();
+    KisNodeSP root = image->rootLayer();
+    if (!root) {
+        setStatusMessage(i18n("Could not toggle preview layer."), true);
+        return;
+    }
+    const QUuid uid = comfyParseLayerUuidString(m_d->previewLayerId);
+    if (uid.isNull()) {
+        setStatusMessage(i18n("Invalid preview layer id."), true);
+        return;
+    }
+    KisNodeSP node = KisLayerUtils::findNodeByUuid(root, uid);
+    if (!node) {
+        setStatusMessage(i18n("Preview layer was not found."), true);
+        return;
+    }
+    KisImageBarrierLock lock(image);
+    lock.unlock();
+    image->undoAdapter()->addCommand(new KisImageChangeVisibilityCommand(!node->visible(), node));
+    if (m_d->canvas)
+        m_d->canvas->updateCanvas();
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionApply()
+{
+    if (!m_d->comboWorkspace)
+        return;
+    const int ws = m_d->comboWorkspace->currentIndex();
+    if (ws != 0 && ws != 2)
+        return;
+    if (ws == 0) {
+        slotHistoryApply();
+        return;
+    }
+    // §10.1 Live: apply current live result (same behavior as finished live frame path)
+    if (!m_d->lastLiveResultImagePath.isEmpty() && QFile::exists(m_d->lastLiveResultImagePath)) {
+        QJsonObject ls = ComfyUIUtils::loadSettingsJson();
+        QString liveBeh = ls.value(QStringLiteral("apply_behavior_live")).toString();
+        if (liveBeh.isEmpty())
+            liveBeh = QStringLiteral("replace");
+        if (applyResultFileWithBehavior(m_d->lastLiveResultImagePath, liveBeh)
+            && ls.value(QStringLiteral("new_seed_after_apply")).toBool(false) && m_d->spinSeed) {
+            m_d->spinSeed->setValue(
+                static_cast<int>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31))));
+        }
+        if (m_d->canvas)
+            m_d->canvas->updateCanvas();
+        return;
+    }
+    slotHistoryApply();
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionApplyAlternative()
+{
+    if (!m_d->comboWorkspace || m_d->comboWorkspace->currentIndex() != 2)
+        return;
+    if (m_d->lastLiveResultImagePath.isEmpty() || !QFile::exists(m_d->lastLiveResultImagePath)) {
+        setStatusMessage(i18n("No live result to apply yet."), false, true);
+        return;
+    }
+    if (!applyResultFileWithBehavior(m_d->lastLiveResultImagePath, QStringLiteral("layer")))
+        setStatusMessage(i18n("Could not import image."), true);
+    else if (m_d->canvas)
+        m_d->canvas->updateCanvas();
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionCreateRegion()
+{
+    slotAddRegion();
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceGeneration()
+{
+    if (m_d->comboWorkspace)
+        m_d->comboWorkspace->setCurrentIndex(0);
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceUpscaling()
+{
+    if (m_d->comboWorkspace)
+        m_d->comboWorkspace->setCurrentIndex(1);
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceLive()
+{
+    if (m_d->comboWorkspace)
+        m_d->comboWorkspace->setCurrentIndex(2);
+}
+
+void ComfyUIRemoteDock::slotAiDiffusionSwitchWorkspaceGraph()
+{
+    if (m_d->comboWorkspace)
+        m_d->comboWorkspace->setCurrentIndex(4);
 }
 
 // §13.15 / §13.52: document_id annotation; when missing, create; when duplicate across open docs, assign new ID to current (copy handling).
@@ -2095,18 +3059,55 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
     if (c) {
         KisImageSP img = c->image().toStrongRef();
         if (img) {
+            m_d->documentPollInitialized = false;
+            if (m_d->documentSyncPoller)
+                m_d->documentSyncPoller->start();
             ensureDocumentId(img, c);
-            // §13.44: Restore preview layer ID from document annotation (ui.json equivalent)
+            // §13.199: future ui.json version → defaults; warn once per document
+            {
+                QString docIdWarn;
+                if (KisAnnotationSP idAnn = img->annotation(ComfyUIUtils::documentIdAnnotationKey())) {
+                    docIdWarn = QString::fromUtf8(idAnn->data()).trimmed();
+                }
+                const ComfyUIUtils::DocumentUiJsonLoadOutcome uiMeta = ComfyUIUtils::loadDocumentUiJsonWithMeta(img);
+                if (uiMeta.resetToDefaultsDueToFutureVersion && !docIdWarn.isEmpty()
+                    && !m_d->warnedFutureUiJsonVersionDocIds.contains(docIdWarn)) {
+                    m_d->warnedFutureUiJsonVersionDocIds.insert(docIdWarn);
+                    QMessageBox::warning(
+                        this,
+                        i18nc("@title:window", "AI Image Generation data"),
+                        i18n(
+                            "This document's embedded AI data (format version %1) is newer than this Krita build supports (version %2). "
+                            "Embedded plugin state was reset to defaults; saving the document may discard fields this build does not understand.",
+                            uiMeta.rawVersionFromFile,
+                            ComfyUIUtils::persistenceFormatVersion));
+                }
+            }
+            tryApplyDocumentDefaultsForNewDocument(img);
+            loadRegionsPersistedForDocument(img);
+            applyModelFieldsFromUiJson(ComfyUIUtils::loadDocumentUiJsonObject(img));
+            // §13.44 / §13.189: preview_layer from annotation or ui.json
             const QString previewKey = ComfyUIUtils::previewLayerAnnotationKey();
             KisAnnotationSP previewAnn = img->annotation(previewKey);
             m_d->previewLayerId = previewAnn ? QString::fromUtf8(previewAnn->data()).trimmed() : QString();
-            // §13.149: When in Live workspace, restore live strength from document (ui.json live key)
+            if (m_d->previewLayerId.isEmpty()) {
+                const QJsonObject uiPrev = ComfyUIUtils::loadDocumentUiJsonObject(img);
+                m_d->previewLayerId = uiPrev.value(QStringLiteral("preview_layer")).toString().trimmed();
+            }
+            // §13.149 / §13.189: Live strength from annotation or ui.json
             if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2 && m_d->spinStrength) {
                 const QString liveKey = ComfyUIUtils::liveWorkspaceAnnotationKey();
-                KisAnnotationSP liveAnn = img->annotation(liveKey);
-                if (liveAnn && !liveAnn->data().isEmpty()) {
-                    QJsonObject o = QJsonDocument::fromJson(liveAnn->data()).object();
-                    double s = o.value(QStringLiteral("strength")).toDouble(0.75);
+                QJsonObject liveObj;
+                if (KisAnnotationSP liveAnn = img->annotation(liveKey)) {
+                    if (!liveAnn->data().isEmpty())
+                        liveObj = QJsonDocument::fromJson(liveAnn->data()).object();
+                }
+                if (liveObj.isEmpty()) {
+                    const QJsonObject uiLive = ComfyUIUtils::loadDocumentUiJsonObject(img);
+                    liveObj = uiLive.value(QStringLiteral("live")).toObject();
+                }
+                if (!liveObj.isEmpty()) {
+                    const double s = liveObj.value(QStringLiteral("strength")).toDouble(0.75);
                     m_d->spinStrength->setValue(qBound(1, qRound(s * 100.0), 100));
                 }
             }
@@ -2117,6 +3118,9 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             loadDocumentHistoryFromAnnotations();
             loadAnimationWorkspaceFromDocument();
         } else {
+            if (m_d->documentSyncPoller)
+                m_d->documentSyncPoller->stop();
+            m_d->documentPollInitialized = false;
             m_d->previewLayerId.clear();
             m_d->historyEntries.clear();
             if (m_d->listHistory)
@@ -2141,6 +3145,9 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             }
         }
     } else {
+        if (m_d->documentSyncPoller)
+            m_d->documentSyncPoller->stop();
+        m_d->documentPollInitialized = false;
         m_d->previewLayerId.clear();
         m_d->historyEntries.clear();
         if (m_d->listHistory)
@@ -2162,7 +3169,7 @@ void ComfyUIRemoteDock::updateWelcomeVisibility()
     const bool showWelcome = !m_d->canvas || !m_d->isConnected;
     m_d->mainStack->setCurrentIndex(showWelcome ? 0 : 1);
     if (showWelcome && !m_d->updateCheckRequested)
-        QTimer::singleShot(200, this, &ComfyUIRemoteDock::startUpdateCheck);
+        QTimer::singleShot(200, this, [this]() { startUpdateCheck(false); });
     if (showWelcome)
         QTimer::singleShot(500, this, &ComfyUIRemoteDock::startNewsFetch);
     // §13.190: At most one of update / news / connection visible; order: update → news → connection
@@ -2210,19 +3217,39 @@ void ComfyUIRemoteDock::updateWelcomeVisibility()
 
 void ComfyUIRemoteDock::slotCheckForUpdates()
 {
-    m_d->updateCheckRequested = false;
-    startUpdateCheck();
+    startUpdateCheck(true);
 }
 
-void ComfyUIRemoteDock::startUpdateCheck()
+void ComfyUIRemoteDock::refreshPluginInformationTabUpdateUi()
+{
+    if (m_d->pluginTabLatestVersionLabel) {
+        if (m_d->updateCheckInProgress) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Checking...")));
+        } else if (m_d->pluginUpdateCheckHadFailure) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Update failed")));
+        } else if (m_d->lastReportedLatestPluginVersion.isEmpty()) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Not checked")));
+        } else {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", m_d->lastReportedLatestPluginVersion));
+        }
+    }
+    if (m_d->pluginTabDownloadInstallButton)
+        m_d->pluginTabDownloadInstallButton->setEnabled(m_d->hasUpdateAvailable);
+}
+
+void ComfyUIRemoteDock::startUpdateCheck(bool manualRequest)
 {
     // §13.37 / §13.160: GET {api_url}/plugin/latest?version={current}; if response.version != current, show update
-    if (m_d->updateCheckRequested || !m_d->nam) return;
-    QJsonObject settings = ComfyUIUtils::loadSettingsJson();
-    bool autoUpdate = settings.value(QStringLiteral("auto_update")).toBool(true);
-    if (!autoUpdate) return;
-    m_d->updateCheckRequested = true;
+    if (!m_d->nam || m_d->updateCheckInProgress) return;
+    if (!manualRequest) {
+        if (m_d->updateCheckRequested) return;
+        QJsonObject settings = ComfyUIUtils::loadSettingsJson();
+        if (!settings.value(QStringLiteral("auto_update")).toBool(true)) return;
+        m_d->updateCheckRequested = true;
+    }
     m_d->updateCheckInProgress = true;
+    m_d->pluginUpdateCheckHadFailure = false;
+    refreshPluginInformationTabUpdateUi();
     updateWelcomeVisibility();
     QString currentVer = ComfyUIUtils::pluginVersion();
     QUrl url(QStringLiteral("https://api.interstice.cloud/plugin/latest"));
@@ -2236,6 +3263,8 @@ void ComfyUIRemoteDock::startUpdateCheck()
         reply->deleteLater();
         m_d->updateCheckInProgress = false;
         if (reply->error() != QNetworkReply::NoError) {
+            m_d->pluginUpdateCheckHadFailure = true;
+            refreshPluginInformationTabUpdateUi();
             updateWelcomeVisibility();
             return;
         }
@@ -2243,17 +3272,26 @@ void ComfyUIRemoteDock::startUpdateCheck()
         QJsonParseError err;
         QJsonObject obj = QJsonDocument::fromJson(data, &err).object();
         if (err.error != QJsonParseError::NoError || obj.isEmpty()) {
+            m_d->pluginUpdateCheckHadFailure = true;
+            refreshPluginInformationTabUpdateUi();
             updateWelcomeVisibility();
             return;
         }
         QString latestVer = obj.value(QStringLiteral("version")).toString();
-        if (latestVer.isEmpty() || latestVer == currentVer) {
+        if (latestVer.isEmpty()) latestVer = currentVer;
+        m_d->lastReportedLatestPluginVersion = latestVer;
+        m_d->pluginUpdateCheckHadFailure = false;
+        if (latestVer == currentVer) {
+            m_d->hasUpdateAvailable = false;
+            m_d->updateDownloadUrl.clear();
+            refreshPluginInformationTabUpdateUi();
             updateWelcomeVisibility();
             return;
         }
         QString urlStr = obj.value(QStringLiteral("url")).toString();
         m_d->hasUpdateAvailable = true;
         m_d->updateDownloadUrl = urlStr;
+        refreshPluginInformationTabUpdateUi();
         updateWelcomeVisibility();
     });
 }
@@ -2299,7 +3337,138 @@ void ComfyUIRemoteDock::updateUpscaleTargetSize()
     QSize size = m_d->viewManager->image()->size();
     int w = qRound(size.width() * m_d->upscaleFactor);
     int h = qRound(size.height() * m_d->upscaleFactor);
-    m_d->labelUpscaleTargetSize->setText(i18n("Target size: %1 × %2", w, h));
+    const int overlapPx = m_d->tileOverlapMode == 1 ? m_d->tileOverlap : -1;
+    const int tileExt = ComfyUIUtils::diffusionUpscaleTileEstimateExtentPx(ComfyUIUtils::loadSettingsJson());
+    const int tiles = ComfyUIUtils::DiffusionTileLayout::fromUniformGrid(w, h, tileExt, overlapPx).totalTiles();
+    if (tiles > 1)
+        m_d->labelUpscaleTargetSize->setText(i18n("Target size: %1 × %2 · ~%3 tiles (estimate)", w, h, tiles));
+    else
+        m_d->labelUpscaleTargetSize->setText(i18n("Target size: %1 × %2", w, h));
+}
+
+void ComfyUIRemoteDock::slotDocumentSyncPoll()
+{
+    if (!m_d->documentSyncPoller)
+        return;
+    if (!m_d->viewManager || !m_d->viewManager->image()) {
+        m_d->documentSyncPoller->stop();
+        m_d->documentPollInitialized = false;
+        return;
+    }
+    KisDocument *doc = m_d->canvas && m_d->canvas->imageView() ? m_d->canvas->imageView()->document() : nullptr;
+    if (doc) {
+        bool open = false;
+        const QList<QPointer<KisDocument>> docs = KisPart::instance()->documents();
+        for (const QPointer<KisDocument> &d : docs) {
+            if (d.data() == doc) {
+                open = true;
+                break;
+            }
+        }
+        if (!open) {
+            m_d->documentSyncPoller->stop();
+            m_d->documentPollInitialized = false;
+            return;
+        }
+    }
+
+    KisImageSP image = m_d->viewManager->image();
+    if (!image) {
+        m_d->documentSyncPoller->stop();
+        m_d->documentPollInitialized = false;
+        return;
+    }
+
+    bool curHasSel = false;
+    QRect curSelRect;
+    if (KisSelectionSP sel = m_d->viewManager->selection()) {
+        if (sel->pixelSelection()) {
+            curSelRect = sel->pixelSelection()->selectedExactRect();
+            curHasSel = !curSelRect.isEmpty();
+        }
+    }
+
+    int curTime = (std::numeric_limits<int>::min)();
+    if (image->animationInterface() && image->animationInterface()->hasAnimation())
+        curTime = image->animationInterface()->currentTime();
+
+    if (!m_d->documentPollInitialized) {
+        m_d->lastPolledHadSelection = curHasSel;
+        m_d->lastPolledSelectionBounds = curSelRect;
+        m_d->lastPolledCurrentTime = curTime;
+        m_d->documentPollInitialized = true;
+        return;
+    }
+
+    const bool selChanged =
+        (curHasSel != m_d->lastPolledHadSelection) || (curHasSel && curSelRect != m_d->lastPolledSelectionBounds);
+    if (selChanged) {
+        m_d->lastPolledHadSelection = curHasSel;
+        m_d->lastPolledSelectionBounds = curSelRect;
+        // Reserved for selection-driven UX (e.g. live bounds); inpaint/generate read selection at action time.
+    }
+
+    if (curTime != m_d->lastPolledCurrentTime) {
+        m_d->lastPolledCurrentTime = curTime;
+        const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1;
+        if (ws == 3 && m_d->radioSingleFrame && m_d->radioSingleFrame->isChecked() && m_d->animationPreviewRow
+            && m_d->animationPreviewRow->isVisible() && m_d->animationPreviewDebounce) {
+            m_d->animationPreviewDebounce->stop();
+            m_d->animationPreviewDebounce->start();
+        }
+    }
+}
+
+void ComfyUIRemoteDock::slotDebouncedAnimationTargetPreview()
+{
+    refreshAnimationTargetLayerLivePreview();
+}
+
+void ComfyUIRemoteDock::refreshAnimationTargetLayerLivePreview()
+{
+    if (!m_d->labelAnimationPreview)
+        return;
+    const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1;
+    if (ws != 3 || !m_d->radioSingleFrame || !m_d->radioSingleFrame->isChecked())
+        return;
+    KisImageSP image = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
+    if (!image || !image->rootLayer()) {
+        m_d->labelAnimationPreview->clear();
+        m_d->labelAnimationPreview->setPixmap(QPixmap());
+        return;
+    }
+    const QString uuid =
+        m_d->comboAnimationTargetLayer ? m_d->comboAnimationTargetLayer->currentData().toString().trimmed() : QString();
+    if (uuid.isEmpty()) {
+        m_d->labelAnimationPreview->clear();
+        m_d->labelAnimationPreview->setPixmap(QPixmap());
+        return;
+    }
+    KisPaintLayer *pl = findPaintLayerByUuidInTree(image->rootLayer(), uuid);
+    if (!pl || !pl->projection()) {
+        m_d->labelAnimationPreview->clear();
+        m_d->labelAnimationPreview->setPixmap(QPixmap());
+        return;
+    }
+    QRect bounds = pl->exactBounds() & image->bounds();
+    if (bounds.isEmpty()) {
+        m_d->labelAnimationPreview->clear();
+        m_d->labelAnimationPreview->setPixmap(QPixmap());
+        return;
+    }
+    const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
+    QImage img = pl->projection()->convertToQImage(profile, bounds,
+                                                  KoColorConversionTransformation::internalRenderingIntent(),
+                                                  KoColorConversionTransformation::internalConversionFlags());
+    if (img.isNull()) {
+        m_d->labelAnimationPreview->clear();
+        return;
+    }
+    QPixmap pm = QPixmap::fromImage(img);
+    const int maxW = 280;
+    if (pm.width() > maxW)
+        pm = pm.scaledToWidth(maxW, Qt::SmoothTransformation);
+    m_d->labelAnimationPreview->setPixmap(pm);
 }
 
 void ComfyUIRemoteDock::updateAnimationButtonLabel()
@@ -2344,6 +3513,375 @@ QJsonObject ComfyUIRemoteDock::animationWorkspaceToJson() const
     return o;
 }
 
+namespace {
+
+QJsonArray comfyRegionEntriesToJsonArray(const QList<ComfyUIRemoteDock::Private::RegionEntry> &entries)
+{
+    QJsonArray arr;
+    for (const auto &e : entries) {
+        QJsonObject o;
+        o.insert(QStringLiteral("name"), e.name);
+        o.insert(QStringLiteral("prompt"), e.prompt);
+        o.insert(QStringLiteral("mask_source"), e.maskSource);
+        o.insert(QStringLiteral("control"), QJsonArray());
+        arr.append(o);
+    }
+    return arr;
+}
+
+QList<ComfyUIRemoteDock::Private::RegionEntry> comfyParseRegionEntriesFromJsonArray(const QJsonArray &arr)
+{
+    QList<ComfyUIRemoteDock::Private::RegionEntry> out;
+    for (const QJsonValue &v : arr) {
+        const QJsonObject o = v.toObject();
+        ComfyUIRemoteDock::Private::RegionEntry e;
+        e.name = o.value(QStringLiteral("name")).toString();
+        e.prompt = o.value(QStringLiteral("prompt")).toString();
+        if (e.prompt.isEmpty())
+            e.prompt = o.value(QStringLiteral("positive")).toString();
+        QString ms = o.value(QStringLiteral("mask_source")).toString();
+        if (ms.isEmpty())
+            ms = o.value(QStringLiteral("maskSource")).toString();
+        e.maskSource = ms.isEmpty() ? QStringLiteral("selection") : ms;
+        if (!e.name.isEmpty() || !e.prompt.isEmpty())
+            out.append(e);
+    }
+    return out;
+}
+
+static int comfyWorkspaceIndexFromUiJson(const QString &w)
+{
+    if (w == QLatin1String("upscaling"))
+        return 1;
+    if (w == QLatin1String("live"))
+        return 2;
+    if (w == QLatin1String("animation"))
+        return 3;
+    if (w == QLatin1String("custom"))
+        return 4;
+    return 0;
+}
+
+} // namespace
+
+void ComfyUIRemoteDock::mergeDocumentModelIntoUiJson(QJsonObject *ui, KisImageSP img) const
+{
+    if (!ui)
+        return;
+
+    QJsonObject upscale;
+    upscale.insert(QStringLiteral("upscaler"), QStringLiteral("default"));
+    upscale.insert(QStringLiteral("factor"), m_d->upscaleFactor);
+    const bool useDiffusion = m_d->checkUpscaleRefine && m_d->checkUpscaleRefine->isChecked();
+    upscale.insert(QStringLiteral("use_diffusion"), useDiffusion);
+    const int strengthPct = m_d->sliderUpscaleRefineStrength ? m_d->sliderUpscaleRefineStrength->value() : 0;
+    const int guidancePct = m_d->sliderUpscaleRefineGuidance ? m_d->sliderUpscaleRefineGuidance->value() : 0;
+    upscale.insert(QStringLiteral("strength"), strengthPct / 100.0);
+    upscale.insert(QStringLiteral("unblur_strength"), guidancePct / 100.0);
+    upscale.insert(QStringLiteral("tile_overlap_mode"), m_d->tileOverlapMode);
+    upscale.insert(QStringLiteral("tile_overlap"), m_d->tileOverlap);
+    upscale.insert(QStringLiteral("use_prompt"), m_d->checkUpscaleUsePrompt && m_d->checkUpscaleUsePrompt->isChecked());
+    upscale.insert(QStringLiteral("refinement_style"), encodeStyleIdFromPresetCombo(m_d->comboUpscaleRefinementModel));
+    ui->insert(QStringLiteral("upscale"), upscale);
+
+    QJsonObject custom;
+    if (img) {
+        if (KisAnnotationSP cw = img->annotation(ComfyUIUtils::customWorkflowAnnotationKey())) {
+            if (!cw->annotation().isEmpty()) {
+                const QByteArray raw = cw->annotation();
+                QJsonParseError err{};
+                const QJsonDocument wd = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(raw), &err);
+                if (err.error == QJsonParseError::NoError && wd.isObject())
+                    custom.insert(QStringLiteral("workflow"), wd.object());
+                else
+                    custom.insert(QStringLiteral("workflow_text"), QString::fromUtf8(raw));
+            }
+        }
+    }
+    if (!m_d->customWorkflowParamOverrides.isEmpty()) {
+        QJsonObject pparams;
+        for (auto it = m_d->customWorkflowParamOverrides.constBegin(); it != m_d->customWorkflowParamOverrides.constEnd(); ++it)
+            pparams.insert(it.key(), QJsonValue::fromVariant(it.value()));
+        custom.insert(QStringLiteral("params"), pparams);
+    }
+    if (!custom.isEmpty())
+        ui->insert(QStringLiteral("custom"), custom);
+
+    const QJsonArray rootRegionArr = comfyRegionEntriesToJsonArray(m_d->regionEntries);
+    QJsonObject rootWrap;
+    rootWrap.insert(QStringLiteral("regions"), rootRegionArr);
+    ui->insert(QStringLiteral("root"), rootWrap);
+    QJsonObject editWrap;
+    editWrap.insert(QStringLiteral("regions"), comfyRegionEntriesToJsonArray(m_d->editRegionEntries));
+    ui->insert(QStringLiteral("edit"), editWrap);
+    ui->insert(QStringLiteral("regions"), rootRegionArr);
+    ui->insert(QStringLiteral("control"), QJsonArray());
+
+    static const QStringList wsIds = { QStringLiteral("generation"), QStringLiteral("upscaling"), QStringLiteral("live"),
+                                       QStringLiteral("animation"), QStringLiteral("custom") };
+    const int wix = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;
+    if (wix >= 0 && wix < wsIds.size())
+        ui->insert(QStringLiteral("workspace"), wsIds.at(wix));
+    ui->insert(QStringLiteral("style"), encodeStyleIdForDocumentDefaults());
+    if (m_d->spinStrength)
+        ui->insert(QStringLiteral("strength"), m_d->spinStrength->value());
+    if (m_d->checkRegionOnly)
+        ui->insert(QStringLiteral("region_only"), m_d->checkRegionOnly->isChecked());
+    if (m_d->checkEditMode)
+        ui->insert(QStringLiteral("edit_mode"), m_d->checkEditMode->isChecked());
+    if (m_d->spinBatchCount)
+        ui->insert(QStringLiteral("batch_count"), m_d->spinBatchCount->value());
+    if (m_d->spinSeed)
+        ui->insert(QStringLiteral("seed"), static_cast<double>(m_d->spinSeed->value()));
+    if (m_d->checkFixedSeed)
+        ui->insert(QStringLiteral("fixed_seed"), m_d->checkFixedSeed->isChecked());
+    ui->insert(QStringLiteral("resolution_multiplier"), m_d->resolutionMultiplier);
+    if (m_d->comboQueueMode) {
+        const int qix = m_d->comboQueueMode->currentIndex();
+        QString qm = QStringLiteral("back");
+        if (qix == 1)
+            qm = QStringLiteral("front");
+        else if (qix == 2)
+            qm = QStringLiteral("replace");
+        ui->insert(QStringLiteral("queue_mode"), qm);
+    }
+    {
+        QJsonObject sset = ComfyUIUtils::loadSettingsJson();
+        const QString pt = sset.value(QStringLiteral("prompt_translation")).toString();
+        const bool transEn = !pt.isEmpty() && pt != QLatin1String("disabled");
+        ui->insert(QStringLiteral("translation_enabled"), transEn);
+    }
+    if (m_d->spinLayerCount)
+        ui->insert(QStringLiteral("layer_count"), m_d->spinLayerCount->value());
+}
+
+void ComfyUIRemoteDock::loadRegionsPersistedForDocument(KisImageSP img)
+{
+    if (!img)
+        return;
+    const QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
+
+    auto loadRootFromKConfig = [this]() {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        const int n = cfg.readEntry("RegionsCount", 0);
+        m_d->regionEntries.clear();
+        for (int i = 0; i < n; i++) {
+            Private::RegionEntry e;
+            e.name = cfg.readEntry(QStringLiteral("Region_%1_Name").arg(i), QString());
+            e.prompt = cfg.readEntry(QStringLiteral("Region_%1_Prompt").arg(i), QString());
+            e.maskSource = cfg.readEntry(QStringLiteral("Region_%1_MaskSource").arg(i), QStringLiteral("selection"));
+            if (!e.name.isEmpty())
+                m_d->regionEntries.append(e);
+        }
+    };
+    auto loadEditFromKConfig = [this]() {
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        const int ne = cfg.readEntry("EditRegionsCount", 0);
+        m_d->editRegionEntries.clear();
+        for (int i = 0; i < ne; i++) {
+            Private::RegionEntry e;
+            e.name = cfg.readEntry(QStringLiteral("EditRegion_%1_Name").arg(i), QString());
+            e.prompt = cfg.readEntry(QStringLiteral("EditRegion_%1_Prompt").arg(i), QString());
+            e.maskSource = cfg.readEntry(QStringLiteral("EditRegion_%1_MaskSource").arg(i), QStringLiteral("selection"));
+            if (!e.name.isEmpty())
+                m_d->editRegionEntries.append(e);
+        }
+    };
+
+    const QJsonObject rootObj = ui.value(QStringLiteral("root")).toObject();
+    QJsonArray ra;
+    if (rootObj.contains(QStringLiteral("regions")))
+        ra = rootObj.value(QStringLiteral("regions")).toArray();
+    else if (ui.contains(QStringLiteral("regions")))
+        ra = ui.value(QStringLiteral("regions")).toArray();
+
+    const bool rootFromDoc = rootObj.contains(QStringLiteral("regions")) || ui.contains(QStringLiteral("regions"));
+    if (rootFromDoc)
+        m_d->regionEntries = comfyParseRegionEntriesFromJsonArray(ra);
+    else
+        loadRootFromKConfig();
+
+    const QJsonObject editObj = ui.value(QStringLiteral("edit")).toObject();
+    const QJsonArray ea = editObj.value(QStringLiteral("regions")).toArray();
+    const bool editFromDoc = editObj.contains(QStringLiteral("regions"));
+    if (editFromDoc)
+        m_d->editRegionEntries = comfyParseRegionEntriesFromJsonArray(ea);
+    else
+        loadEditFromKConfig();
+
+    refreshRegionsList();
+}
+
+void ComfyUIRemoteDock::applyModelFieldsFromUiJson(const QJsonObject &ui)
+{
+    if (ui.contains(QStringLiteral("workspace")) && m_d->comboWorkspace) {
+        const int ix = comfyWorkspaceIndexFromUiJson(ui.value(QStringLiteral("workspace")).toString());
+        if (ix >= 0 && ix < m_d->comboWorkspace->count())
+            m_d->comboWorkspace->setCurrentIndex(ix);
+    }
+    if (ui.contains(QStringLiteral("style")))
+        applyStyleIdFromDocumentDefaults(ui.value(QStringLiteral("style")).toString());
+    if (ui.contains(QStringLiteral("strength")) && m_d->spinStrength) {
+        const QJsonValue sv = ui.value(QStringLiteral("strength"));
+        int pct = 100;
+        if (sv.isDouble()) {
+            const double d = sv.toDouble();
+            pct = (d <= 1.0001) ? qBound(1, qRound(d * 100.0), 100) : qBound(1, qRound(d), 100);
+        } else {
+            pct = qBound(1, sv.toInt(100), 100);
+        }
+        m_d->spinStrength->setValue(pct);
+    }
+    if (ui.contains(QStringLiteral("region_only")) && m_d->checkRegionOnly) {
+        QSignalBlocker b(m_d->checkRegionOnly);
+        m_d->checkRegionOnly->setChecked(ui.value(QStringLiteral("region_only")).toBool());
+    }
+    if (ui.contains(QStringLiteral("edit_mode")) && m_d->checkEditMode) {
+        QSignalBlocker b(m_d->checkEditMode);
+        m_d->checkEditMode->setChecked(ui.value(QStringLiteral("edit_mode")).toBool());
+    }
+    if (ui.contains(QStringLiteral("batch_count")) && m_d->spinBatchCount) {
+        m_d->spinBatchCount->setValue(qBound(m_d->spinBatchCount->minimum(),
+                                            ui.value(QStringLiteral("batch_count")).toInt(1),
+                                            m_d->spinBatchCount->maximum()));
+    }
+    if (ui.contains(QStringLiteral("seed")) && m_d->spinSeed) {
+        const qint64 s = static_cast<qint64>(ui.value(QStringLiteral("seed")).toDouble());
+        m_d->spinSeed->setValue(int(qBound<qint64>(0, s, 2147483647)));
+    }
+    if (ui.contains(QStringLiteral("fixed_seed")) && m_d->checkFixedSeed) {
+        QSignalBlocker b(m_d->checkFixedSeed);
+        m_d->checkFixedSeed->setChecked(ui.value(QStringLiteral("fixed_seed")).toBool());
+    }
+    if (ui.contains(QStringLiteral("resolution_multiplier"))) {
+        double m = ui.value(QStringLiteral("resolution_multiplier")).toDouble(1.0);
+        if (m <= 0.0)
+            m = 1.0;
+        m_d->resolutionMultiplier = m;
+        if (m_d->sliderResolutionMultiplier && m_d->labelResolutionMultiplier) {
+            int sliderValue = qRound(m * 10.0);
+            sliderValue = qBound(3, sliderValue, 15);
+            QSignalBlocker bs(m_d->sliderResolutionMultiplier);
+            m_d->sliderResolutionMultiplier->setValue(sliderValue);
+            m_d->labelResolutionMultiplier->setText(QString::number(m_d->resolutionMultiplier, 'f', 1) + QStringLiteral("×"));
+        }
+        KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        cfg.writeEntry("ResolutionMultiplier", m_d->resolutionMultiplier);
+    }
+    if (ui.contains(QStringLiteral("queue_mode")) && m_d->comboQueueMode) {
+        const QString qm = ui.value(QStringLiteral("queue_mode")).toString();
+        int ix = 0;
+        if (qm == QStringLiteral("front"))
+            ix = 1;
+        else if (qm == QStringLiteral("replace"))
+            ix = 2;
+        QSignalBlocker b(m_d->comboQueueMode);
+        if (ix >= 0 && ix < m_d->comboQueueMode->count())
+            m_d->comboQueueMode->setCurrentIndex(ix);
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("QueueMode", ix);
+    }
+    if (ui.contains(QStringLiteral("upscale"))) {
+        const QJsonObject us = ui.value(QStringLiteral("upscale")).toObject();
+        syncUpscaleRefinementModelFromPresetCombo();
+        auto readStrengthPct = [](const QJsonValue &v, int defVal) {
+            if (v.isDouble()) {
+                const double d = v.toDouble();
+                return (d <= 1.0001) ? qBound(0, qRound(d * 100.0), 100) : qBound(0, qRound(d), 100);
+            }
+            return qBound(0, v.toInt(defVal), 100);
+        };
+        if (us.contains(QStringLiteral("factor"))) {
+            double f = us.value(QStringLiteral("factor")).toDouble(m_d->upscaleFactor);
+            f = qBound(1.0, f, 4.0);
+            m_d->upscaleFactor = f;
+            if (m_d->sliderUpscaleFactor) {
+                QSignalBlocker bs(m_d->sliderUpscaleFactor);
+                m_d->sliderUpscaleFactor->setValue(qRound(f * 10.0));
+            }
+            if (m_d->spinUpscaleFactor) {
+                QSignalBlocker bsp(m_d->spinUpscaleFactor);
+                m_d->spinUpscaleFactor->setValue(f);
+            }
+        }
+        if (us.contains(QStringLiteral("use_diffusion")) && m_d->checkUpscaleRefine) {
+            QSignalBlocker b(m_d->checkUpscaleRefine);
+            m_d->checkUpscaleRefine->setChecked(us.value(QStringLiteral("use_diffusion")).toBool());
+            if (m_d->upscaleRefineDetails)
+                m_d->upscaleRefineDetails->setVisible(m_d->checkUpscaleRefine->isChecked());
+        }
+        if (us.contains(QStringLiteral("strength")) && m_d->sliderUpscaleRefineStrength) {
+            const int pct = readStrengthPct(us.value(QStringLiteral("strength")), 30);
+            QSignalBlocker b(m_d->sliderUpscaleRefineStrength);
+            m_d->sliderUpscaleRefineStrength->setValue(pct);
+            if (m_d->labelUpscaleRefineStrength)
+                m_d->labelUpscaleRefineStrength->setText(QString::number(pct) + QLatin1Char('%'));
+        }
+        if (us.contains(QStringLiteral("unblur_strength")) && m_d->sliderUpscaleRefineGuidance) {
+            const int pct = readStrengthPct(us.value(QStringLiteral("unblur_strength")), 50);
+            QSignalBlocker b(m_d->sliderUpscaleRefineGuidance);
+            m_d->sliderUpscaleRefineGuidance->setValue(pct);
+            if (m_d->labelUpscaleRefineGuidance)
+                m_d->labelUpscaleRefineGuidance->setText(QString::number(pct) + QLatin1Char('%'));
+        }
+        if (us.contains(QStringLiteral("tile_overlap_mode")) && m_d->comboTileOverlapMode) {
+            const int tom = qBound(0, us.value(QStringLiteral("tile_overlap_mode")).toInt(0), m_d->comboTileOverlapMode->count() - 1);
+            m_d->tileOverlapMode = tom;
+            QSignalBlocker b(m_d->comboTileOverlapMode);
+            m_d->comboTileOverlapMode->setCurrentIndex(tom);
+            if (m_d->spinTileOverlap)
+                m_d->spinTileOverlap->setVisible(tom == 1);
+        }
+        if (us.contains(QStringLiteral("tile_overlap")) && m_d->spinTileOverlap) {
+            m_d->tileOverlap = us.value(QStringLiteral("tile_overlap")).toInt(m_d->tileOverlap);
+            QSignalBlocker b(m_d->spinTileOverlap);
+            m_d->spinTileOverlap->setValue(m_d->tileOverlap);
+        }
+        if (us.contains(QStringLiteral("use_prompt")) && m_d->checkUpscaleUsePrompt) {
+            QSignalBlocker b(m_d->checkUpscaleUsePrompt);
+            m_d->checkUpscaleUsePrompt->setChecked(us.value(QStringLiteral("use_prompt")).toBool());
+        }
+        if (us.contains(QStringLiteral("refinement_style")) && m_d->comboUpscaleRefinementModel)
+            applyStyleIdToPresetCombo(m_d->comboUpscaleRefinementModel, us.value(QStringLiteral("refinement_style")).toString());
+        KConfigGroup ucfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+        if (m_d->checkUpscaleRefine)
+            ucfg.writeEntry(QStringLiteral("UpscaleRefineEnabled"), m_d->checkUpscaleRefine->isChecked());
+        if (m_d->sliderUpscaleRefineStrength)
+            ucfg.writeEntry(QStringLiteral("UpscaleRefineStrength"), m_d->sliderUpscaleRefineStrength->value());
+        if (m_d->sliderUpscaleRefineGuidance)
+            ucfg.writeEntry(QStringLiteral("UpscaleRefineGuidance"), m_d->sliderUpscaleRefineGuidance->value());
+        if (m_d->checkUpscaleUsePrompt)
+            ucfg.writeEntry(QStringLiteral("UpscaleUsePrompt"), m_d->checkUpscaleUsePrompt->isChecked());
+        ucfg.writeEntry(QStringLiteral("TileOverlapMode"), m_d->tileOverlapMode);
+        ucfg.writeEntry(QStringLiteral("TileOverlap"), m_d->tileOverlap);
+        if (m_d->comboUpscaleRefinementModel)
+            ucfg.writeEntry(QStringLiteral("UpscaleRefinementModelIndex"), m_d->comboUpscaleRefinementModel->currentIndex());
+    }
+    if (ui.contains(QStringLiteral("translation_enabled"))) {
+        QJsonObject s = ComfyUIUtils::loadSettingsJson();
+        const bool tEn = ui.value(QStringLiteral("translation_enabled")).toBool(false);
+        QString ptx = s.value(QStringLiteral("prompt_translation")).toString();
+        if (!tEn)
+            ptx = QStringLiteral("disabled");
+        else if (ptx.isEmpty() || ptx == QLatin1String("disabled"))
+            ptx = QStringLiteral("en");
+        s.insert(QStringLiteral("prompt_translation"), ptx);
+        ComfyUIUtils::saveSettingsJson(s);
+        applyInterfaceAppearanceSettings();
+    }
+    if (ui.contains(QStringLiteral("layer_count")) && m_d->spinLayerCount) {
+        const int lc = qBound(m_d->spinLayerCount->minimum(),
+                              ui.value(QStringLiteral("layer_count")).toInt(1),
+                              m_d->spinLayerCount->maximum());
+        m_d->spinLayerCount->setValue(lc);
+        KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("LayerCount", lc);
+    }
+    if (ui.contains(QStringLiteral("seed")) || ui.contains(QStringLiteral("fixed_seed")))
+        persistSeedToConfig();
+    if (ui.contains(QStringLiteral("edit_mode")) || ui.contains(QStringLiteral("workspace")))
+        refreshRegionsList();
+    updateUpscaleTargetSize();
+}
+
 void ComfyUIRemoteDock::refreshAnimationTargetLayerCombo()
 {
     if (!m_d->comboAnimationTargetLayer)
@@ -2386,6 +3924,10 @@ void ComfyUIRemoteDock::updateAnimationTargetLayerRowVisibility()
         m_d->animationPreviewRow->setVisible(show);
         if (!show)
             updateAnimationResultPreview(QString());
+        else if (m_d->animationPreviewDebounce) {
+            m_d->animationPreviewDebounce->stop();
+            m_d->animationPreviewDebounce->start();
+        }
     }
 }
 
@@ -2628,9 +4170,20 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
         const int h = qBound(40, fm.lineSpacing() * lines + fm.height() / 2, 800);
         m_d->editPrompt->setFixedHeight(h);
     }
+    if (m_d->editNegative) {
+        const QFontMetrics fn(m_d->editNegative->font());
+        const int negLines = qBound(1, s.value(QStringLiteral("negative_prompt_line_count")).toInt(2), 10);
+        const int nh = qBound(28, fn.lineSpacing() * negLines + fn.height() / 2, 400);
+        m_d->editNegative->setFixedHeight(nh);
+    }
     const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(true);
     if (m_d->negativePromptBlock)
         m_d->negativePromptBlock->setVisible(showNeg);
+    const bool showResizeHandle = s.value(QStringLiteral("prompt_resize_handle")).toBool(true);
+    if (m_d->promptResizeHandle)
+        m_d->promptResizeHandle->setVisible(showResizeHandle);
+    if (m_d->negativeResizeHandle)
+        m_d->negativeResizeHandle->setVisible(showNeg && showResizeHandle);
     const bool showSt = s.value(QStringLiteral("show_steps")).toBool(true);
     if (m_d->stepsParametersWidget)
         m_d->stepsParametersWidget->setVisible(showSt);
@@ -2692,6 +4245,33 @@ void ComfyUIRemoteDock::rebuildPresetComboItems()
     if (m_d->btnDeletePreset)
         m_d->btnDeletePreset->setEnabled(m_d->comboPreset->currentIndex() >= firstCustomPresetIndex());
     updateNegativePromptAlertVisibility();
+    syncUpscaleRefinementModelFromPresetCombo();
+    persistDocumentDefaultsToSettings();  // §13.194
+}
+
+void ComfyUIRemoteDock::syncUpscaleRefinementModelFromPresetCombo()
+{
+    if (!m_d->comboUpscaleRefinementModel || !m_d->comboPreset)
+        return;
+    const QString prevText = m_d->comboUpscaleRefinementModel->currentText();
+    m_d->comboUpscaleRefinementModel->blockSignals(true);
+    m_d->comboUpscaleRefinementModel->clear();
+    for (int i = 0; i < m_d->comboPreset->count(); ++i)
+        m_d->comboUpscaleRefinementModel->addItem(m_d->comboPreset->itemText(i));
+    KConfigGroup ucfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+    const int restore = ucfg.readEntry(QStringLiteral("UpscaleRefinementModelIndex"), -1);
+    if (restore >= 0 && restore < m_d->comboUpscaleRefinementModel->count())
+        m_d->comboUpscaleRefinementModel->setCurrentIndex(restore);
+    else if (!prevText.isEmpty()) {
+        const int fi = m_d->comboUpscaleRefinementModel->findText(prevText);
+        if (fi >= 0)
+            m_d->comboUpscaleRefinementModel->setCurrentIndex(fi);
+        else
+            m_d->comboUpscaleRefinementModel->setCurrentIndex(0);
+    } else {
+        m_d->comboUpscaleRefinementModel->setCurrentIndex(0);
+    }
+    m_d->comboUpscaleRefinementModel->blockSignals(false);
 }
 
 bool ComfyUIRemoteDock::renameCustomPreset(const QString &oldName, const QString &newName)
@@ -2883,6 +4463,7 @@ void ComfyUIRemoteDock::syncPerformanceFromAutoPreset()
     int b = m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1;
     double m = m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier;
     ComfyUIUtils::generationPerformanceBatchResolution(s, m_d->lastComfySystemStats, b, m, &b, &m);
+    ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(s, &m);
     b = qBound(1, b, 16);
     m = qMax(0.3, qMin(m <= 0.0 ? 1.0 : m, 3.0));
     if (m_d->spinBatchCount)

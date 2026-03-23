@@ -208,6 +208,12 @@ void ComfyUIRemoteDock::slotHistoryItemSelected()
 
 void ComfyUIRemoteDock::slotHistoryApply()
 {
+    // §10.1: Apply action — only Generate (0) and Live (2) workspaces
+    if (m_d->comboWorkspace) {
+        const int ws = m_d->comboWorkspace->currentIndex();
+        if (ws != 0 && ws != 2)
+            return;
+    }
     int entryIndex = -1;
     int imageIndex = -1;
     QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
@@ -812,6 +818,28 @@ void ComfyUIRemoteDock::flushDocumentUiJsonNow()
         return;
     QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
     ui.insert(QStringLiteral("version"), ComfyUIUtils::persistenceFormatVersion);
+    // §13.189: mirror slices that we store as separate annotations into ui.json for Python-plugin / .kra parity.
+    {
+        KisAnnotationSP annInpaint = img->annotation(ComfyUIUtils::inpaintWorkspaceAnnotationKey());
+        if (annInpaint && !annInpaint->annotation().isEmpty()) {
+            const QJsonObject slice = QJsonDocument::fromJson(annInpaint->annotation()).object();
+            if (!slice.isEmpty())
+                ui.insert(QStringLiteral("inpaint"), slice);
+        }
+        KisAnnotationSP annLive = img->annotation(ComfyUIUtils::liveWorkspaceAnnotationKey());
+        if (annLive && !annLive->annotation().isEmpty()) {
+            const QJsonObject slice = QJsonDocument::fromJson(annLive->annotation()).object();
+            if (!slice.isEmpty())
+                ui.insert(QStringLiteral("live"), slice);
+        }
+        KisAnnotationSP annPreview = img->annotation(ComfyUIUtils::previewLayerAnnotationKey());
+        if (annPreview && !annPreview->annotation().isEmpty()) {
+            const QString id = QString::fromUtf8(annPreview->annotation()).trimmed();
+            if (!id.isEmpty())
+                ui.insert(QStringLiteral("preview_layer"), id);
+        }
+    }
+    mergeDocumentModelIntoUiJson(&ui, img);
     const QJsonObject sset = ComfyUIUtils::loadSettingsJson();
     const QString histFmt = sset.value(QStringLiteral("history_format")).toString(QStringLiteral("webp"));
     QJsonArray hist;

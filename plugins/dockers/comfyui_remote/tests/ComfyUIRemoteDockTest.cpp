@@ -14,6 +14,7 @@
 #include <QJsonArray>
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyUIUtils.h"
 
 class ComfyUIRemoteDockTest : public QObject
 {
@@ -36,6 +37,17 @@ private Q_SLOTS:
     void testDefaultWorkflowNodeInputs();
     void testInpaintingWorkflowJsonFormat();
     void testInpaintingWorkflowNodeLinks();
+    void testMigrateDockLayoutComfyUIRemoteToImageDiffusion();
+    void testMigrateDockLayoutSkipsWhenImageDiffusionHasDockArea();
+    void testDiffusionScaleModeNormalizeAndAdjust();
+    void testComfyImageScaleMethodForScaleMode();
+    void testUniformTileGridCount2D();
+    void testDiffusionTileLayoutApi();
+    void testDiffusionUpscaleTileEstimateExtentPx();
+    void testApplyUpscaleRefineVaedecodeTiling();
+    void testControlPresetsBuiltinDefault();
+    void testControlPresetsArchKeyFallback();
+    void testResolveDefaultControlLayerPreset();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -61,7 +73,9 @@ void ComfyUIRemoteDockTest::testSetViewManagerAndCanvas()
 void ComfyUIRemoteDockTest::testDockObjectName()
 {
     ComfyUIRemoteDock dock;
-    QVERIFY(dock.objectName().isEmpty() || dock.objectName() == QLatin1String("ComfyUIRemote"));
+    // §10.2: KoDockFactory sets objectName to factory id ("imageDiffusion"); direct construction leaves it empty
+    QVERIFY(dock.objectName().isEmpty() || dock.objectName() == QLatin1String("ComfyUIRemote")
+            || dock.objectName() == QLatin1String("imageDiffusion"));
 }
 
 void ComfyUIRemoteDockTest::testRegionsConfigRoundtrip()
@@ -340,6 +354,201 @@ void ComfyUIRemoteDockTest::testInpaintingWorkflowNodeLinks()
     QJsonArray latent = i8["latent_image"].toArray();
     QCOMPARE(latent.at(0).toString(), QString("7"));
     QCOMPARE(latent.at(1).toInt(), 0);
+}
+
+void ComfyUIRemoteDockTest::testMigrateDockLayoutComfyUIRemoteToImageDiffusion()
+{
+    KSharedConfig::Ptr cfg = KSharedConfig::openConfig(QString(), KSharedConfig::SimpleConfig);
+    KConfigGroup mainWin(cfg, QStringLiteral("MainWindow"));
+    KConfigGroup legacy = mainWin.group(QStringLiteral("DockWidget ComfyUIRemote"));
+    legacy.writeEntry(QStringLiteral("DockArea"), 2);
+    legacy.writeEntry(QStringLiteral("Locked"), true);
+    legacy.writeEntry(QStringLiteral("xPosition"), 10);
+    legacy.writeEntry(QStringLiteral("yPosition"), 20);
+    legacy.writeEntry(QStringLiteral("width"), 400);
+    legacy.writeEntry(QStringLiteral("height"), 500);
+    cfg->sync();
+
+    ComfyUIUtils::migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(cfg);
+
+    KConfigGroup afterLegacy = mainWin.group(QStringLiteral("DockWidget ComfyUIRemote"));
+    QVERIFY(afterLegacy.keyList().isEmpty());
+
+    KConfigGroup current = mainWin.group(QStringLiteral("DockWidget imageDiffusion"));
+    QCOMPARE(current.readEntry(QStringLiteral("DockArea"), -1), 2);
+    QVERIFY(current.readEntry(QStringLiteral("Locked"), false));
+    QCOMPARE(current.readEntry(QStringLiteral("xPosition"), 0), 10);
+    QCOMPARE(current.readEntry(QStringLiteral("yPosition"), 0), 20);
+    QCOMPARE(current.readEntry(QStringLiteral("width"), 0), 400);
+    QCOMPARE(current.readEntry(QStringLiteral("height"), 0), 500);
+}
+
+void ComfyUIRemoteDockTest::testMigrateDockLayoutSkipsWhenImageDiffusionHasDockArea()
+{
+    KSharedConfig::Ptr cfg = KSharedConfig::openConfig(QString(), KSharedConfig::SimpleConfig);
+    KConfigGroup mainWin(cfg, QStringLiteral("MainWindow"));
+    KConfigGroup legacy = mainWin.group(QStringLiteral("DockWidget ComfyUIRemote"));
+    legacy.writeEntry(QStringLiteral("DockArea"), 1);
+    legacy.writeEntry(QStringLiteral("width"), 300);
+    KConfigGroup current = mainWin.group(QStringLiteral("DockWidget imageDiffusion"));
+    current.writeEntry(QStringLiteral("DockArea"), 4);
+    cfg->sync();
+
+    ComfyUIUtils::migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(cfg);
+
+    KConfigGroup legacyAfter = mainWin.group(QStringLiteral("DockWidget ComfyUIRemote"));
+    QVERIFY(legacyAfter.hasKey(QStringLiteral("DockArea")));
+    QCOMPARE(legacyAfter.readEntry(QStringLiteral("DockArea"), -1), 1);
+
+    KConfigGroup currentAfter = mainWin.group(QStringLiteral("DockWidget imageDiffusion"));
+    QCOMPARE(currentAfter.readEntry(QStringLiteral("DockArea"), -1), 4);
+    QVERIFY(!currentAfter.hasKey(QStringLiteral("width")));
+}
+
+void ComfyUIRemoteDockTest::testDiffusionScaleModeNormalizeAndAdjust()
+{
+    QCOMPARE(ComfyUIUtils::normalizeDiffusionScaleMode(QString()), QStringLiteral("resize"));
+    QCOMPARE(ComfyUIUtils::normalizeDiffusionScaleMode(QStringLiteral("NONE")), QStringLiteral("none"));
+    QCOMPARE(ComfyUIUtils::normalizeDiffusionScaleMode(QStringLiteral("bogus")), QStringLiteral("resize"));
+    QJsonObject o;
+    o.insert(QStringLiteral("diffusion_scale_mode"), QStringLiteral("none"));
+    double m = 2.0;
+    ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(o, &m);
+    QCOMPARE(m, 1.0);
+    o.insert(QStringLiteral("diffusion_scale_mode"), QStringLiteral("resize"));
+    m = 2.0;
+    ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(o, &m);
+    QCOMPARE(m, 2.0);
+    o.insert(QStringLiteral("diffusion_scale_mode"), QStringLiteral("upscale_small"));
+    m = 2.0;
+    ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(o, &m);
+    QCOMPARE(m, 1.5);
+    m = 1.2;
+    ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(o, &m);
+    QCOMPARE(m, 1.2);
+}
+
+void ComfyUIRemoteDockTest::testComfyImageScaleMethodForScaleMode()
+{
+    QCOMPARE(ComfyUIUtils::comfyImageScaleMethodForDiffusionScaleMode(QStringLiteral("upscale_quality")), QStringLiteral("lanczos"));
+    QCOMPARE(ComfyUIUtils::comfyImageScaleMethodForDiffusionScaleMode(QStringLiteral("upscale_fast")), QStringLiteral("bicubic"));
+    QCOMPARE(ComfyUIUtils::comfyImageScaleMethodForDiffusionScaleMode(QStringLiteral("resize")), QStringLiteral("bilinear"));
+}
+
+void ComfyUIRemoteDockTest::testUniformTileGridCount2D()
+{
+    QCOMPARE(ComfyUIUtils::estimateUniformTileGridCount2D(500, 500, 512, -1), 1);
+    QVERIFY(ComfyUIUtils::estimateUniformTileGridCount2D(1000, 1000, 512, 32) >= 4);
+}
+
+void ComfyUIRemoteDockTest::testDiffusionTileLayoutApi()
+{
+    ComfyUIUtils::DiffusionTileLayout L = ComfyUIUtils::DiffusionTileLayout::fromUniformGrid(1000, 1000, 512, 32);
+    QCOMPARE(L.totalTiles(), ComfyUIUtils::estimateUniformTileGridCount2D(1000, 1000, 512, 32));
+    QVERIFY(L.tileCount > 1);
+    for (int i = 0; i < L.totalTiles(); ++i) {
+        const QRect r = L.bounds(i);
+        QVERIFY(!r.isEmpty());
+        const QPoint c = L.coord(i);
+        QCOMPARE(L.tileIndex(c), i);
+        QCOMPARE(L.start(c), r.topLeft());
+        QCOMPARE(L.end(c), r.bottomRight());
+    }
+    ComfyUIUtils::DiffusionTileLayout D =
+        ComfyUIUtils::DiffusionTileLayout::fromDenoiseStrength(QSize(1024, 1024), 256, 1.0, 8, -1);
+    QVERIFY(D.tileExtent % 8 == 0);
+    QVERIFY(D.totalTiles() >= 1);
+}
+
+void ComfyUIRemoteDockTest::testDiffusionUpscaleTileEstimateExtentPx()
+{
+    QJsonObject o;
+    QCOMPARE(ComfyUIUtils::diffusionUpscaleTileEstimateExtentPx(o), 512);
+    o.insert(QStringLiteral("upscale_tile_estimate_extent"), 300);
+    QCOMPARE(ComfyUIUtils::diffusionUpscaleTileEstimateExtentPx(o), 256);
+    o.insert(QStringLiteral("upscale_tile_estimate_extent"), 4000);
+    QCOMPARE(ComfyUIUtils::diffusionUpscaleTileEstimateExtentPx(o), 2048);
+    o.insert(QStringLiteral("upscale_tile_estimate_extent"), 768);
+    QCOMPARE(ComfyUIUtils::diffusionUpscaleTileEstimateExtentPx(o), 768);
+}
+
+void ComfyUIRemoteDockTest::testApplyUpscaleRefineVaedecodeTiling()
+{
+    QJsonObject wf;
+    QJsonObject n8;
+    n8.insert(QStringLiteral("class_type"), QStringLiteral("VAEDecode"));
+    QJsonObject i8;
+    i8.insert(QStringLiteral("samples"), QJsonArray{QStringLiteral("7"), 0});
+    i8.insert(QStringLiteral("vae"), QJsonArray{QStringLiteral("4"), 2});
+    n8.insert(QStringLiteral("inputs"), i8);
+    wf.insert(QStringLiteral("8"), n8);
+    QJsonObject settings;
+    settings.insert(QStringLiteral("upscale_tile_estimate_extent"), 512);
+    ComfyUIUtils::applyUpscaleRefineVaedecodeTiling(wf, QStringLiteral("8"), 0, 32, settings);
+    QCOMPARE(wf[QStringLiteral("8")].toObject()[QStringLiteral("class_type")].toString(), QStringLiteral("VAEDecodeTiled"));
+    const QJsonObject in = wf[QStringLiteral("8")].toObject()[QStringLiteral("inputs")].toObject();
+    QCOMPARE(in[QStringLiteral("tile_size")].toInt(), 512);
+    QCOMPARE(in[QStringLiteral("overlap")].toInt(), 64);
+    ComfyUIUtils::applyUpscaleRefineVaedecodeTiling(wf, QStringLiteral("8"), 1, 48, settings);
+    QCOMPARE(wf[QStringLiteral("8")].toObject()[QStringLiteral("inputs")].toObject()[QStringLiteral("overlap")].toInt(), 48);
+}
+
+void ComfyUIRemoteDockTest::testControlPresetsBuiltinDefault()
+{
+    ComfyUIUtils::reloadControlPresetsCache();
+    const QJsonObject root = ComfyUIUtils::builtinControlPresetsRoot();
+    const QList<ComfyUIUtils::ControlLayerPreset> ps =
+        ComfyUIUtils::controlPresetsForMode(root, QStringLiteral("default"), QString());
+    QCOMPARE(ps.size(), 2);
+    QCOMPARE(ps.at(0).strength, 0.7);
+    QCOMPARE(ps.at(0).start, 0.0);
+    QCOMPARE(ps.at(0).end, 0.5);
+    QCOMPARE(ps.at(1).strength, 1.0);
+    QCOMPARE(ps.at(1).end, 1.0);
+}
+
+void ComfyUIRemoteDockTest::testControlPresetsArchKeyFallback()
+{
+    QJsonObject entryFlux;
+    entryFlux.insert(QStringLiteral("strength"), 0.5);
+    entryFlux.insert(QStringLiteral("start"), 0.1);
+    entryFlux.insert(QStringLiteral("end"), 0.9);
+    QJsonArray flux;
+    flux.append(entryFlux);
+    QJsonObject entryAll;
+    entryAll.insert(QStringLiteral("strength"), 0.99);
+    entryAll.insert(QStringLiteral("start"), 0.0);
+    entryAll.insert(QStringLiteral("end"), 1.0);
+    QJsonArray all;
+    all.append(entryAll);
+    QJsonObject mode;
+    mode.insert(QStringLiteral("flux"), flux);
+    mode.insert(QStringLiteral("all"), all);
+    QJsonObject root;
+    root.insert(QStringLiteral("custommode"), mode);
+    const QList<ComfyUIUtils::ControlLayerPreset> withArch =
+        ComfyUIUtils::controlPresetsForMode(root, QStringLiteral("custommode"), QStringLiteral("flux"));
+    QCOMPARE(withArch.size(), 1);
+    QCOMPARE(withArch.at(0).strength, 0.5);
+    const QList<ComfyUIUtils::ControlLayerPreset> fallback =
+        ComfyUIUtils::controlPresetsForMode(root, QStringLiteral("custommode"), QStringLiteral("missing"));
+    QCOMPARE(fallback.size(), 1);
+    QCOMPARE(fallback.at(0).strength, 0.99);
+}
+
+void ComfyUIRemoteDockTest::testResolveDefaultControlLayerPreset()
+{
+    ComfyUIUtils::reloadControlPresetsCache();
+    QJsonObject s;
+    s.insert(QStringLiteral("control_layer_default_preset_index"), 1);
+    ComfyUIUtils::ControlLayerPreset p;
+    QVERIFY(ComfyUIUtils::resolveDefaultControlLayerPreset(s, &p));
+    QCOMPARE(p.strength, 1.0);
+    QCOMPARE(p.start, 0.0);
+    QCOMPARE(p.end, 1.0);
+    s.insert(QStringLiteral("control_layer_default_preset_index"), 0);
+    QVERIFY(ComfyUIUtils::resolveDefaultControlLayerPreset(s, &p));
+    QCOMPARE(p.strength, 0.7);
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

@@ -38,18 +38,21 @@ jq '
   | ($sections | length) as $total
   | ($sections | map(select(.value == "complete")) | length) as $complete
   | ($sections | map(select(.value == "in_progress")) | length) as $in_progress
+  | ($sections | map(select(.value == "not_applicable")) | length) as $na
   | ($complete + $in_progress) as $progress_count
+  # Percentages over sections that can be ported (exclude not_applicable) so 100% = all applicable complete
+  | ($total - $na) as $applicable
   | .completion_percentage =
-      (if $total == 0 then
+      (if $applicable <= 0 then
          "0.00%"
        else
-         (100 * $complete / $total | pct_hundredths)
+         (100 * $complete / $applicable | pct_hundredths)
        end)
   | .in_progress_percentage =
-      (if $total == 0 then
+      (if $applicable <= 0 then
          "0.00%"
        else
-         (100 * $progress_count / $total | pct_hundredths)
+         (100 * $progress_count / $applicable | pct_hundredths)
        end)
 ' "$JSON_FILE" > "$tmp_file"
 

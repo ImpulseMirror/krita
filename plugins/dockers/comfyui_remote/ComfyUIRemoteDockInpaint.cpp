@@ -204,8 +204,13 @@ void ComfyUIRemoteDock::slotInpaint()
             QString posPromptRaw = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
             const bool positiveEmpty = posPromptRaw.isEmpty();
             const bool hasStructuralControl = false;  // no control layers in this flow
-            const ComfyUIUtils::InpaintParams inpaintParams = ComfyUIUtils::detectInpaintParams(
+            ComfyUIUtils::InpaintParams inpaintParams = ComfyUIUtils::detectInpaintParams(
                 effectiveMode, arch, strength0to1, positiveEmpty, hasStructuralControl, false);
+            // §13.169: CustomInpaint.use_inpaint — user can disable dedicated inpaint model path
+            if (!m_d->inpaintPersistUseModel)
+                inpaintParams.useInpaintModel = false;
+            // §13.169: use_prompt_focus → use_condition_mask (combined with §13.206 SD1.5 add_object rule)
+            inpaintParams.useConditionMask = inpaintParams.useConditionMask || m_d->inpaintPersistUsePromptFocus;
             // §13.188: Use fill combo when set, else derived fillKind (five options: none, neutral, blur, border, inpaint)
             QString useFillKind = inpaintParams.fillKind;
             if (m_d->comboFillMode && m_d->comboFillMode->currentData().isValid())
