@@ -120,12 +120,24 @@ else:
 
 buildEnvironment['KRITA_UNSTABLE_PACKAGE_SUFFIX'] = unstablePackageSuffix
 
+# ECMAndroidDeployQt's specifydependencies.cmake runs readelf on every MODULE_LIBRARY path
+# in module-plugins. The create-apk custom target does not depend on those plugin targets,
+# so "cmake --build . --target create-apk" alone can run before plugin .so files exist.
+# Build the default target first so the full plugin tree is linked.
+commandToRun = 'cmake --build .'
+try:
+    print('## RUNNING: ' + commandToRun + '  (default target: all plugin .so files for APK packaging)')
+    subprocess.check_call(commandToRun, stdout=sys.stdout, stderr=sys.stderr, shell=True, cwd=buildPath, env=buildEnvironment)
+except Exception:
+    print('## Failed full build before create-apk')
+    sys.exit(1)
+
 commandToRun = 'cmake --build . --target create-apk'
 try:
-    print( "## RUNNING: " + commandToRun )
-    subprocess.check_call( commandToRun, stdout=sys.stdout, stderr=sys.stderr, shell=True, cwd=buildPath, env=buildEnvironment )
+    print('## RUNNING: ' + commandToRun)
+    subprocess.check_call(commandToRun, stdout=sys.stdout, stderr=sys.stderr, shell=True, cwd=buildPath, env=buildEnvironment)
 except Exception:
-    print("## Failed to build apk")
+    print('## Failed to build apk')
     sys.exit(1)
 
 repackagePath = os.path.join(buildPath, 'krita_build_apk')
