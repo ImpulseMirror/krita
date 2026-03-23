@@ -280,7 +280,10 @@ void ComfyUIRemoteDock::slotHistoryContextMenu(QPoint pos)
     menu.addAction(i18n("Info to Clipboard"), this, &ComfyUIRemoteDock::slotHistoryCopyInfo);
     menu.addSeparator();
     QAction *saveAction = menu.addAction(i18n("Save Image"), this, &ComfyUIRemoteDock::slotHistorySaveImage);
-    saveAction->setEnabled(!path.isEmpty() && QFile::exists(path));
+    const bool docSaved = m_d->canvas && m_d->canvas->imageView() && m_d->canvas->imageView()->document()
+        && !m_d->canvas->imageView()->document()->path().isEmpty();
+    // §13.28: Save Image disabled if document unsaved
+    saveAction->setEnabled(!path.isEmpty() && QFile::exists(path) && docSaved);
     menu.addAction(i18n("Discard Image"), this, &ComfyUIRemoteDock::slotHistoryDiscard);
     menu.addSeparator();
     menu.addAction(i18n("Clear History"), this, &ComfyUIRemoteDock::slotHistoryClear);
@@ -377,6 +380,11 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
         setStatusMessage(i18n("No result image to save."), true);
         return;
     }
+    if (!m_d->canvas || !m_d->canvas->imageView() || !m_d->canvas->imageView()->document()
+        || m_d->canvas->imageView()->document()->path().isEmpty()) {
+        setStatusMessage(i18n("Save the document first to save images from history."), true);
+        return;
+    }
     const Private::HistoryEntry &e = m_d->historyEntries.at(entryIndex);
     QJsonObject sset = ComfyUIUtils::loadSettingsJson();
     const QString formatKey = sset.value(QStringLiteral("save_image_format")).toString();
@@ -426,8 +434,12 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
     if (ext == QLatin1String("jpg") || ext == QLatin1String("jpeg") || ext == QLatin1String("webp"))
         writer.setQuality(quality);
     if (pngMeta) {
-        QString metadata = ComfyUIUtils::createImgMetadata(e.prompt, e.negative, e.steps, e.cfg, e.seed,
-            e.width, e.height, e.strength, e.samplerName, e.checkpoint);
+        // §13.36: full prompt with LoRA tags (same merge as workflow build)
+        const QString posMeta =
+            ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(ComfyUIUtils::stripPromptComments(e.prompt).trimmed());
+        const QString negMeta = ComfyUIUtils::stripPromptComments(e.negative).trimmed();
+        QString metadata = ComfyUIUtils::createImgMetadata(posMeta, negMeta, e.steps, e.cfg, e.seed, e.width, e.height,
+                                                            e.strength, e.samplerName, e.checkpoint);
         writer.setText(QStringLiteral("parameters"), metadata);
     }
     if (writer.write(img)) {
@@ -481,7 +493,8 @@ void ComfyUIRemoteDock::slotHistoryDiscard()
 void ComfyUIRemoteDock::slotHistoryClear()
 {
     if (m_d->historyEntries.isEmpty()) return;
-    if (QMessageBox::question(this, i18n("Clear history"),
+    // §13.140 / §13.192: Clear History always confirms via QMessageBox.warning; default No
+    if (QMessageBox::warning(this, i18n("Clear history"),
             i18n("Discard all %1 generated images from history?", m_d->historyEntries.size()),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;

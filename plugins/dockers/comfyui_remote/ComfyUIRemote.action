@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ActionCollection version="2" name="Krita">
-  <Actions category="Krita">
-    <text>AI Image Generation (ComfyUI)</text>
+<!-- §13.64: ActionCollection name + Actions category Scripts (same shape as ai_diffusion.action / tenscripts.action) -->
+<ActionCollection version="2" name="Scripts">
+  <Actions category="Scripts">
+    <text>AI Tools: Image Generation</text>
     <!-- §10.1 / §13.151: activationFlags 0 = settings only; 10000 = other actions (Krita script actions) -->
     <Action name="ai_diffusion_settings">
       <icon></icon>

@@ -6,6 +6,10 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
+#include "ComfyUIIntervalSlider.h"
+#include "ComfyUIPoseLayers.h"
+
+#include <kis_shape_layer.h>
 
 #include <QWidget>
 #include <QVBoxLayout>
@@ -79,6 +83,7 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
+#include <memory>
 
 #include <QMouseEvent>
 #include <kis_action.h>
@@ -314,6 +319,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->livePollTimer = new QTimer(this);
     m_d->livePollTimer->setSingleShot(true);
     connect(m_d->livePollTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::slotLivePoll);
+    m_d->controlPreviewPollTimer = new QTimer(this);
+    m_d->controlPreviewPollTimer->setSingleShot(true);
+    connect(m_d->controlPreviewPollTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::slotControlPreviewPoll);
     m_d->documentSyncPoller = new QTimer(this);
     m_d->documentSyncPoller->setInterval(20);
     connect(m_d->documentSyncPoller, &QTimer::timeout, this, &ComfyUIRemoteDock::slotDocumentSyncPoll);
@@ -714,7 +722,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QVBoxLayout *welcomeLayout = new QVBoxLayout(m_d->welcomePage);
     QLabel *logoLabel = new QLabel(m_d->welcomePage);
     logoLabel->setFixedSize(64, 64);
-    QPixmap logoPix = KisIconUtils::loadIcon("view-preview").pixmap(64, 64);
+    QPixmap logoPix = KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("logo-128"))).pixmap(64, 64);
     if (!logoPix.isNull()) {
         logoLabel->setPixmap(logoPix.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     } else {
@@ -734,16 +742,39 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     // §13.190 order: AutoUpdateWidget (3), NewsWidget (4), ConnectionWidget (5). At most one visible.
     m_d->welcomeUpdateWidget = new QWidget(m_d->welcomePage);
     QVBoxLayout *updateLayout = new QVBoxLayout(m_d->welcomeUpdateWidget);
-    QLabel *updateLabel = new QLabel(i18n("A new plugin version is available!"), m_d->welcomeUpdateWidget);
-    updateLabel->setWordWrap(true);
-    updateLayout->addWidget(updateLabel);
-    QPushButton *btnUpdate = new QPushButton(i18n("Download and Install"), m_d->welcomeUpdateWidget);
-    connect(btnUpdate, &QPushButton::clicked, this, [this]() {
-        QUrl u = !m_d->updateDownloadUrl.isEmpty() ? QUrl(m_d->updateDownloadUrl)
-                                                   : QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/releases"));
-        if (u.isValid()) QDesktopServices::openUrl(u);
+    m_d->welcomeUpdateTitleLabel = new QLabel(m_d->welcomeUpdateWidget);
+    m_d->welcomeUpdateTitleLabel->setWordWrap(true);
+    updateLayout->addWidget(m_d->welcomeUpdateTitleLabel);
+    m_d->welcomeUpdateVersionLabel = new QLabel(m_d->welcomeUpdateWidget);
+    m_d->welcomeUpdateVersionLabel->setWordWrap(true);
+    m_d->welcomeUpdateVersionLabel->hide();
+    updateLayout->addWidget(m_d->welcomeUpdateVersionLabel);
+    m_d->welcomeUpdateProgressBar = new QProgressBar(m_d->welcomeUpdateWidget);
+    m_d->welcomeUpdateProgressBar->setRange(0, 0);
+    m_d->welcomeUpdateProgressBar->setTextVisible(false);
+    m_d->welcomeUpdateProgressBar->hide();
+    updateLayout->addWidget(m_d->welcomeUpdateProgressBar);
+    m_d->welcomeCheckAutoUpdate = new QCheckBox(i18n("Check for updates on startup"), m_d->welcomeUpdateWidget);
+    m_d->welcomeCheckAutoUpdate->setChecked(ComfyUIUtils::loadSettingsJson().value(QStringLiteral("auto_update")).toBool(true));
+    m_d->welcomeCheckAutoUpdate->setToolTip(i18n("When enabled, the Welcome view will check for a new plugin version when shown."));
+    connect(m_d->welcomeCheckAutoUpdate, &QCheckBox::toggled, this, [this](bool checked) {
+        QJsonObject s = ComfyUIUtils::loadSettingsJson();
+        s.insert(QStringLiteral("auto_update"), checked);
+        ComfyUIUtils::saveSettingsJson(s);
+        updateWelcomeVisibility();
     });
-    updateLayout->addWidget(btnUpdate);
+    updateLayout->addWidget(m_d->welcomeCheckAutoUpdate);
+    m_d->welcomeUpdateButton = new QPushButton(i18n("Download and Install"), m_d->welcomeUpdateWidget);
+    connect(m_d->welcomeUpdateButton, &QPushButton::clicked, this, [this]() {
+        if (m_d->pluginUpdateState == Private::PluginUpdateState::RestartRequired) {
+            const QString p = m_d->updateExtractPath;
+            if (!p.isEmpty() && (QFileInfo::exists(p)))
+                QDesktopServices::openUrl(QUrl::fromLocalFile(p));
+            return;
+        }
+        startPluginUpdateDownload();
+    });
+    updateLayout->addWidget(m_d->welcomeUpdateButton);
     m_d->welcomeUpdateWidget->hide();
     welcomeLayout->addWidget(m_d->welcomeUpdateWidget);
     m_d->welcomeNewsWidget = new QWidget(m_d->welcomePage);
@@ -773,13 +804,13 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->welcomeErrorLabel->setStyleSheet(QStringLiteral("color: #b58900;"));  // Yellow for error line (§13.73)
     m_d->welcomeErrorLabel->hide();
     QPushButton *btnConfigure = new QPushButton(i18n("Configure"), m_d->welcomeConnectionWidget);
-    btnConfigure->setIcon(KisIconUtils::loadIcon("configure"));
+    btnConfigure->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("settings"))));
     connect(btnConfigure, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
     connWidgetLayout->addWidget(m_d->welcomeStatusLabel);
     connWidgetLayout->addWidget(m_d->welcomeErrorLabel);
     connWidgetLayout->addWidget(btnConfigure);
     welcomeLayout->addWidget(m_d->welcomeConnectionWidget);
-    welcomeLayout->addStretch();
+    // §5.2 Welcome layout: ConnectionWidget → 24pt spacing → footer links → stretch (fill below footer)
     welcomeLayout->addSpacing(24);
     QHBoxLayout *footerLinks = new QHBoxLayout();
     footerLinks->addStretch();
@@ -787,7 +818,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     linkInterstice->setFlat(true);
     linkInterstice->setCursor(Qt::PointingHandCursor);
     connect(linkInterstice, &QPushButton::clicked, this, []() {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://www.interstice.cloud")));
+        QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
     });
     QPushButton *linkGitHub = new QPushButton(i18n("GitHub Project"), m_d->welcomePage);
     linkGitHub->setFlat(true);
@@ -807,6 +838,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
     footerLinks->addWidget(linkDiscord);
     welcomeLayout->addLayout(footerLinks);
+    welcomeLayout->addStretch();
     m_d->mainStack->addWidget(m_d->welcomePage);
 
     QWidget *contentPage = new QWidget(widget);
@@ -899,7 +931,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->checkUseReferenceImage = new QCheckBox(i18n("Use current layer as reference (replace REFERENCE_IMAGE in workflow)"));
     m_d->checkUseReferenceImage->setToolTip(i18n("Export current layer, upload to server, and replace REFERENCE_IMAGE in your workflow JSON with the uploaded filename."));
     m_d->editCustomWorkflow = new QPlainTextEdit();
-    m_d->editCustomWorkflow->setPlaceholderText(i18n("Paste ComfyUI API workflow from File → Export (API), or leave empty for default text2img."));
+    m_d->editCustomWorkflow->setPlaceholderText(
+        i18n("Paste ComfyUI workflow: API export (File → Export), or saved UI JSON (nodes/links) after connecting to the server."));
     m_d->editCustomWorkflow->setMaximumHeight(80);
     m_d->btnLoadWorkflow = new QPushButton(i18n("Load from file…"));
     connect(m_d->btnLoadWorkflow, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
@@ -919,7 +952,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // Open settings dialog (connection + workflow) instead of exposing config directly
     QPushButton *btnSettings = new QPushButton(i18n("Settings…"));
-    btnSettings->setIcon(KisIconUtils::loadIcon("configure"));
+    btnSettings->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("settings"))));
     connect(btnSettings, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
     connLayout->addWidget(btnSettings);
     scrollLayout->addWidget(connGroup);
@@ -930,11 +963,16 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     m_d->comboWorkspace = new QComboBox();
-    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon(QStringLiteral("tools-wizard")), i18n("Generate"));
-    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("view-zoom"), i18n("Upscale"));
-    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("view-refresh"), i18n("Live"));
-    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("video-x-generic"), i18n("Animation"));
-    m_d->comboWorkspace->addItem(KisIconUtils::loadIcon("project-development-open"), i18n("Graph"));
+    m_d->comboWorkspace->addItem(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-generation"))), i18n("Generate"));
+    m_d->comboWorkspace->addItem(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-upscaling"))), i18n("Upscale"));
+    m_d->comboWorkspace->addItem(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-live"))), i18n("Live"));
+    m_d->comboWorkspace->addItem(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-animation"))), i18n("Animation"));
+    m_d->comboWorkspace->addItem(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-custom"))), i18n("Graph"));
     m_d->comboWorkspace->setToolTip(i18n("Choose workspace: image generation, upscaling, live painting, animation, or custom graph workflow."));
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -998,6 +1036,13 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         updateAnimationTargetLayerRowVisibility();
         if (m_d->btnImportAnimation) m_d->btnImportAnimation->setVisible(isLive || isAnimation);
         if (m_d->regionsGroupBox) m_d->regionsGroupBox->setVisible(isGenerate);
+        if (m_d->controlPreviewGroupBox) m_d->controlPreviewGroupBox->setVisible(isGenerate);
+        if (!isGenerate)
+            stopControlPreviewPolling();
+        else {
+            syncControlPreviewRangeFromSettings();
+            syncPoseGuidePeopleCountFromSettings();
+        }
         if (isGenerate)
             refreshRegionsList();  // §13.125: show active region set when returning to Generate
         if (m_d->upscaleFactorRow) m_d->upscaleFactorRow->setVisible(isUpscale);
@@ -1010,6 +1055,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (m_d->genContentContainer) m_d->genContentContainer->setVisible(!isGraph);
         if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
         if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate);
+        if (m_d->queueButtonRowWidget)
+            m_d->queueButtonRowWidget->setVisible(isGenerate || isAnimation);
+        refreshQueuePopupSupportsBatch();
+        updateQueueStatus();
         applyInterfaceAppearanceSettings(); // §3.5: prompt_line_count_live when Live workspace
     });
     updateAnimationButtonLabel();  // §5.7: initial label from persisted FullAnimation
@@ -1211,7 +1260,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     negativePromptRow->addStretch();
     m_d->labelNegativePromptAlert = new QLabel(m_d->negativePromptBlock);
     m_d->labelNegativePromptAlert->setToolTip(i18n("The selected Style does not use the negative prompt."));
-    m_d->labelNegativePromptAlert->setPixmap(KisIconUtils::loadIcon("dialog-warning").pixmap(16, 16));
+    m_d->labelNegativePromptAlert->setPixmap(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("alert"))).pixmap(16, 16));
     m_d->labelNegativePromptAlert->setVisible(false);
     negativePromptRow->addWidget(m_d->labelNegativePromptAlert);
     negBlockLayout->addLayout(negativePromptRow);
@@ -1363,7 +1413,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->spinSeed->setRange(0, 2147483647);  // §13.209: 32-bit non-negative (0 to 2^31−1)
     m_d->spinSeed->setValue(0);
     m_d->btnRandomSeed = new QPushButton();
-    m_d->btnRandomSeed->setIcon(KisIconUtils::loadIcon(QStringLiteral("random")));  // §5.4: dice icon for random seed
+    m_d->btnRandomSeed->setIcon(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("random"))));  // §5.4: dice icon for random seed
     m_d->btnRandomSeed->setToolTip(i18n("Pick a new random seed."));
     m_d->btnRandomSeed->setAccessibleName(i18n("Random seed"));
     connect(m_d->btnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
@@ -1404,7 +1455,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     genContentLayout->addLayout(sizeRow);
 
     m_d->btnGenerate = new QPushButton(i18n("Generate"));
-    m_d->btnGenerate->setIcon(KisIconUtils::loadIcon(QStringLiteral("tools-wizard")));  // §5.4: sparkle / magic-style icon
+    m_d->btnGenerate->setIcon(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("generate"))));  // §5.4: sparkle / magic-style icon
     connect(m_d->btnGenerate, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerate);
     genContentLayout->addWidget(m_d->btnGenerate);
 
@@ -1599,8 +1651,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->animationTargetRow = new QWidget(genGroup);
     QHBoxLayout *animTargetLayout = new QHBoxLayout(m_d->animationTargetRow);
     m_d->animationTargetRow->setContentsMargins(0, 0, 0, 0);
-    animTargetLayout->addWidget(new QLabel(i18n("Target layer:"), m_d->animationTargetRow));
+    // §5.7: dropdown lists each paint layer as "Target layer: {name}" (no separate label — text is per item)
     m_d->comboAnimationTargetLayer = new QComboBox(m_d->animationTargetRow);
+    m_d->comboAnimationTargetLayer->setAccessibleName(i18n("Target layer"));
     m_d->comboAnimationTargetLayer->setToolTip(
         i18n("Paint layer that receives Single Frame generation output (Animation workspace)."));
     connect(m_d->comboAnimationTargetLayer, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
@@ -1698,7 +1751,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnQueuePopup = new QToolButton();
     m_d->btnQueuePopup->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_d->btnQueuePopup->setPopupMode(QToolButton::InstantPopup);
-    m_d->btnQueuePopup->setIcon(KisIconUtils::loadIcon("view-refresh"));
+    m_d->btnQueuePopup->setIcon(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-inactive"))));
     m_d->btnQueuePopup->setText(QStringLiteral("0 "));
     m_d->btnQueuePopup->setToolTip(i18n("Idle. Click to adjust batch, seed, enqueue mode, or cancel jobs."));
 
@@ -1712,10 +1766,12 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     countsLayout->addWidget(m_d->labelQueueCount, 1);
     queueLayout->addLayout(countsLayout);
 
-    QHBoxLayout *batchLayout = new QHBoxLayout();
-    batchLayout->addWidget(new QLabel(i18n("Batch:"), queueWidget));
+    m_d->queueBatchOptionsRow = new QWidget(queueWidget);
+    QHBoxLayout *batchLayout = new QHBoxLayout(m_d->queueBatchOptionsRow);
+    batchLayout->setContentsMargins(0, 0, 0, 0);
+    batchLayout->addWidget(new QLabel(i18n("Batch:"), m_d->queueBatchOptionsRow));
     batchLayout->addWidget(m_d->spinBatchCount, 1);
-    queueLayout->addLayout(batchLayout);
+    queueLayout->addWidget(m_d->queueBatchOptionsRow);
 
     // Resolution multiplier (similar to krita-ai)
     m_d->sliderResolutionMultiplier = new QSlider(Qt::Horizontal, queueWidget);
@@ -1780,7 +1836,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->queueSpinSeed->setValue(m_d->spinSeed->value());
     m_d->queueCheckFixedSeed->setChecked(m_d->checkFixedSeed->isChecked());
     m_d->queueBtnRandomSeed = new QPushButton(queueWidget);
-    m_d->queueBtnRandomSeed->setIcon(KisIconUtils::loadIcon(QStringLiteral("random")));
+    m_d->queueBtnRandomSeed->setIcon(
+        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("random"))));
     m_d->queueBtnRandomSeed->setToolTip(i18n("Pick a new random seed."));
     m_d->queueBtnRandomSeed->setAccessibleName(i18n("Random seed"));
     connect(m_d->queueBtnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
@@ -1808,15 +1865,20 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     seedLayout->addWidget(m_d->queueBtnRandomSeed);
     queueLayout->addLayout(seedLayout);
 
-    connect(queueMenu, &QMenu::aboutToShow, this, &ComfyUIRemoteDock::syncQueueSeedWidgetsFromMain);
+    connect(queueMenu, &QMenu::aboutToShow, this, [this]() {
+        syncQueueSeedWidgetsFromMain();
+        refreshQueuePopupSupportsBatch();
+    });
 
-    QHBoxLayout *modeLayout = new QHBoxLayout();
-    modeLayout->addWidget(new QLabel(i18n("Enqueue:"), queueWidget));
+    m_d->queueEnqueueModeRow = new QWidget(queueWidget);
+    QHBoxLayout *modeLayout = new QHBoxLayout(m_d->queueEnqueueModeRow);
+    modeLayout->setContentsMargins(0, 0, 0, 0);
+    modeLayout->addWidget(new QLabel(i18n("Enqueue:"), m_d->queueEnqueueModeRow));
     modeLayout->addWidget(m_d->comboQueueMode, 1);
-    queueLayout->addLayout(modeLayout);
+    queueLayout->addWidget(m_d->queueEnqueueModeRow);
 
     QPushButton *popupCancel = new QPushButton(i18n("Cancel all"), queueWidget);
-    popupCancel->setIcon(KisIconUtils::loadIcon("dialog-cancel"));
+    popupCancel->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("cancel"))));
     popupCancel->setToolTip(i18n("Stop the running job and clear the queue (Cancel All)."));
     connect(popupCancel, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotCancelQueue);
     queueLayout->addWidget(popupCancel);
@@ -1826,10 +1888,12 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     queueMenu->addAction(queueAction);
     m_d->btnQueuePopup->setMenu(queueMenu);
 
-    QHBoxLayout *queueRow = new QHBoxLayout();
+    m_d->queueButtonRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *queueRow = new QHBoxLayout(m_d->queueButtonRowWidget);
+    queueRow->setContentsMargins(0, 0, 0, 0);
     queueRow->addWidget(m_d->btnQueuePopup);
     queueRow->addStretch();
-    genContentLayout->addLayout(queueRow);
+    genContentLayout->addWidget(m_d->queueButtonRowWidget);
 
     m_d->btnCancelQueue = popupCancel;
     m_d->btnCancelQueue->setEnabled(false);
@@ -1842,6 +1906,72 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->progressBar->setFixedHeight(6);
     setProgressBarKind(false);  // §13.18: default = generation
     genContentLayout->addWidget(m_d->progressBar);
+
+    // §13.49 / §13.53: Control-layer timing range + server preprocessor preview (Generate workspace only)
+    m_d->controlPreviewGroupBox = new QGroupBox(i18n("Control preprocessor preview"), m_d->genContentContainer);
+    QVBoxLayout *cpLay = new QVBoxLayout(m_d->controlPreviewGroupBox);
+    m_d->comboControlPreviewMode = new QComboBox(m_d->controlPreviewGroupBox);
+    m_d->comboControlPreviewMode->setToolTip(
+        i18n("Preprocessor applied to the current canvas image on the ComfyUI server (control.json modes)."));
+    m_d->comboControlPreviewMode->addItem(i18n("Depth"), QStringLiteral("depth"));
+    m_d->comboControlPreviewMode->addItem(i18n("Canny edge"), QStringLiteral("canny_edge"));
+    m_d->comboControlPreviewMode->addItem(i18n("Scribble"), QStringLiteral("scribble"));
+    m_d->comboControlPreviewMode->addItem(i18n("Line art"), QStringLiteral("line_art"));
+    m_d->comboControlPreviewMode->addItem(i18n("Soft edge"), QStringLiteral("soft_edge"));
+    m_d->comboControlPreviewMode->addItem(i18n("Hands"), QStringLiteral("hands"));
+    m_d->comboControlPreviewMode->addItem(i18n("Normal map"), QStringLiteral("normal"));
+    m_d->comboControlPreviewMode->addItem(i18n("Pose"), QStringLiteral("pose"));
+    m_d->comboControlPreviewMode->addItem(i18n("Segmentation"), QStringLiteral("segmentation"));
+    cpLay->addWidget(new QLabel(i18n("Mode:"), m_d->controlPreviewGroupBox));
+    cpLay->addWidget(m_d->comboControlPreviewMode);
+    cpLay->addWidget(new QLabel(i18n("Control timing range (%):"), m_d->controlPreviewGroupBox));
+    m_d->controlPreviewRangeSlider = new ComfyUIIntervalSlider(m_d->controlPreviewGroupBox);
+    m_d->controlPreviewRangeSlider->setRange(0, 100);
+    m_d->controlPreviewRangeSlider->setToolTip(
+        i18n("Low and high timing range for control strength (persisted; used when adding control layers)."));
+    cpLay->addWidget(m_d->controlPreviewRangeSlider);
+    connect(m_d->controlPreviewRangeSlider, &ComfyUIIntervalSlider::intervalChanged, this, [](int low, int high) {
+        KConfigGroup g = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        g.writeEntry("control_layer_timing_low_pct", low);
+        g.writeEntry("control_layer_timing_high_pct", high);
+    });
+    m_d->btnControlPreviewRun = new QPushButton(i18n("Run preprocessor preview"), m_d->controlPreviewGroupBox);
+    m_d->btnControlPreviewRun->setToolTip(
+        i18n("Upload the canvas, run the selected preprocessor on the server, and show the result below."));
+    connect(m_d->btnControlPreviewRun, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotControlPreviewRun);
+    cpLay->addWidget(m_d->btnControlPreviewRun);
+    {
+        QHBoxLayout *poseRow = new QHBoxLayout();
+        poseRow->addWidget(new QLabel(i18n("Pose guide people:"), m_d->controlPreviewGroupBox));
+        m_d->spinPoseGuidePeopleCount = new QSpinBox(m_d->controlPreviewGroupBox);
+        m_d->spinPoseGuidePeopleCount->setRange(1, 3);
+        m_d->spinPoseGuidePeopleCount->setToolTip(
+            i18n("Number of default stick figures to add (Pose.create_default people_count)."));
+        connect(m_d->spinPoseGuidePeopleCount, QOverload<int>::of(&QSpinBox::valueChanged), this, [](int v) {
+            KConfigGroup g = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+            g.writeEntry(QStringLiteral("pose_guide_people_count"), v);
+        });
+        poseRow->addWidget(m_d->spinPoseGuidePeopleCount);
+        m_d->btnAddPoseGuide = new QPushButton(i18n("Add pose guide (vector layer)"), m_d->controlPreviewGroupBox);
+        m_d->btnAddPoseGuide->setToolTip(
+            i18n("Adds default stick-figure skeleton(s) to the selected vector layer and refreshes pose data from its SVG every 500 ms (same idea as the reference PoseLayers singleton)."));
+        connect(m_d->btnAddPoseGuide, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotAddPoseGuideToVectorLayer);
+        poseRow->addWidget(m_d->btnAddPoseGuide);
+        poseRow->addStretch();
+        cpLay->addLayout(poseRow);
+    }
+    m_d->labelControlPreviewImage = new QLabel(m_d->controlPreviewGroupBox);
+    m_d->labelControlPreviewImage->setMinimumSize(160, 160);
+    m_d->labelControlPreviewImage->setMaximumHeight(200);
+    m_d->labelControlPreviewImage->setAlignment(Qt::AlignCenter);
+    m_d->labelControlPreviewImage->setFrameShape(QFrame::Box);
+    m_d->labelControlPreviewImage->setScaledContents(false);
+    m_d->labelControlPreviewImage->setWordWrap(true);
+    cpLay->addWidget(m_d->labelControlPreviewImage);
+    genContentLayout->addWidget(m_d->controlPreviewGroupBox);
+    m_d->controlPreviewGroupBox->setVisible(m_d->comboWorkspace->currentIndex() == 0);
+    syncControlPreviewRangeFromSettings();
+    syncPoseGuidePeopleCountFromSettings();
 
     genLayout->addWidget(m_d->genContentContainer);
 
@@ -1983,6 +2113,15 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     if (m_d->genContentContainer) m_d->genContentContainer->setVisible(!isGraph);
     if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
     if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate);
+    if (m_d->queueButtonRowWidget)
+        m_d->queueButtonRowWidget->setVisible((ws == 0 || ws == 3) && !isGraph);
+    refreshQueuePopupSupportsBatch();
+    if (m_d->btnQueuePopup) {
+        const bool animWs = (ws == 3);
+        m_d->btnQueuePopup->setToolTip(animWs
+            ? i18n("Idle. Click to adjust seed or cancel jobs (Animation has no batch enqueue options).")
+            : i18n("Idle. Click to adjust batch, seed, enqueue mode, or cancel jobs."));
+    }
 
     updateWelcomeVisibility();
     applyInterfaceAppearanceSettings();
@@ -1990,6 +2129,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     refreshQueueResolutionRowVisibility();
     refreshAnimationTargetLayerCombo();
     updateAnimationTargetLayerRowVisibility();
+
+    // §13.81: deferred autostart probe (undefined server_mode only)
+    QTimer::singleShot(400, this, &ComfyUIRemoteDock::tryAutostartServerFallback);
 }
 
 namespace {
@@ -2072,6 +2214,18 @@ static QString comfyCustomWorkflowStorageKey(const ComfyUIUtils::CustomWorkflowP
     return sl.paramName;
 }
 
+bool ComfyUIRemoteDock::tryResolveCustomWorkflowInPlace(QJsonObject *workflow)
+{
+    if (!workflow)
+        return false;
+    QString err;
+    if (!ComfyUIUtils::tryResolveCustomWorkflowJsonToApi(workflow, m_d->lastObjectInfoRoot, &err)) {
+        setStatusMessage(err, true);
+        return false;
+    }
+    return true;
+}
+
 void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
 {
     if (!m_d->customWorkflowParamsForm || !m_d->customWorkflowParamsGroup || !m_d->editCustomWorkflow)
@@ -2089,13 +2243,20 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
         return;
     }
     QJsonParseError err;
-    const QJsonDocument doc = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(json.toUtf8()), &err);
+    QJsonDocument doc = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(json.toUtf8()), &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
         m_d->customWorkflowParamsGroup->setVisible(false);
         return;
     }
+    QJsonObject wfObj = doc.object();
+    QString convErr;
+    if (!ComfyUIUtils::tryResolveCustomWorkflowJsonToApi(&wfObj, m_d->lastObjectInfoRoot, &convErr)) {
+        Q_UNUSED(convErr);
+        m_d->customWorkflowParamsGroup->setVisible(false);
+        return;
+    }
     const QList<ComfyUIUtils::CustomWorkflowParamSlot> slots =
-        ComfyUIUtils::discoverCustomWorkflowParameterSlots(doc.object());
+        ComfyUIUtils::discoverCustomWorkflowParameterSlots(wfObj);
     if (slots.isEmpty()) {
         m_d->customWorkflowParamsGroup->setVisible(false);
         return;
@@ -2578,6 +2739,12 @@ void ComfyUIRemoteDock::tryApplyDocumentDefaultsForNewDocument(KisImageSP image)
 
 ComfyUIRemoteDock::~ComfyUIRemoteDock()
 {
+    if (m_d->pluginUpdateDownloadReply) {
+        m_d->pluginUpdateDownloadReply->disconnect(this);
+        m_d->pluginUpdateDownloadReply->abort();
+        m_d->pluginUpdateDownloadReply.clear();
+    }
+    m_d->pluginUpdateSaveFile.reset();
     endWebWorkflowSwitch();
 }
 
@@ -2639,6 +2806,16 @@ void ComfyUIRemoteDock::syncQueueSeedWidgetsFromMain()
     m_d->queueCheckFixedSeed->setChecked(m_d->checkFixedSeed->isChecked());
     m_d->queueSpinSeed->blockSignals(false);
     m_d->queueCheckFixedSeed->blockSignals(false);
+}
+
+void ComfyUIRemoteDock::refreshQueuePopupSupportsBatch()
+{
+    const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;
+    const bool supportsBatch = (ws == 0);
+    if (m_d->queueBatchOptionsRow)
+        m_d->queueBatchOptionsRow->setVisible(supportsBatch);
+    if (m_d->queueEnqueueModeRow)
+        m_d->queueEnqueueModeRow->setVisible(supportsBatch);
 }
 
 void ComfyUIRemoteDock::showPromptTagCompletion(QPlainTextEdit *editor)
@@ -3063,36 +3240,47 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             if (m_d->documentSyncPoller)
                 m_d->documentSyncPoller->start();
             ensureDocumentId(img, c);
+            QString docIdWarn;
+            if (KisAnnotationSP idAnn = img->annotation(ComfyUIUtils::documentIdAnnotationKey())) {
+                docIdWarn = QString::fromUtf8(idAnn->data()).trimmed();
+            }
+            QString docPathLabel;
+            if (KisDocument *doc = c->imageView() ? c->imageView()->document() : nullptr)
+                docPathLabel = doc->path();
+            if (docPathLabel.isEmpty())
+                docPathLabel = i18n("(unsaved document)");
+            const ComfyUIUtils::DocumentUiJsonLoadOutcome uiMeta = ComfyUIUtils::loadDocumentUiJsonWithMeta(img);
+            // §13.140: Persistence load failure — warning; continue with empty/default embedded state
+            const QString parseFailDedupeKey =
+                !docIdWarn.isEmpty() ? docIdWarn
+                                     : (QStringLiteral("img:") + QString::number(reinterpret_cast<quintptr>(img.data())));
+            if (uiMeta.parseFailed && !m_d->warnedUiJsonParseFailDocIds.contains(parseFailDedupeKey)) {
+                m_d->warnedUiJsonParseFailDocIds.insert(parseFailDedupeKey);
+                QMessageBox::warning(this, i18n("AI Diffusion Plugin"),
+                                     i18n("Failed to load state from %1: %2", docPathLabel, uiMeta.parseError));
+            }
             // §13.199: future ui.json version → defaults; warn once per document
-            {
-                QString docIdWarn;
-                if (KisAnnotationSP idAnn = img->annotation(ComfyUIUtils::documentIdAnnotationKey())) {
-                    docIdWarn = QString::fromUtf8(idAnn->data()).trimmed();
-                }
-                const ComfyUIUtils::DocumentUiJsonLoadOutcome uiMeta = ComfyUIUtils::loadDocumentUiJsonWithMeta(img);
-                if (uiMeta.resetToDefaultsDueToFutureVersion && !docIdWarn.isEmpty()
-                    && !m_d->warnedFutureUiJsonVersionDocIds.contains(docIdWarn)) {
-                    m_d->warnedFutureUiJsonVersionDocIds.insert(docIdWarn);
-                    QMessageBox::warning(
-                        this,
-                        i18nc("@title:window", "AI Image Generation data"),
-                        i18n(
-                            "This document's embedded AI data (format version %1) is newer than this Krita build supports (version %2). "
-                            "Embedded plugin state was reset to defaults; saving the document may discard fields this build does not understand.",
-                            uiMeta.rawVersionFromFile,
-                            ComfyUIUtils::persistenceFormatVersion));
-                }
+            if (uiMeta.resetToDefaultsDueToFutureVersion && !docIdWarn.isEmpty()
+                && !m_d->warnedFutureUiJsonVersionDocIds.contains(docIdWarn)) {
+                m_d->warnedFutureUiJsonVersionDocIds.insert(docIdWarn);
+                QMessageBox::warning(
+                    this,
+                    i18nc("@title:window", "AI Image Generation data"),
+                    i18n(
+                        "This document's embedded AI data (format version %1) is newer than this Krita build supports (version %2). "
+                        "Embedded plugin state was reset to defaults; saving the document may discard fields this build does not understand.",
+                        uiMeta.rawVersionFromFile,
+                        ComfyUIUtils::persistenceFormatVersion));
             }
             tryApplyDocumentDefaultsForNewDocument(img);
             loadRegionsPersistedForDocument(img);
-            applyModelFieldsFromUiJson(ComfyUIUtils::loadDocumentUiJsonObject(img));
+            applyModelFieldsFromUiJson(uiMeta.object);
             // §13.44 / §13.189: preview_layer from annotation or ui.json
             const QString previewKey = ComfyUIUtils::previewLayerAnnotationKey();
             KisAnnotationSP previewAnn = img->annotation(previewKey);
             m_d->previewLayerId = previewAnn ? QString::fromUtf8(previewAnn->data()).trimmed() : QString();
             if (m_d->previewLayerId.isEmpty()) {
-                const QJsonObject uiPrev = ComfyUIUtils::loadDocumentUiJsonObject(img);
-                m_d->previewLayerId = uiPrev.value(QStringLiteral("preview_layer")).toString().trimmed();
+                m_d->previewLayerId = uiMeta.object.value(QStringLiteral("preview_layer")).toString().trimmed();
             }
             // §13.149 / §13.189: Live strength from annotation or ui.json
             if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2 && m_d->spinStrength) {
@@ -3103,8 +3291,7 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
                         liveObj = QJsonDocument::fromJson(liveAnn->data()).object();
                 }
                 if (liveObj.isEmpty()) {
-                    const QJsonObject uiLive = ComfyUIUtils::loadDocumentUiJsonObject(img);
-                    liveObj = uiLive.value(QStringLiteral("live")).toObject();
+                    liveObj = uiMeta.object.value(QStringLiteral("live")).toObject();
                 }
                 if (!liveObj.isEmpty()) {
                     const double s = liveObj.value(QStringLiteral("strength")).toDouble(0.75);
@@ -3163,6 +3350,31 @@ void ComfyUIRemoteDock::unsetCanvas()
     setCanvas(nullptr);
 }
 
+namespace {
+QString comfyNormalizeSha256Hex(QString s)
+{
+    s = s.trimmed().toLower();
+    if (s.startsWith(QLatin1String("0x")))
+        s = s.mid(2);
+    return s;
+}
+bool welcomePanelShowsAutoUpdate(const ComfyUIRemoteDock::Private *d)
+{
+    if (!ComfyUIUtils::loadSettingsJson().value(QStringLiteral("auto_update")).toBool(true))
+        return false;
+    using PS = ComfyUIRemoteDock::Private::PluginUpdateState;
+    // §13.37: visible when auto_update and state is not latest, failed_check, or checking (includes unknown).
+    switch (d->pluginUpdateState) {
+    case PS::Latest:
+    case PS::FailedCheck:
+    case PS::Checking:
+        return false;
+    default:
+        return true;
+    }
+}
+} // namespace
+
 void ComfyUIRemoteDock::updateWelcomeVisibility()
 {
     if (!m_d->mainStack || m_d->mainStack->count() < 2) return;
@@ -3172,12 +3384,15 @@ void ComfyUIRemoteDock::updateWelcomeVisibility()
         QTimer::singleShot(200, this, [this]() { startUpdateCheck(false); });
     if (showWelcome)
         QTimer::singleShot(500, this, &ComfyUIRemoteDock::startNewsFetch);
-    // §13.190: At most one of update / news / connection visible; order: update → news → connection
+    // §13.190 / §13.37: AutoUpdateWidget when auto_update and state ∉ {latest, failed_check, checking}
     if (m_d->welcomeUpdateWidget && m_d->welcomeNewsWidget && m_d->welcomeConnectionWidget) {
-        m_d->welcomeUpdateWidget->setVisible(m_d->hasUpdateAvailable);
-        m_d->welcomeNewsWidget->setVisible(!m_d->hasUpdateAvailable && m_d->hasUnseenNews);
-        m_d->welcomeConnectionWidget->setVisible(!m_d->hasUpdateAvailable && !m_d->hasUnseenNews);
+        const bool showAuto = welcomePanelShowsAutoUpdate(m_d.data());
+        m_d->welcomeUpdateWidget->setVisible(showAuto);
+        m_d->welcomeNewsWidget->setVisible(!showAuto && m_d->hasUnseenNews);
+        m_d->welcomeConnectionWidget->setVisible(!showAuto && !m_d->hasUnseenNews);
     }
+    if (showWelcome)
+        refreshWelcomeAutoUpdatePanel();
     if (m_d->welcomeStatusLabel) {
         if (m_d->updateCheckInProgress) {
             m_d->welcomeStatusLabel->setText(i18n("Checking for updates..."));
@@ -3220,39 +3435,251 @@ void ComfyUIRemoteDock::slotCheckForUpdates()
     startUpdateCheck(true);
 }
 
+void ComfyUIRemoteDock::syncPluginUpdateUi()
+{
+    refreshWelcomeAutoUpdatePanel();
+    refreshPluginInformationTabUpdateUi();
+    updateWelcomeVisibility();
+}
+
+void ComfyUIRemoteDock::refreshWelcomeAutoUpdatePanel()
+{
+    if (!m_d->welcomeUpdateTitleLabel || !m_d->welcomeUpdateButton || !m_d->welcomeUpdateProgressBar
+        || !m_d->welcomeUpdateVersionLabel || !m_d->welcomeCheckAutoUpdate)
+        return;
+    QString title;
+    QString btnText = i18n("Download and Install");
+    bool btnEnabled = false;
+    bool showProgress = false;
+    const QString verShow =
+        m_d->updateRemoteVersion.isEmpty() ? m_d->lastReportedLatestPluginVersion : m_d->updateRemoteVersion;
+    switch (m_d->pluginUpdateState) {
+    case Private::PluginUpdateState::Available:
+        // §5.2: headline + version line (not one combined string)
+        title = i18n("A new plugin version is available!");
+        if (m_d->welcomeUpdateVersionLabel) {
+            m_d->welcomeUpdateVersionLabel->setText(verShow.isEmpty() ? QStringLiteral("—") : verShow);
+            m_d->welcomeUpdateVersionLabel->show();
+        }
+        btnEnabled = !m_d->pluginUpdateDownloadReply && !m_d->updateDownloadUrl.isEmpty();
+        break;
+    case Private::PluginUpdateState::Downloading:
+        title = i18n("Downloading update…");
+        showProgress = true;
+        break;
+    case Private::PluginUpdateState::Installing:
+        title = i18n("Installing update…");
+        showProgress = true;
+        break;
+    case Private::PluginUpdateState::RestartRequired:
+        title = m_d->updateExtractPath.isEmpty()
+            ? i18n("Update is ready. Please restart Krita.")
+            : i18n("Update saved to:\n%1\nFollow the release notes if needed, then restart Krita.", m_d->updateExtractPath);
+        btnText = i18n("Open Folder");
+        btnEnabled = !m_d->updateExtractPath.isEmpty() && QFileInfo::exists(m_d->updateExtractPath);
+        break;
+    case Private::PluginUpdateState::FailedUpdate:
+        title = i18n("Update failed (network error or checksum mismatch).");
+        btnText = i18n("Retry");
+        btnEnabled = !m_d->pluginUpdateDownloadReply && !m_d->updateDownloadUrl.isEmpty();
+        break;
+    case Private::PluginUpdateState::Unknown:
+        title = i18n("Looking for plugin updates…");
+        btnEnabled = false;
+        break;
+    default:
+        title.clear();
+        break;
+    }
+    if (m_d->pluginUpdateState != Private::PluginUpdateState::Available && m_d->welcomeUpdateVersionLabel)
+        m_d->welcomeUpdateVersionLabel->hide();
+    {
+        QSignalBlocker b(m_d->welcomeCheckAutoUpdate);
+        m_d->welcomeCheckAutoUpdate->setChecked(
+            ComfyUIUtils::loadSettingsJson().value(QStringLiteral("auto_update")).toBool(true));
+    }
+    m_d->welcomeUpdateTitleLabel->setText(title);
+    m_d->welcomeUpdateProgressBar->setVisible(showProgress);
+    m_d->welcomeUpdateButton->setText(btnText);
+    m_d->welcomeUpdateButton->setEnabled(btnEnabled);
+}
+
+void ComfyUIRemoteDock::startPluginUpdateDownload()
+{
+    if (!m_d->nam || m_d->pluginUpdateDownloadReply)
+        return;
+    if (m_d->pluginUpdateState != Private::PluginUpdateState::Available
+        && m_d->pluginUpdateState != Private::PluginUpdateState::FailedUpdate)
+        return;
+    if (m_d->updateDownloadUrl.isEmpty())
+        return;
+    const QUrl u(m_d->updateDownloadUrl);
+    if (!u.isValid())
+        return;
+
+    m_d->pluginUpdateSaveFile.reset(new QTemporaryFile());
+    m_d->pluginUpdateSaveFile->setFileTemplate(QDir::tempPath() + QStringLiteral("/cui_plugin_update_XXXXXX.zip"));
+    if (!m_d->pluginUpdateSaveFile->open()) {
+        m_d->pluginUpdateSaveFile.reset();
+        m_d->pluginUpdateState = Private::PluginUpdateState::FailedUpdate;
+        syncPluginUpdateUi();
+        return;
+    }
+
+    m_d->pluginUpdateState = Private::PluginUpdateState::Downloading;
+    m_d->updateExtractPath.clear();
+
+    QNetworkRequest req(u);
+    req.setHeader(QNetworkRequest::UserAgentHeader,
+                  QStringLiteral("Krita-ComfyUIRemote/%1").arg(ComfyUIUtils::pluginVersion()));
+    QNetworkReply *reply = m_d->nam->get(req);
+    m_d->pluginUpdateDownloadReply = reply;
+
+    auto shaCtx = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+    connect(reply, &QNetworkReply::readyRead, this, [this, shaCtx]() {
+        if (!m_d->pluginUpdateDownloadReply || !m_d->pluginUpdateSaveFile)
+            return;
+        const QByteArray chunk = m_d->pluginUpdateDownloadReply->readAll();
+        shaCtx->addData(chunk);
+        m_d->pluginUpdateSaveFile->write(chunk);
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, shaCtx, reply]() {
+        reply->deleteLater();
+        m_d->pluginUpdateDownloadReply.clear();
+
+        auto fail = [this]() {
+            m_d->pluginUpdateSaveFile.reset();
+            m_d->pluginUpdateState = Private::PluginUpdateState::FailedUpdate;
+            syncPluginUpdateUi();
+        };
+
+        if (reply->error() != QNetworkReply::NoError) {
+            fail();
+            return;
+        }
+        const QByteArray rest = reply->readAll();
+        if (!rest.isEmpty()) {
+            shaCtx->addData(rest);
+            if (m_d->pluginUpdateSaveFile)
+                m_d->pluginUpdateSaveFile->write(rest);
+        }
+        if (!m_d->pluginUpdateSaveFile) {
+            fail();
+            return;
+        }
+        m_d->pluginUpdateSaveFile->flush();
+        const QString gotHex = QString::fromLatin1(shaCtx->result().toHex());
+        const QString expHex = comfyNormalizeSha256Hex(m_d->updatePackageSha256);
+        if (expHex.size() != 64 || gotHex != expHex) {
+            fail();
+            return;
+        }
+
+        m_d->pluginUpdateState = Private::PluginUpdateState::Installing;
+        syncPluginUpdateUi();
+
+        const QString zipPath = m_d->pluginUpdateSaveFile->fileName();
+        const QString baseDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/comfyui_remote");
+        QDir().mkpath(baseDir);
+        const QString staging = baseDir + QStringLiteral("/update_unpack");
+        QDir(staging).removeRecursively();
+        QDir().mkpath(staging);
+
+        QString extractErr;
+        const bool extracted = ComfyUIUtils::extractZipToDirectory(zipPath, staging, &extractErr);
+        if (extracted) {
+            m_d->updateExtractPath = QDir(staging).absolutePath();
+        } else {
+            const QString zipOut = baseDir + QStringLiteral("/update_package.zip");
+            QFile::remove(zipOut);
+            if (QFile::copy(zipPath, zipOut))
+                m_d->updateExtractPath = zipOut;
+            else
+                m_d->updateExtractPath = zipPath;
+        }
+        m_d->pluginUpdateSaveFile.reset();
+        m_d->pluginUpdateState = Private::PluginUpdateState::RestartRequired;
+        syncPluginUpdateUi();
+    });
+
+    syncPluginUpdateUi();
+}
+
 void ComfyUIRemoteDock::refreshPluginInformationTabUpdateUi()
 {
     if (m_d->pluginTabLatestVersionLabel) {
-        if (m_d->updateCheckInProgress) {
+        using PS = Private::PluginUpdateState;
+        const QString cur = ComfyUIUtils::pluginVersion();
+        if (m_d->updateCheckInProgress || m_d->pluginUpdateState == PS::Checking) {
             m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Checking...")));
-        } else if (m_d->pluginUpdateCheckHadFailure) {
-            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Update failed")));
-        } else if (m_d->lastReportedLatestPluginVersion.isEmpty()) {
+        } else if (m_d->pluginUpdateState == PS::FailedCheck || m_d->pluginUpdateCheckHadFailure) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Update check failed")));
+        } else if (m_d->pluginUpdateState == PS::Unknown && m_d->lastReportedLatestPluginVersion.isEmpty()) {
             m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", i18n("Not checked")));
+        } else if (m_d->pluginUpdateState == PS::Available) {
+            m_d->pluginTabLatestVersionLabel->setText(
+                i18n("Update available: %1 (current: %2)", m_d->updateRemoteVersion, cur));
+        } else if (m_d->pluginUpdateState == PS::Downloading) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Downloading update…"));
+        } else if (m_d->pluginUpdateState == PS::Installing) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Installing update…"));
+        } else if (m_d->pluginUpdateState == PS::RestartRequired) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Update installed. Restart Krita to finish."));
+        } else if (m_d->pluginUpdateState == PS::FailedUpdate) {
+            m_d->pluginTabLatestVersionLabel->setText(i18n("Update download or verification failed."));
         } else {
-            m_d->pluginTabLatestVersionLabel->setText(i18n("Latest version: %1", m_d->lastReportedLatestPluginVersion));
+            m_d->pluginTabLatestVersionLabel->setText(
+                i18n("Latest version: %1", m_d->lastReportedLatestPluginVersion.isEmpty() ? cur : m_d->lastReportedLatestPluginVersion));
         }
     }
-    if (m_d->pluginTabDownloadInstallButton)
-        m_d->pluginTabDownloadInstallButton->setEnabled(m_d->hasUpdateAvailable);
+    if (m_d->pluginTabDownloadInstallButton) {
+        const bool busy = static_cast<bool>(m_d->pluginUpdateDownloadReply);
+        const bool canStart =
+            !busy && (m_d->pluginUpdateState == Private::PluginUpdateState::Available
+                      || m_d->pluginUpdateState == Private::PluginUpdateState::FailedUpdate)
+            && !m_d->updateDownloadUrl.isEmpty();
+        m_d->pluginTabDownloadInstallButton->setEnabled(canStart);
+    }
 }
 
 void ComfyUIRemoteDock::startUpdateCheck(bool manualRequest)
 {
-    // §13.37 / §13.160: GET {api_url}/plugin/latest?version={current}; if response.version != current, show update
-    if (!m_d->nam || m_d->updateCheckInProgress) return;
+    // §13.37 / §13.160: GET plugin/latest?version=current; newer version requires url + sha256
+    if (!m_d->nam || m_d->updateCheckInProgress)
+        return;
     if (!manualRequest) {
-        if (m_d->updateCheckRequested) return;
+        if (m_d->updateCheckRequested)
+            return;
         QJsonObject settings = ComfyUIUtils::loadSettingsJson();
-        if (!settings.value(QStringLiteral("auto_update")).toBool(true)) return;
+        if (!settings.value(QStringLiteral("auto_update")).toBool(true)) {
+            m_d->updateCheckRequested = true;
+            return;
+        }
         m_d->updateCheckRequested = true;
     }
+
+    if (m_d->pluginUpdateDownloadReply) {
+        m_d->pluginUpdateDownloadReply->disconnect(this);
+        m_d->pluginUpdateDownloadReply->abort();
+        m_d->pluginUpdateDownloadReply.clear();
+    }
+    m_d->pluginUpdateSaveFile.reset();
+    m_d->updateDownloadUrl.clear();
+    m_d->updatePackageSha256.clear();
+    m_d->updateRemoteVersion.clear();
+    m_d->updateExtractPath.clear();
+
+    m_d->pluginUpdateState = Private::PluginUpdateState::Checking;
     m_d->updateCheckInProgress = true;
     m_d->pluginUpdateCheckHadFailure = false;
-    refreshPluginInformationTabUpdateUi();
-    updateWelcomeVisibility();
-    QString currentVer = ComfyUIUtils::pluginVersion();
-    QUrl url(QStringLiteral("https://api.interstice.cloud/plugin/latest"));
+    syncPluginUpdateUi();
+
+    const QString currentVer = ComfyUIUtils::pluginVersion();
+    QString urlStr = ComfyUIUtils::intersticeApiBaseUrl();
+    while (urlStr.endsWith(QLatin1Char('/')))
+        urlStr.chop(1);
+    urlStr += QStringLiteral("/plugin/latest");
+    QUrl url(urlStr);
     QUrlQuery q;
     q.addQueryItem(QStringLiteral("version"), currentVer);
     url.setQuery(q);
@@ -3263,36 +3690,49 @@ void ComfyUIRemoteDock::startUpdateCheck(bool manualRequest)
         reply->deleteLater();
         m_d->updateCheckInProgress = false;
         if (reply->error() != QNetworkReply::NoError) {
+            m_d->pluginUpdateState = Private::PluginUpdateState::FailedCheck;
             m_d->pluginUpdateCheckHadFailure = true;
-            refreshPluginInformationTabUpdateUi();
-            updateWelcomeVisibility();
+            syncPluginUpdateUi();
             return;
         }
-        QByteArray data = reply->readAll();
+        const QByteArray data = reply->readAll();
         QJsonParseError err;
-        QJsonObject obj = QJsonDocument::fromJson(data, &err).object();
+        const QJsonObject obj = QJsonDocument::fromJson(data, &err).object();
         if (err.error != QJsonParseError::NoError || obj.isEmpty()) {
+            m_d->pluginUpdateState = Private::PluginUpdateState::FailedCheck;
             m_d->pluginUpdateCheckHadFailure = true;
-            refreshPluginInformationTabUpdateUi();
-            updateWelcomeVisibility();
+            syncPluginUpdateUi();
             return;
         }
         QString latestVer = obj.value(QStringLiteral("version")).toString();
-        if (latestVer.isEmpty()) latestVer = currentVer;
+        if (latestVer.isEmpty())
+            latestVer = currentVer;
         m_d->lastReportedLatestPluginVersion = latestVer;
         m_d->pluginUpdateCheckHadFailure = false;
         if (latestVer == currentVer) {
-            m_d->hasUpdateAvailable = false;
+            m_d->pluginUpdateState = Private::PluginUpdateState::Latest;
             m_d->updateDownloadUrl.clear();
-            refreshPluginInformationTabUpdateUi();
-            updateWelcomeVisibility();
+            m_d->updatePackageSha256.clear();
+            m_d->updateRemoteVersion.clear();
+            syncPluginUpdateUi();
             return;
         }
-        QString urlStr = obj.value(QStringLiteral("url")).toString();
-        m_d->hasUpdateAvailable = true;
+        const QString urlStr = obj.value(QStringLiteral("url")).toString().trimmed();
+        const QString sha256 = obj.value(QStringLiteral("sha256")).toString().trimmed();
+        if (urlStr.isEmpty() || sha256.isEmpty()) {
+            m_d->pluginUpdateState = Private::PluginUpdateState::FailedCheck;
+            m_d->pluginUpdateCheckHadFailure = true;
+            m_d->updateDownloadUrl.clear();
+            m_d->updatePackageSha256.clear();
+            m_d->updateRemoteVersion.clear();
+            syncPluginUpdateUi();
+            return;
+        }
+        m_d->pluginUpdateState = Private::PluginUpdateState::Available;
         m_d->updateDownloadUrl = urlStr;
-        refreshPluginInformationTabUpdateUi();
-        updateWelcomeVisibility();
+        m_d->updatePackageSha256 = sha256;
+        m_d->updateRemoteVersion = latestVer;
+        syncPluginUpdateUi();
     });
 }
 
@@ -3300,7 +3740,11 @@ void ComfyUIRemoteDock::startNewsFetch()
 {
     // §13.38: GET plugin news from API; digest = first 16 chars of SHA256(text); show NewsWidget when digest != last_news
     if (!m_d->nam || !m_d->welcomeNewsLabel) return;
-    QUrl url(QStringLiteral("https://api.interstice.cloud/plugin/news"));
+    QString urlStr = ComfyUIUtils::intersticeApiBaseUrl();
+    while (urlStr.endsWith(QLatin1Char('/')))
+        urlStr.chop(1);
+    urlStr += QStringLiteral("/plugin/news");
+    QUrl url(urlStr);
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply *reply = m_d->nam->get(req);
@@ -3901,7 +4345,7 @@ void ComfyUIRemoteDock::refreshAnimationTargetLayerCombo()
         });
         int selectAt = 0;
         for (int i = 0; i < items.size(); ++i) {
-            m_d->comboAnimationTargetLayer->addItem(items.at(i).second, items.at(i).first);
+            m_d->comboAnimationTargetLayer->addItem(i18n("Target layer: %1", items.at(i).second), items.at(i).first);
             if (items.at(i).first == prev)
                 selectAt = i + 1;
         }
@@ -4056,15 +4500,20 @@ void ComfyUIRemoteDock::updateQueueStatus()
         int total = running + queued;
         m_d->btnQueuePopup->setText(QString::number(total) + QStringLiteral(" "));
         if (total > 0) {
-            m_d->btnQueuePopup->setIcon(KisIconUtils::loadIcon("run-build"));
+            m_d->btnQueuePopup->setIcon(
+                KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-active"))));
             if (queued > 0) {
                 m_d->btnQueuePopup->setToolTip(i18n("Generating image. %1 jobs queued. Click to adjust queue or cancel.", queued));
             } else {
                 m_d->btnQueuePopup->setToolTip(i18n("Generating image. Click to adjust queue or cancel."));
             }
         } else {
-            m_d->btnQueuePopup->setIcon(KisIconUtils::loadIcon("dialog-ok"));
-            m_d->btnQueuePopup->setToolTip(i18n("Idle. Click to adjust batch, seed, enqueue mode, or cancel jobs."));
+            m_d->btnQueuePopup->setIcon(
+                KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-inactive"))));
+            const bool animWorkspace = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3;
+            m_d->btnQueuePopup->setToolTip(animWorkspace
+                ? i18n("Idle. Click to adjust seed or cancel jobs (Animation has no batch enqueue options).")
+                : i18n("Idle. Click to adjust batch, seed, enqueue mode, or cancel jobs."));
         }
     }
     if (running + queued > 0) {
@@ -4113,7 +4562,7 @@ void ComfyUIRemoteDock::refreshHistoryList()
     const int starX = thumbW - 28;
     const int starY = 4;
     const int starSize = 24;
-    QIcon starIcon = KisIconUtils::loadIcon("rating");  // star for applied indicator
+    QIcon starIcon = KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("star")));  // §13.153 / §13.28a
     QPixmap starPix = starIcon.pixmap(starSize, starSize);
     // §13.131: One row per image (job_id + index); multi-image entries show multiple rows
     for (const Private::HistoryEntry &e : m_d->historyEntries) {
@@ -4494,7 +4943,8 @@ void ComfyUIRemoteDock::applyPromptHeader()
     } else if (mode == 1) {
         m_d->regionsGroupBox->setTitle(QString());
         m_d->regionHeaderLabel->setText(QString());
-        m_d->regionHeaderLabel->setPixmap(KisIconUtils::loadIcon("view-preview").pixmap(16, 16));
+        m_d->regionHeaderLabel->setPixmap(
+            KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-prompt"))).pixmap(16, 16));
         m_d->regionHeaderLabel->show();
     } else {
         m_d->regionsGroupBox->setTitle(QString());
@@ -4573,5 +5023,29 @@ void ComfyUIRemoteDock::savePreviewLayerIdToDocument(const QString &layerId)
         img->addAnnotation(KisAnnotationSP(new KisAnnotation(key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("preview_layer")), layerId.toUtf8())));
     }
     m_d->previewLayerId = layerId;
+}
+
+void ComfyUIRemoteDock::slotAddPoseGuideToVectorLayer()
+{
+    if (!m_d->viewManager || !m_d->viewManager->image()) {
+        setStatusMessage(i18n("Open a document first."), true);
+        return;
+    }
+    KisLayerSP al = m_d->viewManager->activeLayer();
+    KisShapeLayerSP sl(qobject_cast<KisShapeLayer *>(al.data()));
+    if (!sl) {
+        setStatusMessage(i18n("Select a vector layer, then add a pose guide."), true);
+        return;
+    }
+    KisDocument *doc = m_d->canvas && m_d->canvas->imageView() ? m_d->canvas->imageView()->document() : nullptr;
+    if (!doc) {
+        setStatusMessage(i18n("Could not access the document to edit vector shapes."), true);
+        return;
+    }
+    const int people = m_d->spinPoseGuidePeopleCount ? m_d->spinPoseGuidePeopleCount->value() : 1;
+    if (ComfyUIPoseLayers::instance().addPoseCharacter(m_d->viewManager->image(), sl, doc, people))
+        setStatusMessage(i18n("Pose guide added. Pose SVG is refreshed every 500 ms while the layer exists."), false);
+    else
+        setStatusMessage(i18n("Could not add pose guide (check that the layer is a vector layer)."), true);
 }
 

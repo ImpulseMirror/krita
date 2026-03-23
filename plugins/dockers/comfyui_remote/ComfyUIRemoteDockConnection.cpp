@@ -19,6 +19,8 @@
 #include <KConfigGroup>
 #include <QSignalBlocker>
 
+#include <kis_icon_utils.h>
+
 namespace {
 QStringList parseCheckpointNamesFromObjectInfoRoot(const QJsonObject &root)
 {
@@ -189,8 +191,8 @@ void ComfyUIRemoteDock::fetchComfyModelsLorasMergeAndRefreshStylesTab()
     });
 }
 
-// §13.71: Missing resources display (Connection tab). (a) List format: missing custom nodes from object_info.
-// (b) Dict format (missing models per arch) not yet implemented — would require model discovery per architecture.
+// §13.71: Missing resources display (Connection tab). (a) List format: missing nodes from object_info + link per row.
+// (b) Dict format: optional "Missing common models" when ckpt list empty; then per-arch from classifyCheckpointArch (skip Arch.all/illu_v in table).
 static const QStringList &requiredObjectInfoNodes()
 {
     static const QStringList list = {
@@ -202,17 +204,149 @@ static const QStringList &requiredObjectInfoNodes()
     return list;
 }
 
-// §13.71: Build list-format HTML for missing custom nodes (heading, <ul>, sentences, help link)
+// §13.71 (a): Each list entry shows node name + link (parity with CustomNode name/URL when no per-node URL is known).
+static QString missingCustomNodeListItemHtml(const QString &classType)
+{
+    const QString href = QStringLiteral("https://github.com/comfyanonymous/ComfyUI");
+    return QLatin1String("<li>") + classType.toHtmlEscaped() + QLatin1String(" — <a href=\"") + href + QLatin1String("\">")
+        + i18n("ComfyUI core / extensions").toHtmlEscaped() + QLatin1String("</a></li>");
+}
+
+// §13.71: Build list-format HTML for missing custom nodes (heading, <ul>, sentences)
 static QString buildMissingNodesListFormat(const QStringList &missingNodes)
 {
     QString html;
     html += QLatin1String("<p><b>") + i18n("The following ComfyUI custom nodes are missing or too old") + QLatin1String("</b></p><ul>");
     for (const QString &name : missingNodes)
-        html += QLatin1String("<li>") + name.toHtmlEscaped() + QLatin1String("</li>");
+        html += missingCustomNodeListItemHtml(name);
     html += QLatin1String("</ul><p>") + i18n("Please install or update the custom node package (e.g. ComfyUI Manager or the node's repository).") + QLatin1String("</p>");
     html += QLatin1String("<p>") + i18n("If nodes are still missing, check the ComfyUI output at startup for errors.") + QLatin1String("</p>");
+    return html;
+}
+
+// §13.71 (b): Dict-style HTML — "Detected base models:" per arch (skip Arch.all, Arch.illu_v); footer link only on this format.
+static QString buildMissingResourcesDictFormatHtml(const QStringList &checkpointNames)
+{
+    QSet<QString> present;
+    for (const QString &n : checkpointNames) {
+        const QString a = ComfyUIUtils::classifyCheckpointArch(n);
+        if (a != QLatin1String("unknown"))
+            present.insert(a);
+    }
+    static const struct {
+        const char *classifierKey;
+        const char *displayArch;
+    } rows[] = {
+        {"sd15", "sd15"},
+        {"sdxl", "sdxl"},
+        {"flux", "flux"},
+        {"flux_k", "flux_k"},
+        {"flux2_4b", "flux2_4b"},
+        {"qwen_e", "qwen"},
+    };
+    QString html;
+    // §13.71 (b): When the server exposes no checkpoint filenames, treat as missing common (Arch.all) model inventory.
+    if (checkpointNames.isEmpty()) {
+        html += QLatin1String("<p><b>") + i18n("Missing common models (required):") + QLatin1String("</b></p><ul>");
+        html += QLatin1String("<li>") + i18n("Checkpoints: server returned no ckpt_name entries in object_info (install models or fix CheckpointLoaderSimple).").toHtmlEscaped()
+            + QLatin1String("</li>");
+        html += QLatin1String("</ul>");
+    }
+    html += QLatin1String("<p><b>") + i18n("Detected base models:") + QLatin1String("</b></p><ul>");
+    for (const auto &row : rows) {
+        const QString key = QString::fromLatin1(row.classifierKey);
+        const QString label = QString::fromLatin1(row.displayArch);
+        const bool ok = present.contains(key);
+        html += QLatin1String("<li><b>") + label.toHtmlEscaped() + QLatin1String("</b>: ");
+        if (ok)
+            html += i18n("supported").toHtmlEscaped();
+        else
+            html += i18n("missing %1", QString::fromLatin1(row.displayArch)).toHtmlEscaped();
+        html += QLatin1String("</li>");
+    }
+    html += QLatin1String("</ul>");
     html += QLatin1String("<p>") + i18n("See <a href=\"https://docs.interstice.cloud\">Custom ComfyUI Setup</a> for required models. Check the client.log file for more details.") + QLatin1String("</p>");
     return html;
+}
+
+void ComfyUIRemoteDock::refreshCloudAuthStatusLabel()
+{
+    if (!m_d->labelCloudAuthStatus)
+        return;
+    const QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    const bool tokenEmpty = s.value(QStringLiteral("access_token")).toString().trimmed().isEmpty();
+    if (tokenEmpty) {
+        // §13.89: Cloud + empty token → auth_missing (no CloudClient in this build)
+        m_d->labelCloudAuthStatus->setText(
+            i18n("Authentication required: Online Service sign-in is not available in this build. Use Custom ComfyUI or the Python plugin."));
+        m_d->labelCloudAuthStatus->setStyleSheet(QStringLiteral("color: palette(highlight);"));
+    } else {
+        m_d->labelCloudAuthStatus->setText(
+            i18n("An access token is stored, but the Online Service API is not available in this build. Use Custom ComfyUI to connect to your own server."));
+        m_d->labelCloudAuthStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    }
+    m_d->labelCloudAuthStatus->setWordWrap(true);
+}
+
+void ComfyUIRemoteDock::refreshConnectionActionButton()
+{
+    if (!m_d->btnTest)
+        return;
+    if (m_d->isConnecting) {
+        m_d->btnTest->setEnabled(false);
+        m_d->btnTest->setText(i18n("Connecting…"));
+        m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
+        return;
+    }
+    m_d->btnTest->setEnabled(true);
+    if (m_d->isConnected) {
+        m_d->btnTest->setText(i18n("Disconnect"));
+        m_d->btnTest->setIcon(KisIconUtils::loadIcon("dialog-cancel"));
+    } else {
+        m_d->btnTest->setText(i18n("Connect"));
+        m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
+    }
+}
+
+// §13.89: User disconnect — cancel timers and clear Comfy client state (mirrors Python Connection.disconnect() for local URL client).
+void ComfyUIRemoteDock::slotDisconnect()
+{
+    if (m_d->pollTimer)
+        m_d->pollTimer->stop();
+    if (m_d->inpaintPollTimer)
+        m_d->inpaintPollTimer->stop();
+    if (m_d->upscalePollTimer)
+        m_d->upscalePollTimer->stop();
+    if (m_d->liveTimer)
+        m_d->liveTimer->stop();
+    if (m_d->livePollTimer)
+        m_d->livePollTimer->stop();
+    if (m_d->controlPreviewPollTimer)
+        m_d->controlPreviewPollTimer->stop();
+
+    m_d->isConnected = false;
+    m_d->isConnecting = false;
+    m_d->connectionErrorOccurred = false;
+    m_d->connectionErrorKind.clear();
+    m_d->comfyDeviceSummary.clear();
+    m_d->lastComfySystemStats = QJsonObject();
+    if (m_d->labelPerfDevice)
+        m_d->labelPerfDevice->setText(i18n("Device: (connect to server)"));
+    if (m_d->labelConnectionStatus) {
+        m_d->labelConnectionStatus->setText(i18n("Disconnected"));
+        m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+    }
+    if (m_d->labelDetectedModels) {
+        m_d->labelDetectedModels->setText(i18n("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
+        m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
+        m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
+    }
+    clearObjectInfoDerivedServerCaches();
+    refreshStylesTabLoraWarning();
+    applyStylesTabLoraListFilter();
+    setStatusMessage(i18n("Disconnected from server."));
+    updateWelcomeVisibility();
+    refreshConnectionActionButton();
 }
 
 // §13.198: User-initiated Connect; no automatic periodic retry — reconnection is on button click
@@ -242,6 +376,7 @@ void ComfyUIRemoteDock::slotTestConnection()
         refreshStylesTabLoraWarning();
         applyStylesTabLoraListFilter();
         updateWelcomeVisibility();
+        refreshConnectionActionButton();
         return;
     }
     QUrl url(urlStr);
@@ -265,6 +400,7 @@ void ComfyUIRemoteDock::slotTestConnection()
             m_d->labelDetectedModels->setText(i18n("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
         }
         updateWelcomeVisibility();
+        refreshConnectionActionButton();
         return;
     }
     QString path = url.path();
@@ -279,12 +415,11 @@ void ComfyUIRemoteDock::slotTestConnection()
         m_d->labelConnectionStatus->setText(i18n("Connecting"));
         m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
     }
-    m_d->btnTest->setEnabled(false);
+    refreshConnectionActionButton();
     QNetworkRequest req(url);
     ComfyUIUtils::setComfyUIRequestHeaders(req);
     QNetworkReply *reply = m_d->nam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        m_d->btnTest->setEnabled(true);
         m_d->isConnecting = false;
         const QByteArray responseBody = reply->readAll();
         reply->deleteLater();
@@ -317,7 +452,11 @@ void ComfyUIRemoteDock::slotTestConnection()
             QNetworkReply *replyObj = m_d->nam->get(reqObj);
             connect(replyObj, &QNetworkReply::finished, this, [this, replyObj]() {
                 replyObj->deleteLater();
-                if (!m_d->labelDetectedModels) { updateWelcomeVisibility(); return; }
+                if (!m_d->labelDetectedModels) {
+                    updateWelcomeVisibility();
+                    refreshConnectionActionButton();
+                    return;
+                }
                 if (replyObj->error() != QNetworkReply::NoError) {
                     clearObjectInfoDerivedServerCaches();
                     refreshStylesTabLoraWarning();
@@ -326,6 +465,7 @@ void ComfyUIRemoteDock::slotTestConnection()
                     m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
                     m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
                     updateWelcomeVisibility();
+                    refreshConnectionActionButton();
                     return;
                 }
                 QJsonObject root = QJsonDocument::fromJson(replyObj->readAll()).object();
@@ -351,11 +491,15 @@ void ComfyUIRemoteDock::slotTestConnection()
                     m_d->labelDetectedModels->setOpenExternalLinks(true);
                     m_d->labelDetectedModels->setTextInteractionFlags(Qt::TextBrowserInteraction);
                 } else {
-                    m_d->labelDetectedModels->setText(i18n("Connected. No missing nodes detected. Architecture detection (SD 1.5, SD XL, Flux, etc.) not yet implemented in this port."));
+                    const QStringList ckptNames = parseCheckpointNamesFromObjectInfoRoot(root);
+                    m_d->labelDetectedModels->setTextFormat(Qt::RichText);
+                    m_d->labelDetectedModels->setText(buildMissingResourcesDictFormatHtml(ckptNames));
                     m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
-                    m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
+                    m_d->labelDetectedModels->setOpenExternalLinks(true);
+                    m_d->labelDetectedModels->setTextInteractionFlags(Qt::TextBrowserInteraction);
                 }
                 updateWelcomeVisibility();
+                refreshConnectionActionButton();
             });
         } else {
             m_d->comfyDeviceSummary.clear();
@@ -391,6 +535,7 @@ void ComfyUIRemoteDock::slotTestConnection()
             }
         }
         updateWelcomeVisibility();
+        refreshConnectionActionButton();
     });
 }
 
@@ -399,10 +544,12 @@ void ComfyUIRemoteDock::clearObjectInfoDerivedServerCaches()
     m_d->comfyServerLoraFilenames.clear();
     m_d->objectInfoSpec58NodesPresent.clear();
     m_d->objectInfoSpec58LastLoggedSignature.clear();
+    m_d->lastObjectInfoRoot = QJsonObject();
 }
 
 void ComfyUIRemoteDock::syncFromObjectInfoRoot(const QJsonObject &objectInfoRoot)
 {
+    m_d->lastObjectInfoRoot = objectInfoRoot;
     ComfyUIUtils::extractLoraFilenamesFromObjectInfo(objectInfoRoot, &m_d->comfyServerLoraFilenames);
     m_d->objectInfoSpec58NodesPresent = ComfyUIUtils::specSection58NodesPresentInObjectInfo(objectInfoRoot);
     const QString sig = m_d->objectInfoSpec58NodesPresent.join(QLatin1Char('\x1e'));
@@ -481,4 +628,127 @@ void ComfyUIRemoteDock::applyServerCheckpointList(const QStringList &filteredNam
                              true);
         }
     }
+}
+
+namespace {
+QString comfyBaseWithHttpScheme(const QString &hostOrUrl)
+{
+    QString base = hostOrUrl.trimmed();
+    if (base.isEmpty())
+        return QString();
+    if (!base.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+        && !base.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)) {
+        base = QStringLiteral("http://") + base;
+    }
+    return base;
+}
+
+QString hostPortKey(const QString &hostOrUrl)
+{
+    QString b = hostOrUrl.trimmed();
+    if (b.startsWith(QLatin1String("http://"), Qt::CaseInsensitive))
+        b = b.mid(7);
+    else if (b.startsWith(QLatin1String("https://"), Qt::CaseInsensitive))
+        b = b.mid(8);
+    return b;
+}
+} // namespace
+
+// §13.81: When server_mode is undefined, try settings.server_url then 127.0.0.1:8000; on success set external + URL;
+// on total failure set cloud and clear connection error (Online Service path).
+void ComfyUIRemoteDock::tryAutostartServerFallback()
+{
+    if (!m_d->editServerUrl || !m_d->nam || m_d->autostartServerProbeDone)
+        return;
+
+    KConfigGroup modeCfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+    if (modeCfg.readEntry(QStringLiteral("ServerMode"), QStringLiteral("undefined")) != QLatin1String("undefined"))
+        return;
+
+    m_d->autostartServerProbeDone = true;
+
+    // §13.81: First URL is settings.server_url (JSON), then 127.0.0.1:8000 — not unsaved line-edit text.
+    const QJsonObject sJson = ComfyUIUtils::loadSettingsJson();
+    QString primary = sJson.value(QStringLiteral("server_url")).toString().trimmed();
+    if (primary.isEmpty()) {
+        KConfigGroup urlCfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+        primary = urlCfg.readEntry(QStringLiteral("ServerUrl"), QString()).trimmed();
+    }
+    if (primary.isEmpty())
+        primary = QStringLiteral("127.0.0.1:8188");
+    const QString fallback = QStringLiteral("127.0.0.1:8000");
+
+    auto finishCloudFallback = [this]() {
+        KConfigGroup cg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+        cg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("cloud"));
+        KSharedConfig::openConfig()->sync();
+        m_d->isConnected = false;
+        m_d->connectionErrorOccurred = false;
+        m_d->connectionErrorKind.clear();
+        updateWelcomeVisibility();
+    };
+
+    auto applyExternalAndConnect = [this](const QString &hostPort) {
+        {
+            QSignalBlocker b(m_d->editServerUrl);
+            m_d->editServerUrl->setText(hostPort);
+        }
+        KConfigGroup cg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+        cg.writeEntry(QStringLiteral("ServerUrl"), hostPort);
+        cg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("external"));
+        QJsonObject st = ComfyUIUtils::loadSettingsJson();
+        st.insert(QStringLiteral("server_url"), hostPort);
+        ComfyUIUtils::saveSettingsJson(st);
+        KSharedConfig::openConfig()->sync();
+        slotTestConnection();
+    };
+
+    auto probeSystemStats = [this](const QString &candidate) -> QUrl {
+        const QString base = comfyBaseWithHttpScheme(candidate);
+        if (base.isEmpty())
+            return QUrl();
+        QUrl url = ComfyUIUtils::comfyResolveApiUrl(base, QStringLiteral("system_stats"));
+        return url.isValid() ? url : QUrl();
+    };
+
+    const QUrl primaryStats = probeSystemStats(primary);
+    if (!primaryStats.isValid()) {
+        finishCloudFallback();
+        return;
+    }
+
+    QNetworkRequest req1(primaryStats);
+    ComfyUIUtils::setComfyUIRequestHeaders(req1);
+    QNetworkReply *reply1 = m_d->nam->get(req1);
+    connect(reply1, &QNetworkReply::finished, this, [this, reply1, primary, fallback, applyExternalAndConnect,
+                                                      finishCloudFallback]() {
+        reply1->deleteLater();
+        const int http1 = reply1->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool ok1 = reply1->error() == QNetworkReply::NoError && http1 == 200;
+        if (ok1) {
+            applyExternalAndConnect(primary);
+            return;
+        }
+        if (hostPortKey(primary) == hostPortKey(fallback)) {
+            finishCloudFallback();
+            return;
+        }
+        const QUrl fbStats = probeSystemStats(fallback);
+        if (!fbStats.isValid()) {
+            finishCloudFallback();
+            return;
+        }
+        QNetworkRequest req2(fbStats);
+        ComfyUIUtils::setComfyUIRequestHeaders(req2);
+        QNetworkReply *reply2 = m_d->nam->get(req2);
+        connect(reply2, &QNetworkReply::finished, this, [this, reply2, fallback, applyExternalAndConnect, finishCloudFallback]() {
+            reply2->deleteLater();
+            const int http2 = reply2->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const bool ok2 = reply2->error() == QNetworkReply::NoError && http2 == 200;
+            if (ok2)
+                applyExternalAndConnect(fallback);
+            else
+                finishCloudFallback();
+        });
+    });
 }

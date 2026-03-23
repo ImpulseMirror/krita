@@ -23,6 +23,8 @@
 #include <kis_icon_utils.h>
 #include <kis_types.h>
 #include <kis_image.h>
+#include <KisViewManager.h>
+#include <kis_selection.h>
 #include <kis_image_animation_interface.h>
 #include <kis_time_span.h>
 #include <kis_animation_importer.h>
@@ -31,6 +33,21 @@
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QCoreApplication>
+#include <QImage>
+#include <QPixmap>
+#include <QLabel>
+#include <QUrlQuery>
+#include <QSignalBlocker>
+
+#include <KSharedConfig>
+#include <KConfigGroup>
+
+#include "ComfyUIIntervalSlider.h"
+#include "ComfyUIPoseLayers.h"
+
+#include <kis_layer.h>
+#include <kis_shape_layer.h>
+
 #include <algorithm>
 
 // §13.126: End-to-end flow — user action → workflow build (check_color_mode) → queue per QueueMode → POST prompt → poll result → history + UI → Apply
@@ -83,6 +100,8 @@ void ComfyUIRemoteDock::slotGenerate()
                 return;
             }
             QJsonObject workflow = doc.object();
+            if (!tryResolveCustomWorkflowInPlace(&workflow))
+                return;
             auto validation = ComfyUIUtils::validateCustomWorkflowStyleAndPromptNodes(workflow);
             if (!validation.first) {
                 setStatusMessage(validation.second, true);
@@ -105,7 +124,10 @@ void ComfyUIRemoteDock::slotGenerate()
             int effectiveBatch = ComfyUIUtils::computeBatchSize(effW, effH, 512, batchCount);
             if (m_d->isFullAnimationBatch && batchCount > 0)
                 effectiveBatch = batchCount;
+            m_d->batchSeedStep = qMax(1, batchCount); // §13.212: step = settings.batch_size, not capped job count
             int queueMode = m_d->comboQueueMode->currentData().toInt();
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
+                queueMode = 0; // §5.7 / §13.92: Animation — supports_batch=False (no replace/front semantics)
             if (queueMode == 2) {
                 m_d->pollTimer->stop();
                 for (const QString &id : m_d->jobQueue) m_d->pendingHistoryByPromptId.remove(id);
@@ -198,9 +220,14 @@ void ComfyUIRemoteDock::slotGenerate()
             QString workflowText = m_d->editCustomWorkflow->toPlainText().replace(QStringLiteral("REFERENCE_IMAGE"), refName);
             QJsonParseError err;
             QByteArray jsonBytes = ComfyUIUtils::stripJsonLineComments(workflowText.toUtf8());
-            QJsonObject workflow = QJsonDocument::fromJson(jsonBytes, &err).object();
-            if (err.error != QJsonParseError::NoError) {
+            QJsonDocument wdoc = QJsonDocument::fromJson(jsonBytes, &err);
+            if (err.error != QJsonParseError::NoError || !wdoc.isObject()) {
                 setStatusMessage(i18n("Workflow JSON error after reference replace."), true);
+                m_d->btnGenerate->setEnabled(true);
+                return;
+            }
+            QJsonObject workflow = wdoc.object();
+            if (!tryResolveCustomWorkflowInPlace(&workflow)) {
                 m_d->btnGenerate->setEnabled(true);
                 return;
             }
@@ -226,7 +253,10 @@ void ComfyUIRemoteDock::slotGenerate()
             int effectiveBatch = ComfyUIUtils::computeBatchSize(effW, effH, 512, batchCount);
             if (m_d->isFullAnimationBatch && batchCount > 0)
                 effectiveBatch = batchCount; // §13.74: one ComfyUI prompt per timeline frame
+            m_d->batchSeedStep = qMax(1, batchCount); // §13.212
             int queueMode = m_d->comboQueueMode->currentData().toInt();
+            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
+                queueMode = 0; // §5.7 / §13.92: Animation — supports_batch=False
             if (queueMode == 2) {
                 m_d->pollTimer->stop();
                 for (const QString &id : m_d->jobQueue) m_d->pendingHistoryByPromptId.remove(id);
@@ -278,6 +308,9 @@ void ComfyUIRemoteDock::slotGenerate()
             return;
         }
         workflow = doc.object();
+        // §13.101: UI workflow (nodes/links) → API via object_info, or pass through API JSON
+        if (!tryResolveCustomWorkflowInPlace(&workflow))
+            return;
         // §13.103: At most one ETN_KritaStyleAndPrompt node
         auto validation = ComfyUIUtils::validateCustomWorkflowStyleAndPromptNodes(workflow);
         if (!validation.first) {
@@ -383,8 +416,11 @@ void ComfyUIRemoteDock::slotGenerate()
     int effectiveBatch = ComfyUIUtils::computeBatchSize(effW, effH, 512, batchCount);
     if (m_d->isFullAnimationBatch && batchCount > 0)
         effectiveBatch = batchCount; // §13.74: one ComfyUI prompt per timeline frame
+    m_d->batchSeedStep = qMax(1, batchCount); // §13.212: +i * settings.batch_size (performance batch), not effectiveBatch
 
     int queueMode = m_d->comboQueueMode->currentData().toInt();
+    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
+        queueMode = 0; // §5.7 / §13.92: Animation — supports_batch=False
     if (queueMode == 2) { // Replace
         m_d->pollTimer->stop();
         for (const QString &id : m_d->jobQueue)
@@ -562,9 +598,14 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
             }
             wt.replace(QStringLiteral("REFERENCE_IMAGE"), refName);
             QJsonParseError err;
-            const QJsonObject workflow = QJsonDocument::fromJson(wt.toUtf8(), &err).object();
-            if (err.error != QJsonParseError::NoError) {
+            QJsonDocument wdoc = QJsonDocument::fromJson(wt.toUtf8(), &err);
+            if (err.error != QJsonParseError::NoError || !wdoc.isObject()) {
                 setStatusMessage(i18n("Workflow JSON error after reference replace."), true);
+                abortAnimBatch();
+                return;
+            }
+            QJsonObject workflow = wdoc.object();
+            if (!tryResolveCustomWorkflowInPlace(&workflow)) {
                 abortAnimBatch();
                 return;
             }
@@ -582,13 +623,15 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
     QJsonObject workflow;
     if (m_d->batchUseCustomWorkflow) {
         workflow = m_d->batchCustomWorkflow;
+        if (!tryResolveCustomWorkflowInPlace(&workflow))
+            return;
     } else {
         QJsonParseError err;
         QJsonDocument doc = QJsonDocument::fromJson(QByteArray(defaultWorkflow), &err);
         if (err.error != QJsonParseError::NoError || !doc.isObject()) return;
         workflow = doc.object();
-        // §13.212: seed for i-th job = base + i * batch_size; wildcards re-evaluated per job with this seed
-        const int batchSize = qMax(1, m_d->batchCountTarget);
+        // §13.212: seed for i-th job = base + i * settings.batch_size; wildcards re-evaluated per job with this seed
+        const int batchSize = qMax(1, m_d->batchSeedStep);
         qint64 seed = m_d->batchBaseSeed + m_d->batchSubmitIndex * batchSize;
         QJsonObject n3 = workflow["3"].toObject();
         QJsonObject i3 = n3["inputs"].toObject();
@@ -731,8 +774,8 @@ void ComfyUIRemoteDock::dispatchBatchPromptRequest(QJsonObject workflow, int sub
         entry.cfg = m_d->spinCfg->value();
         entry.strength = m_d->spinStrength ? m_d->spinStrength->value() : 100;
         entry.samplerName = m_d->comboSampler->currentText().trimmed();
-        // §13.212: Batch seed = base + index * batch_size; wildcards were re-evaluated per job in workflow build
-        const int batchSize = qMax(1, m_d->batchCountTarget);
+        // §13.212: Batch seed = base + index * settings.batch_size; wildcards were re-evaluated per job in workflow build
+        const int batchSize = qMax(1, m_d->batchSeedStep);
         entry.seed = m_d->batchBaseSeed + submitIndex * batchSize;
         // §13.74: capture timeline frame for Single Frame mismatch warning after generation
         if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3 && m_d->radioSingleFrame
@@ -979,4 +1022,360 @@ void ComfyUIRemoteDock::cancelQueuedGenerateJobs()
     ComfyUIUtils::setComfyUIRequestHeaders(reqQueue);
     reqQueue.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     m_d->nam->post(reqQueue, QJsonDocument(delPayload).toJson(QJsonDocument::Compact));
+}
+
+void ComfyUIRemoteDock::stopControlPreviewPolling()
+{
+    if (m_d->controlPreviewPollTimer)
+        m_d->controlPreviewPollTimer->stop();
+    m_d->controlPreviewPromptId.clear();
+    m_d->controlPreviewPollCount = 0;
+    m_d->controlPreviewHandsCompositeBack = false;
+    m_d->controlPreviewCompositeLocalRect = QRect();
+    m_d->controlPreviewCompositeFullSize = QSize();
+    if (m_d->btnControlPreviewRun)
+        m_d->btnControlPreviewRun->setEnabled(true);
+}
+
+void ComfyUIRemoteDock::syncControlPreviewRangeFromSettings()
+{
+    if (!m_d->controlPreviewRangeSlider)
+        return;
+    KConfigGroup cfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+    const int savedLow = cfg.readEntry(QStringLiteral("control_layer_timing_low_pct"), -1);
+    const int savedHigh = cfg.readEntry(QStringLiteral("control_layer_timing_high_pct"), -1);
+    if (savedLow >= 0 && savedHigh >= 0) {
+        const int lo = qBound(0, savedLow, 100);
+        const int hi = qBound(0, savedHigh, 100);
+        QSignalBlocker b(m_d->controlPreviewRangeSlider);
+        m_d->controlPreviewRangeSlider->setInterval(qMin(lo, hi), qMax(lo, hi));
+        return;
+    }
+    const QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    const QJsonObject controlRoot = ComfyUIUtils::builtinControlPresetsRoot();
+    const QList<ComfyUIUtils::ControlLayerPreset> cps =
+        ComfyUIUtils::controlPresetsForMode(controlRoot, QStringLiteral("default"), QString());
+    if (cps.isEmpty()) {
+        QSignalBlocker b(m_d->controlPreviewRangeSlider);
+        m_d->controlPreviewRangeSlider->setInterval(25, 75);
+        return;
+    }
+    const int idx = qBound(0, s.value(QStringLiteral("control_layer_default_preset_index")).toInt(0), cps.size() - 1);
+    const ComfyUIUtils::ControlLayerPreset &p = cps.at(idx);
+    const int low = qBound(0, qRound(p.start * 100.0), 100);
+    const int high = qBound(0, qRound(p.end * 100.0), 100);
+    QSignalBlocker b(m_d->controlPreviewRangeSlider);
+    m_d->controlPreviewRangeSlider->setInterval(qMin(low, high), qMax(low, high));
+}
+
+void ComfyUIRemoteDock::syncPoseGuidePeopleCountFromSettings()
+{
+    if (!m_d->spinPoseGuidePeopleCount)
+        return;
+    KConfigGroup cfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+    const int n = qBound(1, cfg.readEntry(QStringLiteral("pose_guide_people_count"), 1), 3);
+    QSignalBlocker b(m_d->spinPoseGuidePeopleCount);
+    m_d->spinPoseGuidePeopleCount->setValue(n);
+}
+
+void ComfyUIRemoteDock::slotControlPreviewRun()
+{
+    QString urlStr = m_d->editServerUrl->text().trimmed();
+    if (urlStr.isEmpty()) {
+        setStatusMessage(i18n("Enter a server URL."), true);
+        return;
+    }
+    if (!m_d->viewManager || !m_d->viewManager->image()) {
+        setStatusMessage(i18n("Open a document first."), true);
+        return;
+    }
+    KisImageSP image = m_d->viewManager->image();
+    const auto colorCheck = ComfyUIUtils::checkColorMode(image);
+    if (!colorCheck.first) {
+        setStatusMessage(colorCheck.second, true);
+        return;
+    }
+    const QString mode =
+        m_d->comboControlPreviewMode ? m_d->comboControlPreviewMode->currentData().toString() : QStringLiteral("depth");
+    stopControlPreviewPolling();
+    if (m_d->btnControlPreviewRun)
+        m_d->btnControlPreviewRun->setEnabled(false);
+    if (m_d->labelControlPreviewImage) {
+        m_d->labelControlPreviewImage->clear();
+        m_d->labelControlPreviewImage->setText(i18n("Uploading…"));
+    }
+
+    QImage canvasImg = ComfyUIUtils::getCanvasAsQImage(image);
+    if (canvasImg.isNull()) {
+        setStatusMessage(i18n("Could not export canvas."), true);
+        stopControlPreviewPolling();
+        return;
+    }
+    // §13.98: Pose preview prefers tracked vector-layer pose SVG (rasterized) when the active layer is a shape layer.
+    if (mode.compare(QStringLiteral("pose"), Qt::CaseInsensitive) == 0 && m_d->viewManager) {
+        if (KisLayerSP al = m_d->viewManager->activeLayer()) {
+            if (auto *sl = qobject_cast<KisShapeLayer *>(al.data())) {
+                const QSize docSz = image->bounds().size();
+                QImage poseImg = ComfyUIPoseLayers::instance().rasterizedPoseImageForLayer(sl->uuid(), docSz);
+                if (!poseImg.isNull()) {
+                    if (poseImg.size() != canvasImg.size()) {
+                        poseImg = poseImg.scaled(canvasImg.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                    }
+                    canvasImg = poseImg;
+                }
+            }
+        }
+    }
+    // §13.53: partial selection → crop to bounds; track rect in full-export coords for hands recomposite.
+    const QRect docBounds = image->bounds();
+    const QSize fullExportSize = canvasImg.size();
+    QRect localCropRect(0, 0, fullExportSize.width(), fullExportSize.height());
+    if (m_d->viewManager) {
+        if (KisSelectionSP sel = m_d->viewManager->selection()) {
+            if (auto ps = sel->pixelSelection()) {
+                QRect r = ps->selectedExactRect();
+                r &= docBounds;
+                if (!r.isEmpty() && r.size() != docBounds.size()) {
+                    const QRect local = r.translated(-docBounds.topLeft());
+                    if (local.left() >= 0 && local.top() >= 0 && local.right() < canvasImg.width()
+                        && local.bottom() < canvasImg.height()) {
+                        localCropRect = local;
+                        canvasImg = canvasImg.copy(local);
+                    }
+                }
+            }
+        }
+    }
+    m_d->controlPreviewCompositeLocalRect = localCropRect;
+    m_d->controlPreviewCompositeFullSize = fullExportSize;
+    m_d->controlPreviewHandsCompositeBack =
+        (mode.compare(QStringLiteral("hands"), Qt::CaseInsensitive) == 0
+         && localCropRect != QRect(QPoint(0, 0), fullExportSize));
+    // §13.53: preprocessors use resolution from shortest side of extent (not longest).
+    const int resBase = qMin(canvasImg.width(), canvasImg.height());
+
+    QTemporaryFile *tmp = new QTemporaryFile(this);
+    tmp->setFileTemplate(tmp->fileTemplate() + QStringLiteral(".png"));
+    tmp->open();
+    tmp->close();
+    if (!canvasImg.save(tmp->fileName())) {
+        setStatusMessage(i18n("Could not save temporary image for upload."), true);
+        tmp->deleteLater();
+        stopControlPreviewPolling();
+        return;
+    }
+    QUrl uploadUrl(urlStr);
+    QString up = uploadUrl.path();
+    if (up.isEmpty() || up == QLatin1String("/"))
+        uploadUrl.setPath(QStringLiteral("/upload/image"));
+    else if (!up.endsWith(QLatin1Char('/')))
+        uploadUrl.setPath(up + QStringLiteral("/upload/image"));
+    else
+        uploadUrl.setPath(up + QStringLiteral("upload/image"));
+    tmp->open();
+    QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    QHttpPart part;
+    part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                   QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"krita_control_preview.png\"")));
+    part.setBodyDevice(tmp);
+    tmp->setParent(multiPart);
+    multiPart->append(part);
+    QNetworkRequest req(uploadUrl);
+    ComfyUIUtils::setComfyUIRequestHeaders(req);
+    QNetworkReply *reply = m_d->nam->post(req, multiPart);
+    multiPart->setParent(reply);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, resBase, mode]() {
+        reply->deleteLater();
+        if (m_d->comboWorkspace->currentIndex() != 0) {
+            stopControlPreviewPolling();
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            setStatusMessage(i18n("Control preview upload failed: %1", reply->errorString()), true);
+            if (m_d->labelControlPreviewImage)
+                m_d->labelControlPreviewImage->clear();
+            stopControlPreviewPolling();
+            return;
+        }
+        const QString uploadedName = QJsonDocument::fromJson(reply->readAll()).object().value(QStringLiteral("name")).toString();
+        if (uploadedName.isEmpty()) {
+            setStatusMessage(i18n("Control preview: server did not return an image name."), true);
+            stopControlPreviewPolling();
+            return;
+        }
+        QJsonObject workflow = ComfyUIUtils::buildControlImageWorkflow(uploadedName, mode, resBase, false);
+        if (workflow.isEmpty()) {
+            setStatusMessage(i18n("Unsupported control mode for preprocessor preview."), true);
+            stopControlPreviewPolling();
+            return;
+        }
+        ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
+        if (m_d->clientId.isEmpty())
+            m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString expectedPromptId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QJsonObject payload;
+        payload.insert(QStringLiteral("prompt"), workflow);
+        payload.insert(QStringLiteral("client_id"), m_d->clientId);
+        payload.insert(QStringLiteral("prompt_id"), expectedPromptId);
+        QUrl promptUrl(m_d->editServerUrl->text().trimmed());
+        QString p = promptUrl.path();
+        if (p.isEmpty() || p == QLatin1String("/"))
+            promptUrl.setPath(QStringLiteral("/prompt"));
+        else if (!p.endsWith(QLatin1Char('/')))
+            promptUrl.setPath(p + QStringLiteral("/prompt"));
+        else
+            promptUrl.setPath(p + QStringLiteral("prompt"));
+        QNetworkRequest reqP(promptUrl);
+        ComfyUIUtils::setComfyUIRequestHeaders(reqP);
+        reqP.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        QNetworkReply *replyP = m_d->nam->post(reqP, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        connect(replyP, &QNetworkReply::finished, this, [this, replyP, expectedPromptId]() {
+            replyP->deleteLater();
+            if (m_d->comboWorkspace->currentIndex() != 0) {
+                stopControlPreviewPolling();
+                return;
+            }
+            if (replyP->error() != QNetworkReply::NoError) {
+                setStatusMessage(i18n("Control preview prompt failed: %1", replyP->errorString()), true);
+                stopControlPreviewPolling();
+                return;
+            }
+            const QString promptId =
+                QJsonDocument::fromJson(replyP->readAll()).object().value(QStringLiteral("prompt_id")).toString();
+            if (promptId.isEmpty()) {
+                setStatusMessage(i18n("Control preview: empty prompt_id from server."), true);
+                stopControlPreviewPolling();
+                return;
+            }
+            if (promptId != expectedPromptId) {
+                setStatusMessage(i18n("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
+                stopControlPreviewPolling();
+                return;
+            }
+            m_d->controlPreviewPromptId = promptId;
+            m_d->controlPreviewPollCount = 0;
+            if (m_d->labelControlPreviewImage)
+                m_d->labelControlPreviewImage->setText(i18n("Running preprocessor…"));
+            m_d->controlPreviewPollTimer->start(1000);
+        });
+    });
+}
+
+void ComfyUIRemoteDock::slotControlPreviewPoll()
+{
+    if (m_d->controlPreviewPromptId.isEmpty() || m_d->comboWorkspace->currentIndex() != 0)
+        return;
+    const QString urlStr = m_d->editServerUrl->text().trimmed();
+    if (urlStr.isEmpty()) {
+        stopControlPreviewPolling();
+        return;
+    }
+    QUrl baseUrl(urlStr);
+    QString path = baseUrl.path();
+    const QString pid = m_d->controlPreviewPromptId;
+    if (path.isEmpty() || path == QLatin1String("/"))
+        baseUrl.setPath(QStringLiteral("/history/") + pid);
+    else if (!path.endsWith(QLatin1Char('/')))
+        baseUrl.setPath(path + QStringLiteral("/history/") + pid);
+    else
+        baseUrl.setPath(path + QStringLiteral("history/") + pid);
+    QNetworkRequest req(baseUrl);
+    ComfyUIUtils::setComfyUIRequestHeaders(req);
+    QNetworkReply *reply = m_d->nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (m_d->comboWorkspace->currentIndex() != 0 || m_d->controlPreviewPromptId.isEmpty()) {
+            stopControlPreviewPolling();
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            setStatusMessage(i18n("Control preview history request failed: %1", reply->errorString()), true);
+            stopControlPreviewPolling();
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonObject hist = root.value(m_d->controlPreviewPromptId).toObject();
+        const QJsonObject outputs = hist.value(QStringLiteral("outputs")).toObject();
+        if (outputs.isEmpty()) {
+            m_d->controlPreviewPollCount++;
+            constexpr int kMaxPoll = 300;
+            if (m_d->controlPreviewPollCount >= kMaxPoll) {
+                setStatusMessage(i18n("Control preview timed out waiting for server."), true);
+                stopControlPreviewPolling();
+                return;
+            }
+            m_d->controlPreviewPollTimer->start(1000);
+            return;
+        }
+        QString filename;
+        QString subfolder;
+        for (const QString &nodeId : outputs.keys()) {
+            const QJsonArray images = outputs.value(nodeId).toObject().value(QStringLiteral("images")).toArray();
+            if (!images.isEmpty()) {
+                const QJsonObject img = images.at(0).toObject();
+                filename = img.value(QStringLiteral("filename")).toString();
+                subfolder = img.value(QStringLiteral("subfolder")).toString();
+                break;
+            }
+        }
+        if (filename.isEmpty()) {
+            setStatusMessage(i18n("Control preview: no output image in history."), true);
+            stopControlPreviewPolling();
+            return;
+        }
+        QUrl viewUrl(m_d->editServerUrl->text().trimmed());
+        QString vp = viewUrl.path();
+        if (!vp.endsWith(QLatin1Char('/')))
+            vp += QLatin1Char('/');
+        viewUrl.setPath(vp + QStringLiteral("view"));
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("filename"), filename);
+        if (!subfolder.isEmpty())
+            q.addQueryItem(QStringLiteral("subfolder"), subfolder);
+        viewUrl.setQuery(q);
+        QNetworkRequest reqV(viewUrl);
+        ComfyUIUtils::setComfyUIRequestHeaders(reqV);
+        QNetworkReply *replyV = m_d->nam->get(reqV);
+        connect(replyV, &QNetworkReply::finished, this, [this, replyV]() {
+            replyV->deleteLater();
+            if (m_d->comboWorkspace->currentIndex() != 0) {
+                stopControlPreviewPolling();
+                return;
+            }
+            m_d->controlPreviewPromptId.clear();
+            m_d->controlPreviewPollCount = 0;
+            if (m_d->controlPreviewPollTimer)
+                m_d->controlPreviewPollTimer->stop();
+            if (m_d->btnControlPreviewRun)
+                m_d->btnControlPreviewRun->setEnabled(true);
+            if (replyV->error() != QNetworkReply::NoError) {
+                setStatusMessage(i18n("Control preview image download failed: %1", replyV->errorString()), true);
+                if (m_d->labelControlPreviewImage)
+                    m_d->labelControlPreviewImage->clear();
+                m_d->controlPreviewHandsCompositeBack = false;
+                return;
+            }
+            QImage img;
+            if (!img.loadFromData(replyV->readAll())) {
+                setStatusMessage(i18n("Control preview: could not decode image."), true);
+                if (m_d->labelControlPreviewImage)
+                    m_d->labelControlPreviewImage->clear();
+                m_d->controlPreviewHandsCompositeBack = false;
+                return;
+            }
+            if (m_d->controlPreviewHandsCompositeBack) {
+                img = ComfyUIUtils::compositeControlImageOntoExtent(img, m_d->controlPreviewCompositeFullSize,
+                                                                     m_d->controlPreviewCompositeLocalRect);
+                m_d->controlPreviewHandsCompositeBack = false;
+            }
+            if (m_d->labelControlPreviewImage) {
+                const QPixmap pm = QPixmap::fromImage(
+                    img.scaled(QSize(256, 256), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                m_d->labelControlPreviewImage->setPixmap(pm);
+                m_d->labelControlPreviewImage->setText(QString());
+            }
+            setStatusMessage(i18n("Control preprocessor preview finished."), false);
+        });
+    });
 }
