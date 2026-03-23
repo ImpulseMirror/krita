@@ -19,7 +19,7 @@ set(kritacomfyuiremote_static_SOURCES
     ComfyUIRemoteDockWebWorkflow.cpp
 )
 kis_add_library(kritacomfyuiremote_static STATIC ${kritacomfyuiremote_static_SOURCES})
-target_link_libraries(kritacomfyuiremote_static kritaimage kritaui)
+target_link_libraries(kritacomfyuiremote_static PRIVATE kritaimage kritaui)
 
 # §13.37: optional ZIP extract after verified download (KF Archive)
 find_package(KF${KF_MAJOR} ${MIN_FRAMEWORKS_VERSION} QUIET COMPONENTS Archive)
