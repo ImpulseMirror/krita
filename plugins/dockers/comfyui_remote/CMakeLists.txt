@@ -29,14 +29,16 @@ if(KF${KF_MAJOR}Archive_FOUND)
 endif()
 
 # §13.170: Optional Qt WebSockets for ETN workflow_published (same client_id as prompt API)
+# Use find_package(Qt5WebSockets) / Qt6WebSockets — not find_package(Qt5 COMPONENTS WebSockets),
+# or a missing WebSockets module can clear the aggregate Qt5 package and break feature_summary.
 set(_comfy_ws_libs "")
 if(BUILD_WITH_QT6)
-  find_package(Qt6 QUIET COMPONENTS WebSockets)
+  find_package(Qt6WebSockets QUIET)
   if(TARGET Qt6::WebSockets)
     list(APPEND _comfy_ws_libs Qt6::WebSockets)
   endif()
 else()
-  find_package(Qt5 QUIET COMPONENTS WebSockets)
+  find_package(Qt5WebSockets QUIET)
   if(TARGET Qt5::WebSockets)
     list(APPEND _comfy_ws_libs Qt5::WebSockets)
   endif()
