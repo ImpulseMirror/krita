@@ -70,7 +70,8 @@ def _find_gradle_jdk():
                 continue
             try:
                 out = subprocess.check_output([java_exe, '-version'], stderr=subprocess.STDOUT, timeout=5).decode()
-                if re.search(r'version "[^"]*"(17|18|19|20|21)\.', out):
+                # e.g. openjdk version "21.0.10" — major is right after the opening quote
+                if re.search(r'version "(17|18|19|20|21)\.', out):
                     found.append((name in prefer, jdk_home))
             except Exception:
                 pass
@@ -84,7 +85,7 @@ def _java_version_ok(java_home):
         return False
     try:
         out = subprocess.check_output([os.path.join(java_home, 'bin', 'java'), '-version'], stderr=subprocess.STDOUT, timeout=5).decode()
-        return bool(re.search(r'version "[^"]*"(17|18|19|20|21)\.', out))
+        return bool(re.search(r'version "(17|18|19|20|21)\.', out))
     except Exception:
         return False
 
