@@ -13,6 +13,7 @@
 #include <QNetworkReply>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QTemporaryFile>
 #include <QHttpMultiPart>
 #include <QHttpPart>
@@ -55,10 +56,12 @@ void ComfyUIRemoteDock::slotGenerate()
         return;
     }
 
+    const QJsonObject settingsRoot = ComfyUIUtils::loadSettingsJson();
     int genBatch = m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1;
     double genMul = m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier;
-    ComfyUIUtils::generationPerformanceBatchResolution(ComfyUIUtils::loadSettingsJson(), m_d->lastComfySystemStats, genBatch, genMul,
+    ComfyUIUtils::generationPerformanceBatchResolution(settingsRoot, m_d->lastComfySystemStats, genBatch, genMul,
                                                        &genBatch, &genMul);
+    ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(settingsRoot, &genMul);
     const int genBatchMax = m_d->spinBatchCount ? m_d->spinBatchCount->maximum() : 16;
     genBatch = qBound(1, genBatch, genBatchMax);
     genMul = qMax(0.3, qMin(genMul <= 0.0 ? 1.0 : genMul, 3.0));
@@ -85,7 +88,10 @@ void ComfyUIRemoteDock::slotGenerate()
                 setStatusMessage(validation.second, true);
                 return;
             }
-            ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides);
+            {
+                KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+                ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
+            }
             ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
             m_d->batchNeedsPerFrameReference = true;
 
@@ -205,7 +211,10 @@ void ComfyUIRemoteDock::slotGenerate()
                 m_d->btnGenerate->setEnabled(true);
                 return;
             }
-            ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides);
+            {
+                KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+                ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
+            }
             ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
             const int batchCount = genBatch;
             int effW = m_d->spinWidth->value();
@@ -275,7 +284,10 @@ void ComfyUIRemoteDock::slotGenerate()
             setStatusMessage(validation.second, true);
             return;
         }
-        ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides);
+        {
+            KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+            ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
+        }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
     } else {
         QJsonParseError err;
@@ -601,8 +613,10 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
         int h = m_d->spinHeight->value();
         int genBatchTmp = m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1;
         double genMul2 = m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier;
-        ComfyUIUtils::generationPerformanceBatchResolution(ComfyUIUtils::loadSettingsJson(), m_d->lastComfySystemStats, genBatchTmp, genMul2,
+        const QJsonObject settingsRootBatch = ComfyUIUtils::loadSettingsJson();
+        ComfyUIUtils::generationPerformanceBatchResolution(settingsRootBatch, m_d->lastComfySystemStats, genBatchTmp, genMul2,
                                                            &genBatchTmp, &genMul2);
+        ComfyUIUtils::adjustEffectiveResolutionMultiplierForDiffusionScaleMode(settingsRootBatch, &genMul2);
         Q_UNUSED(genBatchTmp);
         double bmul = qMax(0.3, qMin(genMul2 <= 0.0 ? 1.0 : genMul2, 3.0));
         w = qBound(64, static_cast<int>(w * bmul), 8192);
@@ -632,7 +646,10 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
 
 void ComfyUIRemoteDock::dispatchBatchPromptRequest(QJsonObject workflow, int submitIndex)
 {
-    ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides);
+    {
+        KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+        ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
+    }
     ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
 
     // §13.163: ComfyUI prompt API body — prompt (graph), client_id (UUID), prompt_id (job UUID); response must include prompt_id
@@ -895,4 +912,71 @@ void ComfyUIRemoteDock::slotCancelQueue()
     } else if (!activeId.isEmpty()) {
         doInterrupt();
     }
+}
+
+bool ComfyUIRemoteDock::cancelCurrentGenerateJob()
+{
+    const QString activeId = m_d->currentPromptId;
+    if (activeId.isEmpty())
+        return false;
+    m_d->pollTimer->stop();
+    m_d->pendingHistoryByPromptId.remove(activeId);
+    m_d->currentPromptId.clear();
+    m_d->pollCount = 0;
+    if (!m_d->jobQueue.isEmpty()) {
+        m_d->currentPromptId = m_d->jobQueue.takeFirst();
+        startPolling();
+    } else {
+        m_d->progressBar->setValue(0);
+        if (m_d->btnGenerate)
+            m_d->btnGenerate->setEnabled(true);
+    }
+    updateQueueStatus();
+    QString urlStr = m_d->editServerUrl->text().trimmed();
+    if (!urlStr.isEmpty()) {
+        QUrl interruptUrl(urlStr);
+        QString ip = interruptUrl.path();
+        if (ip.isEmpty() || ip == "/")
+            interruptUrl.setPath("/interrupt");
+        else if (!ip.endsWith('/'))
+            interruptUrl.setPath(ip + "/interrupt");
+        else
+            interruptUrl.setPath(ip + "interrupt");
+        QNetworkRequest reqInt(interruptUrl);
+        ComfyUIUtils::setComfyUIRequestHeaders(reqInt);
+        reqInt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        m_d->nam->post(reqInt, QByteArray("{}"));
+    }
+    return true;
+}
+
+void ComfyUIRemoteDock::cancelQueuedGenerateJobs()
+{
+    const QStringList toCancel = m_d->jobQueue;
+    if (toCancel.isEmpty())
+        return;
+    for (const QString &id : toCancel)
+        m_d->pendingHistoryByPromptId.remove(id);
+    m_d->jobQueue.clear();
+    updateQueueStatus();
+    QString urlStr = m_d->editServerUrl->text().trimmed();
+    if (urlStr.isEmpty())
+        return;
+    QUrl queueUrl(urlStr);
+    QString p = queueUrl.path();
+    if (p.isEmpty() || p == "/")
+        queueUrl.setPath("/queue");
+    else if (!p.endsWith('/'))
+        queueUrl.setPath(p + "/queue");
+    else
+        queueUrl.setPath(p + "queue");
+    QJsonObject delPayload;
+    QJsonArray arr;
+    for (const QString &id : toCancel)
+        arr.append(id);
+    delPayload["delete"] = arr;
+    QNetworkRequest reqQueue(queueUrl);
+    ComfyUIUtils::setComfyUIRequestHeaders(reqQueue);
+    reqQueue.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    m_d->nam->post(reqQueue, QJsonDocument(delPayload).toJson(QJsonDocument::Compact));
 }

@@ -29,6 +29,10 @@
 #include <QNetworkReply>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QUuid>
+#include <QPoint>
+#include <QRect>
+#include <QSize>
 #include <thread>
 #include <KoColorConversionTransformation.h>
 
@@ -38,6 +42,7 @@
 #include <kis_selection.h>
 #include <kis_paint_device.h>
 #include <kis_layer.h>
+#include <kis_paint_layer.h>
 #include <KoColorSpaceRegistry.h>
 #include <KoColorProfile.h>
 #include <KoColorModelStandardIds.h>
@@ -80,24 +85,89 @@ qint64 documentEmbeddedHistoryLimitBytes(const QJsonObject &settings)
     return static_cast<qint64>(mb) * 1024ll * 1024ll;
 }
 
-QJsonObject loadDocumentUiJsonObject(KisImageSP image)
+static int uiJsonStoredVersion(const QJsonObject &o)
+{
+    const QJsonValue v = o.value(QStringLiteral("version"));
+    if (v.isUndefined() || v.isNull()) {
+        return 0;
+    }
+    if (v.isDouble()) {
+        return int(v.toDouble());
+    }
+    if (v.isString()) {
+        bool ok = false;
+        const int n = v.toString().trimmed().toInt(&ok);
+        return ok ? n : 0;
+    }
+    return 0;
+}
+
+DocumentUiJsonLoadOutcome loadDocumentUiJsonWithMeta(KisImageSP image)
 {
     QJsonObject def;
     def.insert(QStringLiteral("version"), persistenceFormatVersion);
-    if (!image)
-        return def;
+    DocumentUiJsonLoadOutcome out;
+    out.object = def;
+    out.rawVersionFromFile = persistenceFormatVersion;
+    if (!image) {
+        return out;
+    }
     const QString key = documentUiJsonAnnotationKey();
     KisAnnotationSP ann = image->annotation(key);
-    if (!ann || ann->annotation().isEmpty())
-        return def;
+    if (!ann || ann->annotation().isEmpty()) {
+        return out;
+    }
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(ann->annotation(), &err);
-    if (err.error != QJsonParseError::NoError || !doc.isObject())
-        return def;
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        return out;
+    }
     QJsonObject o = doc.object();
-    if (!o.contains(QStringLiteral("version")))
+    const int ver = uiJsonStoredVersion(o);
+    out.rawVersionFromFile = ver > 0 ? ver : persistenceFormatVersion;
+    if (ver > persistenceFormatVersion) {
+        qWarning() << "ComfyUI ui.json version" << ver << "is newer than supported" << persistenceFormatVersion
+                   << "- loading default embedded state.";
+        out.resetToDefaultsDueToFutureVersion = true;
+        out.object = def;
+        return out;
+    }
+    if (ver <= 0) {
         o.insert(QStringLiteral("version"), persistenceFormatVersion);
-    return o;
+    } else if (!o.contains(QStringLiteral("version"))) {
+        o.insert(QStringLiteral("version"), persistenceFormatVersion);
+    }
+    out.object = o;
+    return out;
+}
+
+QJsonObject loadDocumentUiJsonObject(KisImageSP image)
+{
+    return loadDocumentUiJsonWithMeta(image).object;
+}
+
+bool documentHasStoredUiJsonPayload(KisImageSP image)
+{
+    if (!image)
+        return false;
+    const KisAnnotationSP ann = image->annotation(documentUiJsonAnnotationKey());
+    return ann && !ann->annotation().isEmpty();
+}
+
+QJsonObject documentDefaultsFromSettingsRoot(const QJsonObject &settingsRoot)
+{
+    return settingsRoot.value(QStringLiteral("document_defaults")).toObject();
+}
+
+QString inpaintContextForFreshDocumentDefaults(const QString &storedContext)
+{
+    QString n = storedContext.trimmed().toLower();
+    n.replace(QLatin1Char(' '), QLatin1Char('_'));
+    if (n == QLatin1String("layer_bounds"))
+        return QStringLiteral("automatic");
+    if (n.isEmpty())
+        return QStringLiteral("automatic");
+    return storedContext.trimmed();
 }
 
 QString historyResultLogicalKey(int slot)
@@ -263,6 +333,36 @@ void applyPerformancePreferencesToWorkflow(QJsonObject &workflow)
 {
     applyTiledVaePreferenceToWorkflow(workflow);
     applyDynamicCachingPreferenceToWorkflow(workflow);
+}
+
+void applyUpscaleRefineVaedecodeTiling(QJsonObject &workflow,
+                                      const QString &decodeNodeId,
+                                      int tileOverlapMode,
+                                      int customOverlapPx,
+                                      const QJsonObject &settingsRoot)
+{
+    if (!workflow.contains(decodeNodeId))
+        return;
+    QJsonObject node = workflow.value(decodeNodeId).toObject();
+    const QString ct = node.value(QStringLiteral("class_type")).toString();
+    if (ct != QLatin1String("VAEDecode") && ct != QLatin1String("VAEDecodeTiled"))
+        return;
+
+    const int tileSize = diffusionUpscaleTileEstimateExtentPx(settingsRoot);
+    int overlap = 64;
+    if (tileOverlapMode == 1)
+        overlap = qBound(8, customOverlapPx, qMax(8, tileSize - 1));
+    else
+        overlap = qBound(8, tileSize / 8, 128);
+
+    QJsonObject inputs = node.value(QStringLiteral("inputs")).toObject();
+    node.insert(QStringLiteral("class_type"), QStringLiteral("VAEDecodeTiled"));
+    inputs.insert(QStringLiteral("tile_size"), tileSize);
+    inputs.insert(QStringLiteral("overlap"), overlap);
+    inputs.insert(QStringLiteral("temporal_size"), 64);
+    inputs.insert(QStringLiteral("temporal_overlap"), 8);
+    node.insert(QStringLiteral("inputs"), inputs);
+    workflow.insert(decodeNodeId, node);
 }
 
 void extractLoraFilenamesFromObjectInfo(const QJsonObject &root, QStringList *out)
@@ -454,6 +554,111 @@ QJsonObject builtinSamplerPresetsRoot()
 void reloadSamplerPresetsCache()
 {
     refreshSamplerPresetsCache();
+}
+
+namespace {
+
+// §13.55: Same top-level shape as ai_diffusion/presets/control.json (mode → { "all" | arch → [ { strength, start, end }, … ] }).
+const char g_builtinControlJson[] = R"json({
+    "default": {
+        "all": [
+            {"strength": 0.7, "start": 0.0, "end": 0.5},
+            {"strength": 1.0, "start": 0.0, "end": 1.0}
+        ]
+    }
+})json";
+
+static QJsonObject loadMergedControlPresets()
+{
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(g_builtinControlJson), &err);
+    QJsonObject merged;
+    if (err.error == QJsonParseError::NoError && doc.isObject())
+        merged = doc.object();
+    const QString path = ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/control.json");
+    QDir().mkpath(ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets"));
+    QFile f(path);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QJsonDocument ud = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(f.readAll()), &err);
+        f.close();
+        if (err.error == QJsonParseError::NoError && ud.isObject()) {
+            const QJsonObject fo = ud.object();
+            for (auto it = fo.constBegin(); it != fo.constEnd(); ++it) {
+                if (it.value().isObject())
+                    merged.insert(it.key(), it.value());
+            }
+        }
+    }
+    return merged;
+}
+
+static QJsonObject g_controlPresetsCache;
+static bool g_controlPresetsLoaded = false;
+
+static void refreshControlPresetsCache()
+{
+    g_controlPresetsCache = loadMergedControlPresets();
+    g_controlPresetsLoaded = true;
+}
+
+static void ensureControlPresetsLoaded()
+{
+    if (!g_controlPresetsLoaded)
+        refreshControlPresetsCache();
+}
+
+} // namespace
+
+QJsonObject builtinControlPresetsRoot()
+{
+    ensureControlPresetsLoaded();
+    return g_controlPresetsCache;
+}
+
+void reloadControlPresetsCache()
+{
+    refreshControlPresetsCache();
+}
+
+QList<ControlLayerPreset> controlPresetsForMode(const QJsonObject &root, const QString &controlMode, const QString &archKey)
+{
+    QList<ControlLayerPreset> out;
+    const QJsonObject modeObj = root.value(controlMode).toObject();
+    if (modeObj.isEmpty())
+        return out;
+    QJsonArray arr;
+    if (!archKey.isEmpty()) {
+        const QJsonValue archV = modeObj.value(archKey);
+        if (archV.isArray() && !archV.toArray().isEmpty())
+            arr = archV.toArray();
+    }
+    if (arr.isEmpty())
+        arr = modeObj.value(QStringLiteral("all")).toArray();
+    for (const QJsonValue &v : arr) {
+        if (!v.isObject())
+            continue;
+        const QJsonObject o = v.toObject();
+        ControlLayerPreset p;
+        p.strength = o.value(QStringLiteral("strength")).toDouble(1.0);
+        p.start = o.value(QStringLiteral("start")).toDouble(0.0);
+        p.end = o.value(QStringLiteral("end")).toDouble(1.0);
+        out.append(p);
+    }
+    return out;
+}
+
+bool resolveDefaultControlLayerPreset(const QJsonObject &settings, ControlLayerPreset *out, const QString &archKey)
+{
+    if (!out)
+        return false;
+    const QJsonObject root = builtinControlPresetsRoot();
+    const QList<ControlLayerPreset> ps = controlPresetsForMode(root, QStringLiteral("default"), archKey);
+    if (ps.isEmpty())
+        return false;
+    const int saved = settings.value(QStringLiteral("control_layer_default_preset_index")).toInt(0);
+    const int idx = qBound(0, saved, qMin(3, ps.size() - 1));
+    *out = ps.at(idx);
+    return true;
 }
 
 bool samplerPresetLookup(const QJsonObject &root,
@@ -835,6 +1040,39 @@ void checkPluginInstallationPath()
 #endif
 }
 
+void migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion()
+{
+    migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(KSharedConfig::openConfig());
+}
+
+void migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(const KSharedConfigPtr &cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    KConfigGroup mainWin(cfg, QStringLiteral("MainWindow"));
+    KConfigGroup legacy = mainWin.group(QStringLiteral("DockWidget ComfyUIRemote"));
+    if (legacy.keyList().isEmpty())
+        return;
+    KConfigGroup current = mainWin.group(QStringLiteral("DockWidget imageDiffusion"));
+    if (current.hasKey(QStringLiteral("DockArea")))
+        return;
+    if (legacy.hasKey(QStringLiteral("Locked")))
+        current.writeEntry(QStringLiteral("Locked"), legacy.readEntry(QStringLiteral("Locked"), false));
+    if (legacy.hasKey(QStringLiteral("DockArea")))
+        current.writeEntry(QStringLiteral("DockArea"), legacy.readEntry(QStringLiteral("DockArea"), 0));
+    if (legacy.hasKey(QStringLiteral("xPosition")))
+        current.writeEntry(QStringLiteral("xPosition"), legacy.readEntry(QStringLiteral("xPosition"), 0));
+    if (legacy.hasKey(QStringLiteral("yPosition")))
+        current.writeEntry(QStringLiteral("yPosition"), legacy.readEntry(QStringLiteral("yPosition"), 0));
+    if (legacy.hasKey(QStringLiteral("width")))
+        current.writeEntry(QStringLiteral("width"), legacy.readEntry(QStringLiteral("width"), 0));
+    if (legacy.hasKey(QStringLiteral("height")))
+        current.writeEntry(QStringLiteral("height"), legacy.readEntry(QStringLiteral("height"), 0));
+    legacy.deleteGroup();
+    cfg->sync();
+}
+
 // §3.1: Settings path → user_data_dir/settings.json; load/save with // line comments
 QString settingsFilePath()
 {
@@ -982,6 +1220,158 @@ void generationPerformanceBatchResolution(const QJsonObject &settingsJson,
     performancePresetTableBatchAndResolution(tier, &b, &r);
     *outBatch = b;
     *outResolutionMultiplier = r;
+}
+
+QString normalizeDiffusionScaleMode(const QString &rawFromSettings)
+{
+    QString k = rawFromSettings.trimmed().toLower();
+    if (k == QLatin1String("none") || k == QLatin1String("resize") || k == QLatin1String("upscale_small")
+        || k == QLatin1String("upscale_fast") || k == QLatin1String("upscale_quality")) {
+        return k;
+    }
+    return QStringLiteral("resize");
+}
+
+void adjustEffectiveResolutionMultiplierForDiffusionScaleMode(const QJsonObject &settingsRoot, double *resolutionMultiplier)
+{
+    if (!resolutionMultiplier)
+        return;
+    const QString mode = normalizeDiffusionScaleMode(settingsRoot.value(QStringLiteral("diffusion_scale_mode")).toString());
+    if (mode == QLatin1String("none")) {
+        *resolutionMultiplier = 1.0;
+        return;
+    }
+    // §13.23: upscale_small applies when scale factor is under ~1.5× (bilinear / light upscale path).
+    if (mode == QLatin1String("upscale_small") && *resolutionMultiplier > 1.5)
+        *resolutionMultiplier = 1.5;
+}
+
+QString comfyImageScaleMethodForDiffusionScaleMode(const QString &normalizedScaleMode)
+{
+    const QString m = normalizeDiffusionScaleMode(normalizedScaleMode);
+    if (m == QLatin1String("upscale_quality"))
+        return QStringLiteral("lanczos");
+    if (m == QLatin1String("upscale_fast"))
+        return QStringLiteral("bicubic");
+    return QStringLiteral("bilinear");
+}
+
+void DiffusionTileLayout::initGridFromExtent()
+{
+    const int width = imageExtent.width();
+    const int height = imageExtent.height();
+    if (width <= 0 || height <= 0 || tileExtent <= 1) {
+        gridW = gridH = tileCount = 0;
+        step = 1;
+        return;
+    }
+    int overlap = padding;
+    if (overlap < 0)
+        overlap = qBound(8, tileExtent / 8, 128);
+    overlap = qBound(0, overlap, tileExtent - 1);
+    step = qMax(1, tileExtent - overlap);
+    auto count1d = [this](int dim) {
+        if (dim <= tileExtent)
+            return 1;
+        return 1 + (dim - tileExtent + step - 1) / step;
+    };
+    gridW = count1d(width);
+    gridH = count1d(height);
+    tileCount = gridW * gridH;
+}
+
+DiffusionTileLayout DiffusionTileLayout::fromUniformGrid(int width, int height, int tileExtentPx, int overlapPx,
+                                                         int minTileSize, int blendPx)
+{
+    DiffusionTileLayout L;
+    L.imageExtent = QSize(width, height);
+    L.tileExtent = tileExtentPx;
+    L.minSize = minTileSize;
+    L.padding = overlapPx;
+    L.blending = blendPx;
+    L.initGridFromExtent();
+    return L;
+}
+
+DiffusionTileLayout DiffusionTileLayout::fromDenoiseStrength(QSize extent, int minTileSize, double strength0to1,
+                                                           int multiple, int overlapPx)
+{
+    const int w = extent.width();
+    const int h = extent.height();
+    double t = qBound(0.0, strength0to1, 1.0);
+    // Higher denoise → smaller tiles (more VRAM-friendly splits); lower → larger tiles.
+    int te = static_cast<int>(std::lround(static_cast<double>(minTileSize) * (1.0 + 3.0 * (1.0 - t))));
+    const int maxDim = qMax(w, h);
+    if (maxDim > 0)
+        te = qMin(te, maxDim);
+    te = qMax(minTileSize, te);
+    if (multiple > 1)
+        te = ((te + multiple - 1) / multiple) * multiple;
+    if (maxDim > 0)
+        te = qMin(te, maxDim);
+    te = qMax(minTileSize, te);
+    return fromUniformGrid(w, h, te, overlapPx, minTileSize, 0);
+}
+
+QPoint DiffusionTileLayout::coord(int index) const
+{
+    if (gridW <= 0 || index < 0 || index >= tileCount)
+        return QPoint(-1, -1);
+    return QPoint(index % gridW, index / gridW);
+}
+
+int DiffusionTileLayout::tileIndex(QPoint tileCoord) const
+{
+    if (tileCoord.x() < 0 || tileCoord.y() < 0 || tileCoord.x() >= gridW || tileCoord.y() >= gridH)
+        return -1;
+    return tileCoord.y() * gridW + tileCoord.x();
+}
+
+QRect DiffusionTileLayout::boundsAtTileCoord(QPoint c) const
+{
+    const int w = imageExtent.width();
+    const int h = imageExtent.height();
+    if (c.x() < 0 || c.y() < 0)
+        return QRect();
+    const int x0 = c.x() * step;
+    const int y0 = c.y() * step;
+    const int x1 = qMin(x0 + tileExtent, w);
+    const int y1 = qMin(y0 + tileExtent, h);
+    return QRect(x0, y0, qMax(0, x1 - x0), qMax(0, y1 - y0));
+}
+
+QRect DiffusionTileLayout::bounds(int index) const
+{
+    const QPoint c = coord(index);
+    if (c.x() < 0)
+        return QRect();
+    return boundsAtTileCoord(c);
+}
+
+QPoint DiffusionTileLayout::start(QPoint tileCoord) const
+{
+    if (tileCoord.x() < 0 || tileCoord.y() < 0)
+        return QPoint(-1, -1);
+    return QPoint(tileCoord.x() * step, tileCoord.y() * step);
+}
+
+QPoint DiffusionTileLayout::end(QPoint tileCoord) const
+{
+    const QRect r = boundsAtTileCoord(tileCoord);
+    if (r.isEmpty())
+        return QPoint(-1, -1);
+    return QPoint(r.right(), r.bottom());
+}
+
+int estimateUniformTileGridCount2D(int width, int height, int tileExtent, int overlapPx)
+{
+    return DiffusionTileLayout::fromUniformGrid(width, height, tileExtent, overlapPx).totalTiles();
+}
+
+int diffusionUpscaleTileEstimateExtentPx(const QJsonObject &settingsRoot)
+{
+    const int v = settingsRoot.value(QStringLiteral("upscale_tile_estimate_extent")).toInt(512);
+    return qBound(256, v, 2048);
 }
 
 void clampExtentToMaxMegapixels(int *width, int *height)
@@ -1203,20 +1593,34 @@ std::pair<int, int> attentionSegmentRange(const QString &text, int cursorPos)
 {
     if (text.isEmpty() || cursorPos < 0) return {-1, 0};
     cursorPos = qBound(0, cursorPos, text.size());
+    // §8.5 / §13.35 / §13.201: bracket pairs (), <>, [], {} — same order as inner checks in reference parse path
     auto pr = selectParenthesisBlock(text, cursorPos, QLatin1Char('('), QLatin1Char(')'));
     if (pr.first >= 0) return pr;
     pr = selectParenthesisBlock(text, cursorPos, QLatin1Char('<'), QLatin1Char('>'));
     if (pr.first >= 0) return pr;
+    pr = selectParenthesisBlock(text, cursorPos, QLatin1Char('['), QLatin1Char(']'));
+    if (pr.first >= 0) return pr;
+    pr = selectParenthesisBlock(text, cursorPos, QLatin1Char('{'), QLatin1Char('}'));
+    if (pr.first >= 0) return pr;
     return selectCurrentWord(text, cursorPos);
 }
 
-// §13.201: Parse (word:weight) or (word) or <word:weight> or <word>; adjust weight by delta; clamp [−2.0, 2.0]
+// §8.5 / §13.35: Parse (word:weight), <…>, […], {…}; adjust weight by delta; clamp [−2.0, 2.0]
 QString editAttentionWeight(const QString &segment, double delta)
 {
     if (segment.isEmpty()) return segment;
     QChar openCh = segment[0];
-    QChar closeCh = (openCh == QLatin1Char('(')) ? QLatin1Char(')') : QLatin1Char('>');
-    if (openCh != QLatin1Char('(') && openCh != QLatin1Char('<')) return segment;
+    QChar closeCh;
+    if (openCh == QLatin1Char('('))
+        closeCh = QLatin1Char(')');
+    else if (openCh == QLatin1Char('<'))
+        closeCh = QLatin1Char('>');
+    else if (openCh == QLatin1Char('['))
+        closeCh = QLatin1Char(']');
+    else if (openCh == QLatin1Char('{'))
+        closeCh = QLatin1Char('}');
+    else
+        return segment;
     int closeIdx = segment.indexOf(closeCh, 1);
     if (closeIdx < 0) return segment;
     QString inner = segment.mid(1, closeIdx - 1).trimmed();
@@ -1609,9 +2013,32 @@ QList<CustomWorkflowParamSlot> discoverCustomWorkflowParameterSlots(const QJsonO
     return out;
 }
 
-void applyCustomWorkflowParameterValues(QJsonObject &workflowRoot, const QMap<QString, QVariant> &valuesByParamName)
+QString paintLayerNameByUuid(KisImageSP image, const QString &uuidWithoutBraces)
 {
-    if (valuesByParamName.isEmpty())
+    if (!image || uuidWithoutBraces.isEmpty())
+        return QString();
+    KisNodeSP root = image->rootLayer();
+    if (!root)
+        return QString();
+    QList<KisNodeSP> nodes;
+    nodes.append(root);
+    while (!nodes.isEmpty()) {
+        KisNodeSP n = nodes.takeFirst();
+        if (dynamic_cast<KisPaintLayer *>(n.data())
+            && n->uuid().toString(QUuid::WithoutBraces) == uuidWithoutBraces) {
+            return n->name();
+        }
+        for (int i = 0; i < n->childCount(); ++i)
+            nodes.append(n->child(i));
+    }
+    return QString();
+}
+
+void applyCustomWorkflowParameterValues(QJsonObject &workflowRoot,
+                                        const QMap<QString, QVariant> &valuesByKey,
+                                        KisImageSP layerResolutionImage)
+{
+    if (valuesByKey.isEmpty())
         return;
     const QStringList keys = workflowRoot.keys();
     for (const QString &nodeId : keys) {
@@ -1632,9 +2059,19 @@ void applyCustomWorkflowParameterValues(QJsonObject &workflowRoot, const QMap<QS
             if (pname.isEmpty())
                 pname = QStringLiteral("Mask");
         }
-        if (!valuesByParamName.contains(pname))
+        if (ct == QLatin1String("ETN_KritaImageLayer") || ct == QLatin1String("ETN_KritaMaskLayer")) {
+            if (!layerResolutionImage || !valuesByKey.contains(nodeId))
+                continue;
+            const QString resolved = paintLayerNameByUuid(layerResolutionImage, valuesByKey.value(nodeId).toString());
+            if (!resolved.isEmpty())
+                inputs.insert(QStringLiteral("name"), resolved);
+            node.insert(QStringLiteral("inputs"), inputs);
+            workflowRoot.insert(nodeId, node);
             continue;
-        const QVariant v = valuesByParamName.value(pname);
+        }
+        if (!valuesByKey.contains(pname))
+            continue;
+        const QVariant v = valuesByKey.value(pname);
         if (ct == QLatin1String("ETN_Parameter")) {
             inputs.insert(QStringLiteral("default"), QJsonValue::fromVariant(v));
         } else if (ct == QLatin1String("ETN_KritaStyle")) {

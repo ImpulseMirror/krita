@@ -12,6 +12,7 @@
 #include <kis_mainwindow_observer.h>
 
 class QPlainTextEdit;
+class QComboBox;
 
 #include <kis_types.h>
 
@@ -62,10 +63,16 @@ private:
     void updateAnimationButtonLabel();
     // §13.74: AnimationWorkspace — ui.json `animation` { batch_mode, sampling_quality, target_layer }
     QJsonObject animationWorkspaceToJson() const;
+    // §13.189: ui.json top-level keys (upscale, custom, regions, model fields) for Python / .kra parity
+    void mergeDocumentModelIntoUiJson(QJsonObject *ui, KisImageSP img) const;
+    void loadRegionsPersistedForDocument(KisImageSP img);
+    void applyModelFieldsFromUiJson(const QJsonObject &ui);
     void refreshAnimationTargetLayerCombo();
     void updateAnimationTargetLayerRowVisibility();
     void loadAnimationWorkspaceFromDocument();
     void updateAnimationResultPreview(const QString &imagePath);
+    /// §13.93 / §13.74: live thumbnail of target paint layer at current timeline (no saved result path yet)
+    void refreshAnimationTargetLayerLivePreview();
     // §13.90: Apply PromptHeader (full / icon / none) to region UI
     void applyPromptHeader();
     void updateNegativePromptAlertVisibility();  // §13.143: show alert when style does not use negative prompt
@@ -93,6 +100,8 @@ private:
     void applyInterfaceAppearanceSettings();
     // §4.5: Rebuild preset dropdown (None, optional built-ins, custom) from show_builtin_styles + KConfig
     void rebuildPresetComboItems();
+    // §5.5: Upscale refinement model list mirrors main style preset combo
+    void syncUpscaleRefinementModelFromPresetCombo();
     int firstCustomPresetIndex() const;
     // §4.5: Rename a custom preset in KConfig (Styles tab Name field).
     bool renameCustomPreset(const QString &oldName, const QString &newName);
@@ -106,11 +115,15 @@ private:
     // §13.184: create_result_layer — apply result image to each region layer per ApplyRegionBehavior (replace, layer_group, transparency_mask, no_hide)
     bool applyResultToRegions(const QString &resultPath, int entryIndex, const QString &regionApplyBehavior);
     // §13.37 / §13.160: Run update check (GET plugin/latest?version=current); sets hasUpdateAvailable on reply
-    void startUpdateCheck();
-    // §13.37: Manual check from Plugin tab "Check for Updates" button (allows re-check even after startup check)
+    void startUpdateCheck(bool manualRequest = false);
+    // §13.37: Manual check from Plugin tab "Check for Updates" button (works even when auto-update is off)
     void slotCheckForUpdates();
     // §13.38: Fetch news from API; if digest != last_news, show NewsWidget with text
     void startNewsFetch();
+    // §5.4 / §13.209: Persist fixed seed and seed value to KConfig.
+    void persistSeedToConfig();
+    // §5.4: Copy dock seed row into queue popup duplicates (avoids reparenting shared widgets).
+    void syncQueueSeedWidgetsFromMain();
 
 protected:
     // §13.196: Shift+Enter in prompt widget triggers Generate
@@ -165,8 +178,45 @@ private Q_SLOTS:
     void runNextRegionInpainting();
     void pollRegionHistory();
     void slotInpaintPoll();
+    /// §13.195: ai_diffusion_toggle_workspace — same cycle as Python Workspace enum
+    void slotAiDiffusionToggleWorkspace();
+    /// §13.195: ai_diffusion_toggle_edit_mode — flip edit_mode boolean (Generate + instruction styles)
+    void slotAiDiffusionToggleEditMode();
+    /// §10.1: Krita actions — same IDs / semantics as Python ai_diffusion.action
+    void slotAiDiffusionGenerateAction();
+    void slotAiDiffusionCancelCurrent();
+    void slotAiDiffusionCancelQueued();
+    void slotAiDiffusionCancelAll();
+    void slotAiDiffusionTogglePreview();
+    void slotAiDiffusionApply();
+    void slotAiDiffusionApplyAlternative();
+    void slotAiDiffusionCreateRegion();
+    void slotAiDiffusionSwitchWorkspaceGeneration();
+    void slotAiDiffusionSwitchWorkspaceUpscaling();
+    void slotAiDiffusionSwitchWorkspaceLive();
+    void slotAiDiffusionSwitchWorkspaceGraph();
+    /// §13.93: QTimer ~20 ms — selection bounds + timeline vs. Python KritaDocument._poll
+    void slotDocumentSyncPoll();
+    /// §13.93: debounced refresh after current_time_changed (Animation Single Frame target preview)
+    void slotDebouncedAnimationTargetPreview();
 
 private:
+    // §13.194 / §13.137: RecentlyUsedSync — document_defaults in settings.json; skip layer_bounds on fresh docs
+    void persistDocumentDefaultsToSettings();
+    void tryApplyDocumentDefaultsForNewDocument(KisImageSP image);
+    void schedulePersistDocumentDefaults();
+    QString encodeStyleIdForDocumentDefaults() const;
+    QString encodeStyleIdFromPresetCombo(const QComboBox *cb) const;
+    void applyStyleIdToPresetCombo(QComboBox *cb, const QString &styleId);
+    void applyStyleIdFromDocumentDefaults(const QString &styleId);
+    /// §5.5: Checkpoint filename for upscale refinement preset (built-in → current Styles checkpoint; custom → preset KConfig).
+    QString checkpointNameForUpscaleRefinementPreset() const;
+    /// Sampling fields from refinement preset / dock defaults (custom presets override from KConfig).
+    void readUpscaleRefinementSampling(int *outSteps, double *outCfg, QString *outSampler, QString *outScheduler) const;
+    /// §10.1: cancel running main generate job and promote next in local queue (false if none)
+    bool cancelCurrentGenerateJob();
+    /// §10.1: remove jobs waiting in local queue (does not interrupt current)
+    void cancelQueuedGenerateJobs();
     // §13.169 / §13.31: document annotations (ui.json equivalent) using current canvas image
     void saveInpaintWorkspaceToDocument();
     void loadInpaintWorkspaceFromDocument();
@@ -187,6 +237,12 @@ private:
     void clearObjectInfoDerivedServerCaches();
     // §13.123 / §13.58: Parse full GET /object_info JSON — LoRA names + spec §13.58 class_types present as top-level keys.
     void syncFromObjectInfoRoot(const QJsonObject &objectInfoRoot);
+    /// §13.97 / §13.75: Apply filtered checkpoint list; keep selection if valid, else first item; invalid custom preset → None.
+    void applyServerCheckpointList(const QStringList &filteredNames, bool serverReturnedEmptyList);
+    /// §13.75 ETN filter then applyServerCheckpointList. If \p noOpWhenNamesEmpty and names empty, leave combo unchanged.
+    void fetchFilteredCheckpointListAndApply(const QStringList &namesFromObjectInfo, const QString &baseUrlStr, bool noOpWhenNamesEmpty);
+    /// §4.9 Configure → Plugin tab: Latest version line + Download and Install enablement
+    void refreshPluginInformationTabUpdateUi();
     struct Private;
     QScopedPointer<Private> m_d;
 };

@@ -35,6 +35,18 @@ const char upscaleWorkflowTemplate[] = R"({
  "3": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI_upscale", "images": ["2", 0]}}
 })";
 
+const char upscaleRefineWorkflowTemplate[] = R"({
+ "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
+ "2": {"class_type": "ImageScale", "inputs": {"height": 1024, "image": ["1", 0], "upscale_method": "lanczos", "width": 1024}},
+ "3": {"class_type": "VAEEncode", "inputs": {"pixels": ["2", 0], "vae": ["4", 2]}},
+ "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "CKPT_PLACEHOLDER"}},
+ "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "PROMPT_PLACEHOLDER"}},
+ "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "NEGATIVE_PLACEHOLDER"}},
+ "7": {"class_type": "KSampler", "inputs": {"cfg": 8, "denoise": 0.35, "latent_image": ["3", 0], "model": ["4", 0], "negative": ["6", 0], "positive": ["5", 0], "sampler_name": "euler", "scheduler": "normal", "seed": 0, "steps": 20}},
+ "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["4", 2]}},
+ "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI_upscale_refine", "images": ["8", 0]}}
+})";
+
 const char img2imgWorkflowTemplate[] = R"({
  "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
  "2": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["3", 2]}},

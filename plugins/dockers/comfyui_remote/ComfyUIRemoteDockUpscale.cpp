@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QRandomGenerator>
 #include <QUuid>
 
 #include <klocalizedstring.h>
@@ -97,26 +98,150 @@ void ComfyUIRemoteDock::slotUpscale()
             m_d->progressBar->setValue(0);
             return;
         }
-        QJsonParseError err;
-        QJsonObject workflow = QJsonDocument::fromJson(QByteArray(upscaleWorkflowTemplate), &err).object();
-        if (err.error != QJsonParseError::NoError) {
-            setStatusMessage(i18n("Upscale workflow error."), true);
-            m_d->btnUpscale->setEnabled(true);
-            m_d->progressBar->setValue(0);
-            return;
+        const bool wantRefine = m_d->checkUpscaleRefine && m_d->checkUpscaleRefine->isChecked();
+        QJsonObject workflow;
+        if (wantRefine) {
+            if (!m_d->comboUpscaleRefinementModel || m_d->comboUpscaleRefinementModel->currentIndex() <= 0) {
+                setStatusMessage(
+                    i18n("Select a refinement model (a style preset other than \"None\"), or disable \"Refine upscaled image\"."),
+                    true);
+                m_d->btnUpscale->setEnabled(true);
+                m_d->progressBar->setValue(0);
+                return;
+            }
+            QJsonParseError errRf;
+            workflow = QJsonDocument::fromJson(QByteArray(upscaleRefineWorkflowTemplate), &errRf).object();
+            if (errRf.error != QJsonParseError::NoError) {
+                setStatusMessage(i18n("Upscale refine workflow error."), true);
+                m_d->btnUpscale->setEnabled(true);
+                m_d->progressBar->setValue(0);
+                return;
+            }
+            QString ckpt = checkpointNameForUpscaleRefinementPreset();
+            if (ckpt.isEmpty())
+                ckpt = m_d->comboCheckpoint ? m_d->comboCheckpoint->currentText().trimmed() : QString();
+            if (ckpt.isEmpty())
+                ckpt = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+            const int wR = qMax(64, (w2 / 8) * 8);
+            const int hR = qMax(64, (h2 / 8) * 8);
+            {
+                QJsonObject n1 = workflow[QStringLiteral("1")].toObject();
+                QJsonObject i1 = n1[QStringLiteral("inputs")].toObject();
+                i1[QStringLiteral("image")] = m_d->upscaleUploadedImageName;
+                n1[QStringLiteral("inputs")] = i1;
+                workflow[QStringLiteral("1")] = n1;
+            }
+            {
+                QJsonObject n2 = workflow[QStringLiteral("2")].toObject();
+                QJsonObject i2 = n2[QStringLiteral("inputs")].toObject();
+                i2[QStringLiteral("width")] = wR;
+                i2[QStringLiteral("height")] = hR;
+                const QString sm = ComfyUIUtils::normalizeDiffusionScaleMode(
+                    ComfyUIUtils::loadSettingsJson().value(QStringLiteral("diffusion_scale_mode")).toString());
+                i2[QStringLiteral("upscale_method")] = ComfyUIUtils::comfyImageScaleMethodForDiffusionScaleMode(sm);
+                n2[QStringLiteral("inputs")] = i2;
+                workflow[QStringLiteral("2")] = n2;
+            }
+            {
+                QJsonObject n4 = workflow[QStringLiteral("4")].toObject();
+                QJsonObject i4 = n4[QStringLiteral("inputs")].toObject();
+                i4[QStringLiteral("ckpt_name")] = ckpt;
+                n4[QStringLiteral("inputs")] = i4;
+                workflow[QStringLiteral("4")] = n4;
+            }
+            int baseSteps = 20;
+            double baseCfg = 8.0;
+            QString sam = QStringLiteral("euler");
+            QString sch = QStringLiteral("normal");
+            readUpscaleRefinementSampling(&baseSteps, &baseCfg, &sam, &sch);
+            const ComfyUIUtils::ResolvedSamplerInputs rsi = ComfyUIUtils::resolveSamplerForLive(
+                ComfyUIUtils::loadSettingsJson(), sam, baseSteps, baseCfg);
+            const int strengthPct = m_d->sliderUpscaleRefineStrength ? m_d->sliderUpscaleRefineStrength->value() : 30;
+            const int guidancePct = m_d->sliderUpscaleRefineGuidance ? m_d->sliderUpscaleRefineGuidance->value() : 50;
+            const double denoise = qBound(0.05, strengthPct / 100.0, 1.0);
+            const double kcfg = qBound(1.0, 1.0 + (guidancePct / 100.0) * 14.0, 20.0);
+            qint64 seed = m_d->checkFixedSeed && m_d->checkFixedSeed->isChecked()
+                ? static_cast<qint64>(m_d->spinSeed ? m_d->spinSeed->value() : 0)
+                : static_cast<qint64>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
+            if (!m_d->checkFixedSeed || !m_d->checkFixedSeed->isChecked()) {
+                if (m_d->spinSeed)
+                    m_d->spinSeed->setValue(static_cast<int>(qBound<qint64>(0, seed, 2147483647)));
+            }
+            const bool usePrompt = m_d->checkUpscaleUsePrompt && m_d->checkUpscaleUsePrompt->isChecked() && m_d->editPrompt;
+            QString pos;
+            QString neg;
+            if (usePrompt) {
+                pos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
+                pos = ComfyUIUtils::evalWildcards(pos, static_cast<quint32>(seed));
+                ComfyUIUtils::extractLayerPlaceholders(pos);
+                pos = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(pos);
+                neg = ComfyUIUtils::evalWildcards(
+                    ComfyUIUtils::stripPromptComments(m_d->editNegative ? m_d->editNegative->toPlainText() : QString()).trimmed(),
+                    static_cast<quint32>(seed));
+            }
+            if (pos.isEmpty())
+                pos = QStringLiteral("high quality, detailed");
+            {
+                QJsonObject n5 = workflow[QStringLiteral("5")].toObject();
+                QJsonObject i5 = n5[QStringLiteral("inputs")].toObject();
+                i5[QStringLiteral("text")] = pos;
+                n5[QStringLiteral("inputs")] = i5;
+                workflow[QStringLiteral("5")] = n5;
+            }
+            {
+                QJsonObject n6 = workflow[QStringLiteral("6")].toObject();
+                QJsonObject i6 = n6[QStringLiteral("inputs")].toObject();
+                i6[QStringLiteral("text")] = neg;
+                n6[QStringLiteral("inputs")] = i6;
+                workflow[QStringLiteral("6")] = n6;
+            }
+            {
+                QJsonObject n7 = workflow[QStringLiteral("7")].toObject();
+                QJsonObject i7 = n7[QStringLiteral("inputs")].toObject();
+                i7[QStringLiteral("seed")] = static_cast<double>(seed);
+                i7[QStringLiteral("steps")] = rsi.steps;
+                i7[QStringLiteral("cfg")] = kcfg;
+                i7[QStringLiteral("denoise")] = denoise;
+                i7[QStringLiteral("sampler_name")] = rsi.sampler;
+                i7[QStringLiteral("scheduler")] = rsi.scheduler;
+                n7[QStringLiteral("inputs")] = i7;
+                workflow[QStringLiteral("7")] = n7;
+            }
+        } else {
+            QJsonParseError errUp;
+            workflow = QJsonDocument::fromJson(QByteArray(upscaleWorkflowTemplate), &errUp).object();
+            if (errUp.error != QJsonParseError::NoError) {
+                setStatusMessage(i18n("Upscale workflow error."), true);
+                m_d->btnUpscale->setEnabled(true);
+                m_d->progressBar->setValue(0);
+                return;
+            }
+            QJsonObject n1 = workflow[QStringLiteral("1")].toObject();
+            QJsonObject i1 = n1[QStringLiteral("inputs")].toObject();
+            i1[QStringLiteral("image")] = m_d->upscaleUploadedImageName;
+            n1[QStringLiteral("inputs")] = i1;
+            workflow[QStringLiteral("1")] = n1;
+            QJsonObject n2 = workflow[QStringLiteral("2")].toObject();
+            QJsonObject i2 = n2[QStringLiteral("inputs")].toObject();
+            i2[QStringLiteral("width")] = w2;
+            i2[QStringLiteral("height")] = h2;
+            {
+                const QString sm = ComfyUIUtils::normalizeDiffusionScaleMode(
+                    ComfyUIUtils::loadSettingsJson().value(QStringLiteral("diffusion_scale_mode")).toString());
+                i2[QStringLiteral("upscale_method")] = ComfyUIUtils::comfyImageScaleMethodForDiffusionScaleMode(sm);
+            }
+            n2[QStringLiteral("inputs")] = i2;
+            workflow[QStringLiteral("2")] = n2;
         }
-        QJsonObject n1 = workflow["1"].toObject();
-        QJsonObject i1 = n1["inputs"].toObject();
-        i1["image"] = m_d->upscaleUploadedImageName;
-        n1["inputs"] = i1;
-        workflow["1"] = n1;
-        QJsonObject n2 = workflow["2"].toObject();
-        QJsonObject i2 = n2["inputs"].toObject();
-        i2["width"] = w2;
-        i2["height"] = h2;
-        n2["inputs"] = i2;
-        workflow["2"] = n2;
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
+        if (wantRefine) {
+            ComfyUIUtils::applyUpscaleRefineVaedecodeTiling(
+                workflow,
+                QStringLiteral("8"),
+                m_d->tileOverlapMode,
+                m_d->tileOverlap,
+                ComfyUIUtils::loadSettingsJson());
+        }
         if (m_d->clientId.isEmpty())
             m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         QString expectedPromptId = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -133,7 +258,7 @@ void ComfyUIRemoteDock::slotUpscale()
         ComfyUIUtils::setComfyUIRequestHeaders(reqPrompt);
         reqPrompt.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
         QNetworkReply *replyPrompt = m_d->nam->post(reqPrompt, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        connect(replyPrompt, &QNetworkReply::finished, this, [this, replyPrompt, expectedPromptId]() {
+        connect(replyPrompt, &QNetworkReply::finished, this, [this, replyPrompt, expectedPromptId, wantRefine]() {
             replyPrompt->deleteLater();
             QByteArray body = replyPrompt->readAll();
             if (replyPrompt->error() != QNetworkReply::NoError) {
@@ -148,7 +273,7 @@ void ComfyUIRemoteDock::slotUpscale()
             }
             QJsonObject obj = QJsonDocument::fromJson(body).object();
             if (obj.contains("error")) {
-            setStatusMessage(ComfyUIUtils::formatServerErrorMessage(obj["error"].toString()), true);
+                setStatusMessage(ComfyUIUtils::formatServerErrorMessage(obj["error"].toString()), true);
                 m_d->btnUpscale->setEnabled(true);
                 m_d->progressBar->setValue(0);
                 return;
@@ -167,7 +292,8 @@ void ComfyUIRemoteDock::slotUpscale()
             }
             m_d->upscalePromptId = promptId;
             m_d->upscalePollCount = 0;
-            m_d->labelStatus->setText(i18n("Upscaling…"));
+            m_d->upscaleLastSubmitUsedRefine = wantRefine;
+            m_d->labelStatus->setText(wantRefine ? i18n("Upscaling and refining…") : i18n("Upscaling…"));
             m_d->upscalePollTimer->start(1000);
         });
     });
@@ -264,7 +390,9 @@ void ComfyUIRemoteDock::slotUpscalePoll()
                 m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
                 if (m_d->canvas) m_d->canvas->updateCanvas();
             }
-            m_d->labelStatus->setText(i18n("Upscale done. Result added as new layer."));
+            m_d->labelStatus->setText(m_d->upscaleLastSubmitUsedRefine
+                ? i18n("Upscale and refine done. Result added as new layer.")
+                : i18n("Upscale done. Result added as new layer."));
             m_d->progressBar->setValue(100);
             m_d->upscalePromptId.clear();
             m_d->btnUpscale->setEnabled(true);

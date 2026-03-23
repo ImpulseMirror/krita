@@ -10,6 +10,8 @@
 #include <QStringList>
 #include <QPair>
 #include <QRect>
+#include <QPoint>
+#include <QSize>
 #include <QNetworkRequest>
 #include <QImage>
 #include <QJsonArray>
@@ -20,6 +22,8 @@
 #include <QByteArray>
 #include <QUrl>
 #include <QtGlobal>  // qBound
+
+#include <KSharedConfig>
 
 #include <utility>
 
@@ -52,6 +56,10 @@ QString mergeLibraryLoraTagsIntoPositivePrompt(const QString &positivePrompt);
 
 // §13.165: On load, check plugin is in expected location (e.g. under dockers/ or .git); if not, log warning. Call once from plugin constructor.
 void checkPluginInstallationPath();
+// §10.2: KisMainWindow saves layout under MainWindow/DockWidget {factory id}; migrate pre–§10.2 id ComfyUIRemote → imageDiffusion once.
+void migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion();
+// Same migration for an explicit config (e.g. in-memory SimpleConfig in unit tests).
+void migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(const KSharedConfigPtr &cfg);
 
 // §3.1: Settings path and persistence — user_data_dir/settings.json, load/save with // line comments
 QString settingsFilePath();
@@ -78,6 +86,51 @@ void generationPerformanceBatchResolution(const QJsonObject &settingsJson,
                                         double dockResolutionMultiplier,
                                         int *outBatch,
                                         double *outResolutionMultiplier);
+
+// §13.23: ScaleMode strings (resolution.py). Invalid/empty → "resize".
+QString normalizeDiffusionScaleMode(const QString &rawFromSettings);
+// After generationPerformanceBatchResolution, apply scale mode: "none" forces multiplier 1.0.
+void adjustEffectiveResolutionMultiplierForDiffusionScaleMode(const QJsonObject &settingsRoot, double *resolutionMultiplier);
+// §13.23: ComfyUI ImageScale upscale_method for the simple Upscale workspace graph.
+QString comfyImageScaleMethodForDiffusionScaleMode(const QString &normalizedScaleMode);
+
+// §13.24 TileLayout (resolution.py): uniform grid over an extent for tiled upscale/refine planning.
+class DiffusionTileLayout {
+public:
+    QSize imageExtent;
+    int tileExtent = 512;
+    int minSize = 64;
+    int padding = 0; ///< Overlap between adjacent tiles (px); negative requests auto overlap in layout
+    int blending = 0; ///< Blend width (px); kept for spec parity; uniform estimator uses 0
+    int tileCount = 0;
+
+    DiffusionTileLayout() = default;
+
+    static DiffusionTileLayout fromUniformGrid(int width, int height, int tileExtentPx, int overlapPx,
+                                               int minTileSize = 64, int blendPx = 0);
+    /// Strength 0–1 (e.g. KSampler denoise): higher strength → smaller tiles; aligned to \p multiple (e.g. 8).
+    static DiffusionTileLayout fromDenoiseStrength(QSize extent, int minTileSize, double strength0to1, int multiple,
+                                                   int overlapPx = -1);
+
+    int totalTiles() const { return tileCount; }
+    QPoint coord(int index) const;
+    int tileIndex(QPoint tileCoord) const;
+    QRect bounds(int index) const;
+    QPoint start(QPoint tileCoord) const;
+    QPoint end(QPoint tileCoord) const;
+
+private:
+    int gridW = 0;
+    int gridH = 0;
+    int step = 1;
+    void initGridFromExtent();
+    QRect boundsAtTileCoord(QPoint tileCoord) const;
+};
+
+// §13.24: Uniform tile grid count (overlap padding between tiles); overlap < 0 uses auto overlap from tile extent.
+int estimateUniformTileGridCount2D(int width, int height, int tileExtent, int overlapPx);
+// §13.24: tile_extent for Upscale target label tile-count estimate (settings.json upscale_tile_estimate_extent, default 512).
+int diffusionUpscaleTileEstimateExtentPx(const QJsonObject &settingsRoot);
 
 // §13.204: Single source of truth for plugin version (footer, Plugin tab, diagnostics)
 QString pluginVersion();
@@ -135,8 +188,21 @@ inline std::pair<QString, QString> documentAnnotationKeysWithFallback(const QStr
 qint64 documentEmbeddedHistoryStorageBytes(KisImageSP image);
 // §13.19: Max embedded history bytes from settings (history_document_storage_mb or legacy history_storage)
 qint64 documentEmbeddedHistoryLimitBytes(const QJsonObject &settings);
+// §13.199 / §9.7: Load merged ui.json; future version → defaults + flag (callers may show a warning).
+struct DocumentUiJsonLoadOutcome {
+    QJsonObject object;
+    int rawVersionFromFile = 1;
+    bool resetToDefaultsDueToFutureVersion = false;
+};
+DocumentUiJsonLoadOutcome loadDocumentUiJsonWithMeta(KisImageSP image);
 // §9.7: Load merged ui.json object (defaults to { "version": 1 } if missing)
 QJsonObject loadDocumentUiJsonObject(KisImageSP image);
+/// True when the image has a non-empty ai_diffusion/ui.json annotation (document already has embedded plugin state).
+bool documentHasStoredUiJsonPayload(KisImageSP image);
+// §13.194: `document_defaults` object inside settings.json (RecentlyUsedSync parity).
+QJsonObject documentDefaultsFromSettingsRoot(const QJsonObject &settingsRoot);
+// §13.137: When applying document_defaults to a fresh document, never restore InpaintContext.layer_bounds.
+QString inpaintContextForFreshDocumentDefaults(const QString &storedContext);
 // §13.19: Highest slot index from ui.json history[] and result* annotations (+1 = next slot)
 int maxHistorySlotFromDocument(KisImageSP image, const QJsonObject &uiRoot);
 // §13.19 / §3.5: Concatenate one or more result files into a single blob; offsets are segment end positions [end0, end1, …, total]
@@ -154,6 +220,12 @@ void applyTiledVaePreferenceToWorkflow(QJsonObject &workflow);
 void applyDynamicCachingPreferenceToWorkflow(QJsonObject &workflow);
 // §4.8: Apply tiled VAE and dynamic caching preferences to the API workflow object.
 void applyPerformancePreferencesToWorkflow(QJsonObject &workflow);
+// §13.147 Upscale refine: VAEDecode → VAEDecodeTiled; auto overlap matches DiffusionTileLayout (-1 → tileExtent/8 clamped); custom uses tile_overlap px.
+void applyUpscaleRefineVaedecodeTiling(QJsonObject &workflow,
+                                      const QString &decodeNodeId,
+                                      int tileOverlapMode,
+                                      int customOverlapPx,
+                                      const QJsonObject &settingsRoot);
 
 // §4.5 / §13.148: Parse LoRA filenames from GET /object_info (LoraLoader*, lora_name / model_name lists).
 void extractLoraFilenamesFromObjectInfo(const QJsonObject &objectInfoRoot, QStringList *outSortedUnique);
@@ -185,6 +257,22 @@ ResolvedSamplerInputs resolveSamplerForLive(const QJsonObject &settings,
                                             const QString &dockSamplerText,
                                             int dockSteps,
                                             double dockCfg);
+
+// §13.55: Control layer default strength/range presets (same structure as ai_diffusion/presets/control.json).
+struct ControlLayerPreset {
+    double strength = 1.0;
+    double start = 0.0;
+    double end = 1.0;
+};
+QJsonObject builtinControlPresetsRoot();
+void reloadControlPresetsCache();
+/// Presets for `controlMode` (e.g. "default"); uses `archKey` array if present, else "all".
+QList<ControlLayerPreset> controlPresetsForMode(const QJsonObject &root,
+                                                const QString &controlMode,
+                                                const QString &archKey = QString());
+// §13.55 / §13.124: settings key control_layer_default_preset_index (0-based, up to 4 presets) → resolved preset for new layers.
+bool resolveDefaultControlLayerPreset(const QJsonObject &settings, ControlLayerPreset *out,
+                                      const QString &archKey = QString());
 
 // §8.5: Remove text after '#' unless escaped as '\#'
 QString stripPromptComments(QString text);
@@ -270,7 +358,13 @@ struct CustomWorkflowParamSlot {
     QStringList choices;
 };
 QList<CustomWorkflowParamSlot> discoverCustomWorkflowParameterSlots(const QJsonObject &workflowRoot);
-void applyCustomWorkflowParameterValues(QJsonObject &workflowRoot, const QMap<QString, QVariant> &valuesByParamName);
+/// Resolve a paint layer UUID string (no braces) to its Krita layer name; empty if not found.
+QString paintLayerNameByUuid(KisImageSP image, const QString &uuidWithoutBraces);
+/// Merges Configure → Workflow overrides into API workflow JSON. Parameter / style keys match `CustomParam.name`;
+/// ETN_KritaImageLayer and ETN_KritaMaskLayer overrides use the ComfyUI **node id** as map key (Python LayerSelect parity).
+void applyCustomWorkflowParameterValues(QJsonObject &workflowRoot,
+                                        const QMap<QString, QVariant> &valuesByKey,
+                                        KisImageSP layerResolutionImage = KisImageSP());
 // §13.58: class_type strings listed in Technical_Specification.md (ETN tooling, INPAINT, preprocessors, GrowMask/ImageUpscaleWithModel, common core nodes this port emits).
 const QStringList &comfyUiSpecSection58NodeClassTypes();
 // §13.58: Subset of the above that appear as keys in GET /object_info (ComfyObjectInfo node registry).

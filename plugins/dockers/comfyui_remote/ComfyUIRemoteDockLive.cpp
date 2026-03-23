@@ -21,6 +21,7 @@
 #include <QRandomGenerator>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
 #include <QImage>
 
 #include <klocalizedstring.h>
@@ -211,6 +212,13 @@ void ComfyUIRemoteDock::slotLivePoll()
             if (tmp.open()) {
                 tmp.write(replyV->readAll());
                 tmp.close();
+                {
+                    const QString cachePath =
+                        QDir(ComfyUIUtils::historyCacheDir()).filePath(QStringLiteral("last_live_result.png"));
+                    QFile::remove(cachePath);
+                    if (QFile::copy(tmp.fileName(), cachePath))
+                        m_d->lastLiveResultImagePath = cachePath;
+                }
                 // §13.45: When Record is on, save frame to .live-frames/frame-N.webp
                 if (m_d->checkLiveRecord && m_d->checkLiveRecord->isChecked() && m_d->canvas && m_d->canvas->imageView() && m_d->canvas->imageView()->document()) {
                     QString docPath = m_d->canvas->imageView()->document()->path();
