@@ -1665,6 +1665,9 @@ if(DEFINED QTANDROID_EXPORTED_TARGET AND NOT TARGET "create-apk")
 
         ecm_androiddeployqt("${exportedTarget}" "${ECM_ADDITIONAL_FIND_ROOT_PATH}")
         set_target_properties(create-apk-${exportedTarget} PROPERTIES ANDROID_APK_DIR "${APK_DIR}")
+        # APK packaging runs specifydependencies.cmake on the main binary and every plugin .so
+        # listed in module-plugins; ensure the exported executable is built before create-apk.
+        add_dependencies(create-apk-${exportedTarget} ${exportedTarget})
     endforeach()
 elseif(ANDROID)
     message(STATUS "You can export a target by specifying -DQTANDROID_EXPORTED_TARGET=<targetname> and -DANDROID_APK_DIR=<paths>")
