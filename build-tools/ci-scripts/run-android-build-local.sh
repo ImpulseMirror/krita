@@ -56,14 +56,15 @@ fi
 
 # --- Use JDK 17 or 21 with compiler for Gradle (AGP 8.12 / Gradle 8.13 do not support Java 25) ---
 _jdk_ok() {
-  [ -n "$1" ] && [ -x "$1/bin/java" ] && [ -x "$1/bin/javac" ] && "$1/bin/java" -version 2>/dev/null | grep -qE "version \"(1[78]|2[01])\."
+  # java -version writes to stderr; keep stderr in the pipe for grep
+  [ -n "$1" ] && [ -x "$1/bin/java" ] && [ -x "$1/bin/javac" ] && "$1/bin/java" -version 2>&1 | grep -qE "version \"(1[78]|2[01])\."
 }
 if ! _jdk_ok "$JAVA_HOME"; then
   JAVA_HOME=""
   for jdk in java-21-openjdk java-17-openjdk java-21-openjdk-devel java-17-openjdk-devel java-21 java-17; do
     for base in /usr/lib/jvm /usr/lib64/jvm; do
       if [ -d "$base/$jdk" ] && [ -x "$base/$jdk/bin/javac" ] && [ -x "$base/$jdk/bin/java" ]; then
-        if "$base/$jdk/bin/java" -version 2>/dev/null | grep -qE "version \"(1[78]|2[01])\."; then
+        if "$base/$jdk/bin/java" -version 2>&1 | grep -qE "version \"(1[78]|2[01])\."; then
           export JAVA_HOME="$base/$jdk"
           break 2
         fi
