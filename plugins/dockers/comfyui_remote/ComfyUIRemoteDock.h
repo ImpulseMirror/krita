@@ -114,8 +114,10 @@ private:
     void applyStylesTabLoraListFilter();
     // §13.184: create_result_layer — apply result image to each region layer per ApplyRegionBehavior (replace, layer_group, transparency_mask, no_hide)
     bool applyResultToRegions(const QString &resultPath, int entryIndex, const QString &regionApplyBehavior);
-    // §13.37 / §13.160: Run update check (GET plugin/latest?version=current); sets hasUpdateAvailable on reply
+    // §13.37 / §13.160: Run update check (GET plugin/latest?version=current); drives PluginUpdateState and optional download/install
     void startUpdateCheck(bool manualRequest = false);
+    // §13.37: Download verified package (SHA-256), extract when KArchive is available, then restart_required
+    void startPluginUpdateDownload();
     // §13.37: Manual check from Plugin tab "Check for Updates" button (works even when auto-update is off)
     void slotCheckForUpdates();
     // §13.38: Fetch news from API; if digest != last_news, show NewsWidget with text
@@ -124,6 +126,14 @@ private:
     void persistSeedToConfig();
     // §5.4: Copy dock seed row into queue popup duplicates (avoids reparenting shared widgets).
     void syncQueueSeedWidgetsFromMain();
+    /// §5.7 / §13.92: Hide batch + enqueue mode in queue popup on Animation (supports_batch=False).
+    void refreshQueuePopupSupportsBatch();
+    /// §13.81: When `server_mode` is undefined, probe `settings.server_url` then `127.0.0.1:8000`; set external or cloud.
+    void tryAutostartServerFallback();
+    /// §13.89: Connect vs Disconnect button label (Configure dialog).
+    void refreshConnectionActionButton();
+    /// §13.89: Cloud panel — auth_missing when no access_token in settings.json.
+    void refreshCloudAuthStatusLabel();
 
 protected:
     // §13.196: Shift+Enter in prompt widget triggers Generate
@@ -131,6 +141,8 @@ protected:
 
 private Q_SLOTS:
     void slotTestConnection();
+    /// §13.89: Clear client connection state (Python Connection.disconnect() equivalent for custom ComfyUI).
+    void slotDisconnect();
     void slotRefreshCheckpoints();
     void slotRefreshSamplers();
     void slotRandomSeed();
@@ -199,6 +211,11 @@ private Q_SLOTS:
     void slotDocumentSyncPoll();
     /// §13.93: debounced refresh after current_time_changed (Animation Single Frame target preview)
     void slotDebouncedAnimationTargetPreview();
+    /// §13.53: Upload canvas → control preprocessor workflow → show thumbnail
+    void slotControlPreviewRun();
+    void slotControlPreviewPoll();
+    /// §13.98: Insert default pose SVG into active KisShapeLayer; register for 500 ms polling
+    void slotAddPoseGuideToVectorLayer();
 
 private:
     // §13.194 / §13.137: RecentlyUsedSync — document_defaults in settings.json; skip layer_bounds on fresh docs
@@ -225,6 +242,8 @@ private:
     void scheduleSaveEmbeddedCustomWorkflowToDocument();
     /// §13.25: Rebuild ETN parameter widgets from current custom workflow JSON (Configure → Workflow).
     void refreshCustomWorkflowParameterPanel();
+    /// §13.101: UI workflow (nodes/links) → prompt API using lastObjectInfoRoot; on failure sets status and returns false.
+    bool tryResolveCustomWorkflowInPlace(QJsonObject *workflow);
     // §13.170: after Open Web UI — ETN subscribe + WebSocket listen (when Qt WebSockets is available)
     void beginWebWorkflowSwitch();
     void endWebWorkflowSwitch();
@@ -232,6 +251,11 @@ private:
     void insertPromptTagCompletion(QPlainTextEdit *editor, const QString &completion);
     /// Build POST /prompt for one batch index (shared by slotBatchSubmitNext and per-frame reference upload completion).
     void dispatchBatchPromptRequest(QJsonObject workflow, int submitIndex);
+    /// §13.49: IntervalSlider + settings keys control_layer_timing_{low,high}_pct (0–100)
+    void syncControlPreviewRangeFromSettings();
+    void syncPoseGuidePeopleCountFromSettings();
+    /// §13.53: Stop control preprocessor preview poll (separate from main generate / live queues)
+    void stopControlPreviewPolling();
 
     void fetchComfyModelsLorasMergeAndRefreshStylesTab();
     void clearObjectInfoDerivedServerCaches();
@@ -243,6 +267,8 @@ private:
     void fetchFilteredCheckpointListAndApply(const QStringList &namesFromObjectInfo, const QString &baseUrlStr, bool noOpWhenNamesEmpty);
     /// §4.9 Configure → Plugin tab: Latest version line + Download and Install enablement
     void refreshPluginInformationTabUpdateUi();
+    void refreshWelcomeAutoUpdatePanel();
+    void syncPluginUpdateUi();
     struct Private;
     QScopedPointer<Private> m_d;
 };

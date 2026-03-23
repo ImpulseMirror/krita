@@ -4,6 +4,7 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyUIIntervalSlider.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 
@@ -58,6 +59,11 @@
 #include <KConfigGroup>
 #include <klocalizedstring.h>
 #include <kis_icon_utils.h>
+
+namespace {
+// §13.140: NSFW filter warning — QMessageBox.warning once per session (not persisted in KConfig)
+bool g_nsfwFilterWarningShownThisSession = false;
+} // namespace
 
 void ComfyUIRemoteDock::slotConfigureHelp()
 {
@@ -135,6 +141,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 QAbstractButton *btn = m_d->connectionModeGroup->button((mode == QLatin1String("cloud")) ? 0 : (mode == QLatin1String("managed")) ? 1 : 2);
                 if (btn) btn->setChecked(true);
             }
+            refreshCloudAuthStatusLabel();
         };
 
         QPushButton *btnOnlineService = new QPushButton(i18n("Online Service — Login or Sign up"), initialSetupPage);
@@ -161,7 +168,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QHBoxLayout *modeButtonsRow = new QHBoxLayout();
         QRadioButton *radioCloud = new QRadioButton(i18n("Online Service"), modeSelectedPage);
         QRadioButton *radioManaged = new QRadioButton(i18n("Local Managed Server"), modeSelectedPage);
-        QRadioButton *radioCustom = new QRadioButton(i18n("Custom Server"), modeSelectedPage);
+        QRadioButton *radioCustom = new QRadioButton(i18n("Custom ComfyUI"), modeSelectedPage);
         m_d->connectionModeGroup->addButton(radioCloud, 0);
         m_d->connectionModeGroup->addButton(radioManaged, 1);
         m_d->connectionModeGroup->addButton(radioCustom, 2);
@@ -178,6 +185,9 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QLabel *cloudPlaceholder = new QLabel(i18n("Online Service is not available in this build. Use Custom ComfyUI to connect to your own server."), dlg);
         cloudPlaceholder->setWordWrap(true);
         cloudLayout->addWidget(cloudPlaceholder);
+        m_d->labelCloudAuthStatus = new QLabel(cloudPage);
+        refreshCloudAuthStatusLabel();
+        cloudLayout->addWidget(m_d->labelCloudAuthStatus);
         cloudLayout->addStretch();
         m_d->innerConnectionStack->addWidget(cloudPage);
         // Managed panel (index 1) — placeholder
@@ -189,7 +199,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         managedLayout->addStretch();
         m_d->innerConnectionStack->addWidget(managedPage);
 
-        // Custom Server panel (index 2) — per spec §4.4 (URL → Connect → status → View log files → models → help)
+        // Custom ComfyUI panel (index 2) — per spec §4.4 (URL → Connect → status → View log files → models → help)
         QWidget *connPage = new QWidget(dlg);
         QVBoxLayout *connLayout = new QVBoxLayout(connPage);
 
@@ -202,7 +212,12 @@ void ComfyUIRemoteDock::slotConfigureHelp()
 
         m_d->btnTest = new QPushButton(i18n("Connect"), connPage);
         m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
-        connect(m_d->btnTest, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotTestConnection);
+        connect(m_d->btnTest, &QPushButton::clicked, this, [this]() {
+            if (m_d->isConnected)
+                slotDisconnect();
+            else
+                slotTestConnection();
+        });
         connLayout->addWidget(m_d->btnTest);
 
         m_d->labelConnectionStatus = new QLabel(i18n("Disconnected"), connPage);
@@ -246,6 +261,11 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             QString mode = (id == 0) ? QStringLiteral("cloud") : (id == 1) ? QStringLiteral("managed") : QStringLiteral("external");
             KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("ServerMode", mode);
             KSharedConfig::openConfig()->sync();
+            refreshCloudAuthStatusLabel();
+        });
+
+        connect(m_d->innerConnectionStack, &QStackedWidget::currentChanged, this, [this](int) {
+            refreshCloudAuthStatusLabel();
         });
 
         m_d->connectionStack->addWidget(modeSelectedPage);
@@ -430,6 +450,28 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         stylesLayout->addWidget(toggleLora);
         stylesLayout->addWidget(loraBody);
 
+        // §4.5: Style Prompt → Negative Prompt → Linked Edit Style (before Sampler Settings)
+        QLabel *stylePromptDesc = new QLabel(
+            i18n("Text which is appended to all prompts. The {prompt} placeholder can be used to wrap prompts."), stylesInner);
+        stylePromptDesc->setWordWrap(true);
+        stylesLayout->addWidget(stylePromptDesc);
+        QPlainTextEdit *editStylesPositive = new QPlainTextEdit(stylesInner);
+        editStylesPositive->setPlaceholderText(i18n("Style prompt (synced with Generate view)"));
+        editStylesPositive->setMaximumHeight(100);
+        stylesLayout->addWidget(editStylesPositive);
+        QLabel *negDesc = new QLabel(i18n("Textual description of things to avoid in generated images."), stylesInner);
+        negDesc->setWordWrap(true);
+        stylesLayout->addWidget(negDesc);
+        QPlainTextEdit *editStylesNegative = new QPlainTextEdit(stylesInner);
+        editStylesNegative->setPlaceholderText(i18n("Negative prompt (synced with Generate view)"));
+        editStylesNegative->setMaximumHeight(80);
+        stylesLayout->addWidget(editStylesNegative);
+        QFormLayout *linkedStyleForm = new QFormLayout();
+        QComboBox *comboLinkedEditStyle = new QComboBox(stylesInner);
+        comboLinkedEditStyle->setToolTip(i18n("Select an alternative style to use for instruction-based editing."));
+        linkedStyleForm->addRow(i18n("Linked Edit Style:"), comboLinkedEditStyle);
+        stylesLayout->addLayout(linkedStyleForm);
+
         QLabel *lblSamplerMerge = new QLabel(
             i18n("Configure sampler type, steps and CFG to tweak the quality of generated images. "
                  "Presets match the samplers.json shape (sampler, scheduler, steps, minimum_steps, cfg). "
@@ -448,9 +490,18 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         stylesLayout->addWidget(lblControlPresets);
         QFormLayout *controlPresetForm = new QFormLayout();
         QComboBox *comboControlDefaultPreset = new QComboBox(stylesInner);
+        ComfyUIIntervalSlider *controlRangePreview = new ComfyUIIntervalSlider(stylesInner);
+        QLabel *controlRangePreviewLabel = new QLabel(stylesInner);
         comboControlDefaultPreset->setToolTip(
             i18n("Default strength and timing range when adding a control layer (from control.json, default mode)."));
+        controlRangePreview->setToolTip(
+            i18n("Preview of the selected control-layer timing range (low/high)."));
+        controlRangePreview->setEnabled(false);
+        controlRangePreview->setRange(0, 100);
+        controlRangePreviewLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
         controlPresetForm->addRow(i18n("Default control layer preset:"), comboControlDefaultPreset);
+        controlPresetForm->addRow(i18n("Preset timing range:"), controlRangePreview);
+        controlPresetForm->addRow(QString(), controlRangePreviewLabel);
         stylesLayout->addLayout(controlPresetForm);
         QComboBox *comboQualitySamplerPreset = new QComboBox(stylesInner);
         QComboBox *comboLiveSamplerPreset = new QComboBox(stylesInner);
@@ -483,26 +534,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         stylesLayout->addWidget(toggleSamplerLive);
         stylesLayout->addWidget(samplerLiveBody);
 
-        QLabel *stylePromptDesc = new QLabel(
-            i18n("Text which is appended to all prompts. The {prompt} placeholder can be used to wrap prompts."), stylesInner);
-        stylePromptDesc->setWordWrap(true);
-        stylesLayout->addWidget(stylePromptDesc);
-        QPlainTextEdit *editStylesPositive = new QPlainTextEdit(stylesInner);
-        editStylesPositive->setPlaceholderText(i18n("Style prompt (synced with Generate view)"));
-        editStylesPositive->setMaximumHeight(100);
-        stylesLayout->addWidget(editStylesPositive);
-        QLabel *negDesc = new QLabel(i18n("Textual description of things to avoid in generated images."), stylesInner);
-        negDesc->setWordWrap(true);
-        stylesLayout->addWidget(negDesc);
-        QPlainTextEdit *editStylesNegative = new QPlainTextEdit(stylesInner);
-        editStylesNegative->setPlaceholderText(i18n("Negative prompt (synced with Generate view)"));
-        editStylesNegative->setMaximumHeight(80);
-        stylesLayout->addWidget(editStylesNegative);
-        QFormLayout *linkedStyleForm = new QFormLayout();
-        QComboBox *comboLinkedEditStyle = new QComboBox(stylesInner);
-        comboLinkedEditStyle->setToolTip(i18n("Select an alternative style to use for instruction-based editing."));
-        linkedStyleForm->addRow(i18n("Linked Edit Style:"), comboLinkedEditStyle);
-        stylesLayout->addLayout(linkedStyleForm);
         // §4.2: Six nav items only — Fast/Quality and custom workflow live under Styles (not a seventh nav entry).
         QFormLayout *qualityFastForm = new QFormLayout();
         qualityFastForm->addRow(i18n("Quality:"), m_d->comboQuality);
@@ -840,7 +871,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 stylesCkptWarning->hide();
             }
         };
-        auto syncSamplerPresetCombos = [comboQualitySamplerPreset, comboLiveSamplerPreset, comboControlDefaultPreset]() {
+        auto syncSamplerPresetCombos = [comboQualitySamplerPreset, comboLiveSamplerPreset, comboControlDefaultPreset,
+                                        controlRangePreview, controlRangePreviewLabel]() {
             ComfyUIUtils::reloadSamplerPresetsCache();
             ComfyUIUtils::reloadControlPresetsCache();
             const QJsonObject root = ComfyUIUtils::builtinSamplerPresetsRoot();
@@ -877,6 +909,9 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             if (maxSlots <= 0) {
                 comboControlDefaultPreset->addItem(i18n("No presets in control.json"), -1);
                 comboControlDefaultPreset->setEnabled(false);
+                controlRangePreview->setEnabled(false);
+                controlRangePreview->setInterval(0, 100);
+                controlRangePreviewLabel->setText(i18n("No control presets available."));
             } else {
                 comboControlDefaultPreset->setEnabled(true);
                 for (int i = 0; i < maxSlots; ++i) {
@@ -893,6 +928,16 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                                         s.value(QStringLiteral("control_layer_default_preset_index")).toInt(0),
                                         maxSlots - 1);
                 comboControlDefaultPreset->setCurrentIndex(want);
+                const ComfyUIUtils::ControlLayerPreset p = cps.at(want);
+                const int low = qBound(0, qRound(p.start * 100.0), 100);
+                const int high = qBound(0, qRound(p.end * 100.0), 100);
+                controlRangePreview->setEnabled(true);
+                controlRangePreview->setInterval(qMin(low, high), qMax(low, high));
+                controlRangePreviewLabel->setText(
+                    i18n("Strength %1, range %2%–%3%",
+                         QString::number(p.strength, 'f', 2),
+                         qMin(low, high),
+                         qMax(low, high)));
             }
             comboControlDefaultPreset->blockSignals(false);
         };
@@ -976,13 +1021,28 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     ComfyUIUtils::saveSettingsJson(s);
                 });
         connect(comboControlDefaultPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
-                [comboControlDefaultPreset]() {
+                [comboControlDefaultPreset, controlRangePreview, controlRangePreviewLabel]() {
                     const int idx = comboControlDefaultPreset->currentData().toInt();
                     if (idx < 0)
                         return;
                     QJsonObject st = ComfyUIUtils::loadSettingsJson();
                     st.insert(QStringLiteral("control_layer_default_preset_index"), idx);
                     ComfyUIUtils::saveSettingsJson(st);
+                    const QJsonObject controlRoot = ComfyUIUtils::builtinControlPresetsRoot();
+                    const QList<ComfyUIUtils::ControlLayerPreset> cps =
+                        ComfyUIUtils::controlPresetsForMode(controlRoot, QStringLiteral("default"), QString());
+                    if (idx >= cps.size())
+                        return;
+                    const ComfyUIUtils::ControlLayerPreset p = cps.at(idx);
+                    const int low = qBound(0, qRound(p.start * 100.0), 100);
+                    const int high = qBound(0, qRound(p.end * 100.0), 100);
+                    controlRangePreview->setEnabled(true);
+                    controlRangePreview->setInterval(qMin(low, high), qMax(low, high));
+                    controlRangePreviewLabel->setText(
+                        i18n("Strength %1, range %2%–%3%",
+                             QString::number(p.strength, 'f', 2),
+                             qMin(low, high),
+                             qMax(low, high)));
                 });
         connect(stylesPresetMirror, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this, stylesPresetMirror, updateStylePathLabel, updateStylesCkptWarning, syncStyleNameField](int) {
@@ -1163,11 +1223,13 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         });
         connect(checkColorMatch, &QCheckBox::toggled, dlg, saveDiffusionSettings);
         connect(comboNsfwFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, [dlg, comboNsfwFilter, saveDiffusionSettings](int idx) {
-            // §4.6: First time enabling NSFW filter shows a warning dialog
-            if (idx > 0 && !KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("NsfwFilterWarningShown", false)) {
-                QMessageBox::information(dlg, i18n("NSFW Filter"),
-                    i18n("The NSFW filter attempts to detect and hide images with explicit content. It may not be fully accurate."));
-                KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("NsfwFilterWarningShown", true);
+            // §13.140: NSFW filter (first time) — warning once per session
+            if (idx > 0 && !g_nsfwFilterWarningShownThisSession) {
+                g_nsfwFilterWarningShownThisSession = true;
+                QMessageBox::warning(
+                    dlg,
+                    i18n("NSFW Filter Warning"),
+                    i18n("The NSFW filter is a basic tool to exclude explicit content from generated images. It is NOT a guarantee and may not catch all inappropriate content. Please use responsibly and always review the generated images."));
             }
             saveDiffusionSettings();
         });
@@ -1930,6 +1992,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             QJsonObject s = ComfyUIUtils::loadSettingsJson();
             s.insert(QStringLiteral("auto_update"), checked);
             ComfyUIUtils::saveSettingsJson(s);
+            // Keep Welcome Auto-update panel (§5.2) in sync with Plugin tab
+            syncPluginUpdateUi();
         });
         pluginLayout->addWidget(checkAutoUpdate);
         QPushButton *checkUpdateBtn = new QPushButton(i18n("Check for Updates"), pluginPage);
@@ -1937,13 +2001,9 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         pluginLayout->addWidget(checkUpdateBtn);
         QPushButton *btnPluginDownload = new QPushButton(i18n("Download and Install"), pluginPage);
         btnPluginDownload->setEnabled(false);
-        btnPluginDownload->setToolTip(i18n("Opens the download page when a newer plugin version is reported by the update check."));
-        connect(btnPluginDownload, &QPushButton::clicked, this, [this]() {
-            const QUrl u = !m_d->updateDownloadUrl.isEmpty() ? QUrl(m_d->updateDownloadUrl)
-                                                              : QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/releases"));
-            if (u.isValid())
-                QDesktopServices::openUrl(u);
-        });
+        btnPluginDownload->setToolTip(
+            i18n("Download the update package, verify it with SHA-256, and extract it to the application cache folder."));
+        connect(btnPluginDownload, &QPushButton::clicked, this, &ComfyUIRemoteDock::startPluginUpdateDownload);
         m_d->pluginTabDownloadInstallButton = btnPluginDownload;
         pluginLayout->addWidget(btnPluginDownload);
         // §4.9: System Information — hint, Collect Diagnostics, View log files
@@ -1985,7 +2045,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         pluginLayout->addWidget(supportHeading);
         QPushButton *websiteButton = new QPushButton(i18n("Website"), pluginPage);
         connect(websiteButton, &QPushButton::clicked, this, []() {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://www.interstice.cloud")));
+            QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
         });
         pluginLayout->addWidget(websiteButton);
         QPushButton *handbookButton = new QPushButton(i18n("Handbook: Guides and Tips"), pluginPage);
@@ -2015,7 +2075,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         });
         pluginLayout->addWidget(discordButton);
         pluginLayout->addStretch();
-        refreshPluginInformationTabUpdateUi();
+        syncPluginUpdateUi();
         stack->addWidget(pluginPage);
 
         // Canonical refresh control for slotRefreshCheckpoints (hidden); Styles tab uses its own refresh button.
@@ -2052,6 +2112,10 @@ void ComfyUIRemoteDock::slotConfigureHelp()
 
         connect(navList, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
         connect(navList, &QListWidget::currentRowChanged, this, [this, syncStylesFromDock, syncPerfSlidersFromDock](int row) {
+            if (row == 0) {
+                refreshConnectionActionButton();
+                refreshCloudAuthStatusLabel();
+            }
             if (row == 1)
                 syncStylesFromDock();
             if (row == 4) {
@@ -2063,6 +2127,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         updateHistoryUsageLabel();
         navList->setCurrentRow(0);
 
+        refreshConnectionActionButton();
+        refreshCloudAuthStatusLabel();
         refreshCustomWorkflowParameterPanel();
     }
 
@@ -2088,7 +2154,9 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             }
         }
         refreshCustomWorkflowParameterPanel();
-        refreshPluginInformationTabUpdateUi();
+        syncPluginUpdateUi();
+        refreshConnectionActionButton();
+        refreshCloudAuthStatusLabel();
         m_d->settingsDialog->show();
         m_d->settingsDialog->raise();
         m_d->settingsDialog->activateWindow();
@@ -2200,8 +2268,17 @@ void ComfyUIRemoteDock::slotRestoreDefaults()
     saveRegionsToConfig();
     refreshRegionsList();
 
-    // §13.33: After Restore Defaults, ServerMode is cleared (read as "undefined"); show initial setup again
+    // §13.16: Restore Defaults sets server_mode to managed (Local Managed Server), not undefined
+    cfg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("managed"));
+    cfgPtr->sync();
     if (m_d->connectionStack) {
-        m_d->connectionStack->setCurrentIndex(0);
+        m_d->connectionStack->setCurrentIndex(1);
+        if (m_d->innerConnectionStack)
+            m_d->innerConnectionStack->setCurrentIndex(1);
+        if (m_d->connectionModeGroup) {
+            if (QAbstractButton *btn = m_d->connectionModeGroup->button(1))
+                btn->setChecked(true);
+        }
     }
+    syncPluginUpdateUi();
 }

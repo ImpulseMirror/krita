@@ -134,6 +134,10 @@ int diffusionUpscaleTileEstimateExtentPx(const QJsonObject &settingsRoot);
 
 // §13.204: Single source of truth for plugin version (footer, Plugin tab, diagnostics)
 QString pluginVersion();
+// §13.159 / §13.160: INTERSTICE_URL overrides; default https://api.interstice.cloud (plugin/latest, plugin/news).
+QString intersticeApiBaseUrl();
+// §13.159: INTERSTICE_WEB_URL for sign-in / account / website links; default https://www.interstice.cloud
+QString intersticeWebBaseUrl();
 
 // §13.14 / §13.152 / §13.69 / §13.79: Document annotations — name = ai_diffusion/ + key, description = "AI Diffusion Plugin: " + key
 inline QString documentAnnotationKey(const QString &logicalKey) {
@@ -193,6 +197,9 @@ struct DocumentUiJsonLoadOutcome {
     QJsonObject object;
     int rawVersionFromFile = 1;
     bool resetToDefaultsDueToFutureVersion = false;
+    /// §13.140: Non-empty ui.json annotation existed but JSON parse failed (caller shows QMessageBox).
+    bool parseFailed = false;
+    QString parseError;
 };
 DocumentUiJsonLoadOutcome loadDocumentUiJsonWithMeta(KisImageSP image);
 // §9.7: Load merged ui.json object (defaults to { "version": 1 } if missing)
@@ -303,6 +310,11 @@ inline int clampInpaintGrowFeather(int value) {
 // §13.135: For settings/workflow JSON: strip whole lines whose stripped form starts with "//" (not #)
 QByteArray stripJsonLineComments(QByteArray data);
 
+// §13.101: Convert ComfyUI UI workflow JSON (version + nodes + links) to prompt API graph. Requires GET /object_info.
+QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow, const QJsonObject &objectInfoRoot, QJsonObject *outApi);
+/// If \p inOut looks like UI workflow (nodes + links arrays), replaces with API graph; otherwise no-op. Returns false on error.
+bool tryResolveCustomWorkflowJsonToApi(QJsonObject *inOut, const QJsonObject &objectInfoRoot, QString *errorOut);
+
 // §13.150: Persistence format version for ui.json; increment on breaking changes
 constexpr int persistenceFormatVersion = 1;
 
@@ -313,6 +325,9 @@ QString liveFramePath(const QString &documentPath, int frameIndex);    // .../fr
 QString animationFramePath(const QString &documentPath, int frameIndex); // .../frame-N.png
 /// §13.74: True if both files exist and have identical contents (size + byte-wise compare).
 bool filesContentsEqual(const QString &pathA, const QString &pathB);
+
+// §13.153: ai_diffusion theme.icon(name) stems → Krita/Breeze icon names (functional parity without bundling SVGs)
+QString kritaIconNameForThemeStem(const QString &stem);
 
 // §13.141: Avoid ngrok browser warning when connecting to arbitrary ComfyUI URLs
 void setComfyUIRequestHeaders(QNetworkRequest &req);
@@ -365,6 +380,20 @@ QString paintLayerNameByUuid(KisImageSP image, const QString &uuidWithoutBraces)
 void applyCustomWorkflowParameterValues(QJsonObject &workflowRoot,
                                         const QMap<QString, QVariant> &valuesByKey,
                                         KisImageSP layerResolutionImage = KisImageSP());
+// §13.53: Build a control-image preprocessing workflow (LoadImage -> preprocessor -> optional invert -> SaveImage).
+// \p resolution is the **shortest side** of the input extent in pixels (cf. spec: shortest side of extent/bounds);
+// normalized inside to a 64-multiple, with floor 512 for non-hands modes.
+// Returns empty object when controlMode is unsupported by this port.
+QJsonObject buildControlImageWorkflow(const QString &inputImageName,
+                                      const QString &controlMode,
+                                      int resolution = 1024,
+                                      bool invertOutput = false);
+// §13.53: ControlMode.is_lines parity helper (scribble/line_art/soft_edge/canny_edge).
+bool isControlModeLines(const QString &controlMode);
+// §13.53 hands + bounds: composite preprocessor output (crop-sized) back onto a full-extent image at \p cropInExtentCoords.
+QImage compositeControlImageOntoExtent(const QImage &processedCrop,
+                                       const QSize &fullExtentSize,
+                                       const QRect &cropInExtentCoords);
 // §13.58: class_type strings listed in Technical_Specification.md (ETN tooling, INPAINT, preprocessors, GrowMask/ImageUpscaleWithModel, common core nodes this port emits).
 const QStringList &comfyUiSpecSection58NodeClassTypes();
 // §13.58: Subset of the above that appear as keys in GET /object_info (ComfyObjectInfo node registry).
@@ -430,9 +459,12 @@ void compositeWithMask(QImage &current, const QImage &result, const QImage &mask
 QString collectDiagnostics(const QString &pluginVersion, bool redactUser = true,
                            const QStringList *objectInfoSpec58NodesPresent = nullptr);
 
-// §13.36: A1111-style metadata string for PNG "parameters" (prompt, negative, steps, CFG, seed, size, strength, sampler, checkpoint)
+// §13.36: A1111-style metadata string for PNG "parameters". `prompt` should include library LoRA tags (mergeLibraryLoraTagsIntoPositivePrompt after stripPromptComments) for parity with JobParams.
 QString createImgMetadata(const QString &prompt, const QString &negative, int steps, double cfg, qint64 seed,
                           int width, int height, int strength, const QString &samplerName, const QString &checkpoint);
+
+// §13.37: Extract verified update ZIP to an empty or cleared directory (requires COMFYUI_HAVE_KARCHIVE at build time).
+bool extractZipToDirectory(const QString &zipPath, const QString &destDir, QString *errorOut = nullptr);
 
 // §13.215: Tag CSV format — columns tag, type, count, aliases; returns list of tag strings for autocomplete
 QStringList loadTagCsvTags(const QString &filePath);

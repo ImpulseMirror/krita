@@ -5,6 +5,7 @@
 
 #include <simpletest.h>
 #include <QTest>
+#include <QSignalSpy>
 
 #include <KSharedConfig>
 #include <KConfigGroup>
@@ -14,6 +15,7 @@
 #include <QJsonArray>
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyUIIntervalSlider.h"
 #include "ComfyUIUtils.h"
 
 class ComfyUIRemoteDockTest : public QObject
@@ -48,6 +50,13 @@ private Q_SLOTS:
     void testControlPresetsBuiltinDefault();
     void testControlPresetsArchKeyFallback();
     void testResolveDefaultControlLayerPreset();
+    void testIntervalSliderSignalsAndBounds();
+    void testBuildControlImageWorkflow();
+    void testCompositeControlImageOntoExtent();
+    void testTryResolveCustomWorkflowJsonApiPassthrough();
+    void testConvertComfyUiWorkflowUiToApiEmptyLatent();
+    void testConvertComfyUiWorkflowUiToApiThreeTupleLink();
+    void testKritaIconNameForThemeStem();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -549,6 +558,223 @@ void ComfyUIRemoteDockTest::testResolveDefaultControlLayerPreset()
     s.insert(QStringLiteral("control_layer_default_preset_index"), 0);
     QVERIFY(ComfyUIUtils::resolveDefaultControlLayerPreset(s, &p));
     QCOMPARE(p.strength, 0.7);
+}
+
+void ComfyUIRemoteDockTest::testIntervalSliderSignalsAndBounds()
+{
+    ComfyUIIntervalSlider slider;
+    slider.setRange(0, 100);
+
+    QSignalSpy rangeSpy(&slider, SIGNAL(rangeChanged(int,int)));
+    QSignalSpy intervalSpy(&slider, SIGNAL(intervalChanged(int,int)));
+
+    slider.setRange(10, 90);
+    QCOMPARE(rangeSpy.count(), 1);
+    QVERIFY(intervalSpy.count() >= 1);
+    QCOMPARE(slider.minimum(), 10);
+    QCOMPARE(slider.maximum(), 90);
+
+    const int before = intervalSpy.count();
+    slider.setInterval(80, 20); // swapped by widget; low <= high is enforced
+    QCOMPARE(slider.lowValue(), 20);
+    QCOMPARE(slider.highValue(), 80);
+    QVERIFY(intervalSpy.count() == before + 1);
+}
+
+void ComfyUIRemoteDockTest::testBuildControlImageWorkflow()
+{
+    const QJsonObject wf = ComfyUIUtils::buildControlImageWorkflow(
+        QStringLiteral("input.png"), QStringLiteral("canny_edge"), 896, true);
+    QVERIFY(!wf.isEmpty());
+    QCOMPARE(wf.value(QStringLiteral("1")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("LoadImage"));
+    QCOMPARE(wf.value(QStringLiteral("2")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("CannyEdgePreprocessor"));
+    QCOMPARE(wf.value(QStringLiteral("2")).toObject()
+                 .value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("resolution")).toInt(),
+             896);
+    QCOMPARE(wf.value(QStringLiteral("4")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("ImageInvert"));
+    QCOMPARE(wf.value(QStringLiteral("9")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("SaveImage"));
+
+    const QJsonObject scribbleWf = ComfyUIUtils::buildControlImageWorkflow(
+        QStringLiteral("input.png"), QStringLiteral("scribble"), 256, false);
+    QCOMPARE(scribbleWf.value(QStringLiteral("2")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("PiDiNetPreprocessor"));
+    QCOMPARE(scribbleWf.value(QStringLiteral("3")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("ScribblePreprocessor"));
+    QCOMPARE(scribbleWf.value(QStringLiteral("3")).toObject()
+                 .value(QStringLiteral("inputs")).toObject()
+                 .value(QStringLiteral("resolution")).toInt(),
+             512);
+    QCOMPARE(scribbleWf.value(QStringLiteral("4")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("ImageInvert"));
+
+    const QJsonObject lineWf = ComfyUIUtils::buildControlImageWorkflow(
+        QStringLiteral("input.png"), QStringLiteral("line_art"), 640, false);
+    QCOMPARE(lineWf.value(QStringLiteral("4")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("ImageInvert"));
+    QVERIFY(ComfyUIUtils::isControlModeLines(QStringLiteral("line_art")));
+    QVERIFY(!ComfyUIUtils::isControlModeLines(QStringLiteral("depth")));
+
+    const QJsonObject poseWf = ComfyUIUtils::buildControlImageWorkflow(
+        QStringLiteral("input.png"), QStringLiteral("pose"), 1024, false);
+    const QJsonObject poseInputs = poseWf.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(poseInputs.value(QStringLiteral("bbox_detector")).toString(),
+             QStringLiteral("yolox_l.onnx"));
+    QCOMPARE(poseInputs.value(QStringLiteral("pose_estimator")).toString(),
+             QStringLiteral("dw-ll_ucoco_384_bs5.torchscript.pt"));
+    QCOMPARE(poseInputs.value(QStringLiteral("resolution")).toInt(), 1024);
+
+    const QJsonObject handsWf = ComfyUIUtils::buildControlImageWorkflow(
+        QStringLiteral("input.png"), QStringLiteral("hands"), 200, false);
+    const QJsonObject handsInputs = handsWf.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(handsInputs.value(QStringLiteral("resolution")).toInt(), 256);
+
+    const QJsonObject unsupported = ComfyUIUtils::buildControlImageWorkflow(
+        QStringLiteral("input.png"), QStringLiteral("unknown_mode"), 1024, false);
+    QVERIFY(unsupported.isEmpty());
+}
+
+void ComfyUIRemoteDockTest::testTryResolveCustomWorkflowJsonApiPassthrough()
+{
+    QJsonObject api;
+    QJsonObject n3;
+    n3.insert(QStringLiteral("class_type"), QStringLiteral("KSampler"));
+    QJsonObject in3;
+    in3.insert(QStringLiteral("seed"), 0);
+    n3.insert(QStringLiteral("inputs"), in3);
+    api.insert(QStringLiteral("3"), n3);
+    QString err;
+    QVERIFY(ComfyUIUtils::tryResolveCustomWorkflowJsonToApi(&api, QJsonObject(), &err));
+    QVERIFY(api.contains(QStringLiteral("3")));
+}
+
+void ComfyUIRemoteDockTest::testConvertComfyUiWorkflowUiToApiEmptyLatent()
+{
+    const QJsonObject objectInfo = QJsonDocument::fromJson(QByteArray(R"json({
+        "EmptyLatentImage": {
+            "input": {
+                "required": {
+                    "width": ["INT", {"default": 512, "max": 8192, "min": 64}],
+                    "height": ["INT", {"default": 512, "max": 8192, "min": 64}],
+                    "batch_size": ["INT", {"default": 1, "max": 4096, "min": 1}]
+                }
+            }
+        }
+    })json"))
+                                     .object();
+
+    const QJsonObject uiWf = QJsonDocument::fromJson(QByteArray(R"json({
+        "version": 1,
+        "nodes": [{
+            "id": 5,
+            "type": "EmptyLatentImage",
+            "inputs": [
+                {"name": "width", "type": "INT", "link": null},
+                {"name": "height", "type": "INT", "link": null},
+                {"name": "batch_size", "type": "INT", "link": null}
+            ],
+            "widgets_values": [640, 512, 2]
+        }],
+        "links": []
+    })json"))
+                               .object();
+
+    QJsonObject out;
+    const auto r = ComfyUIUtils::convertComfyUiWorkflowUiToApi(uiWf, objectInfo, &out);
+    QVERIFY2(r.first, qPrintable(r.second));
+    QCOMPARE(out.keys().size(), 1);
+    const QJsonObject n5 = out.value(QStringLiteral("5")).toObject();
+    QCOMPARE(n5.value(QStringLiteral("class_type")).toString(), QStringLiteral("EmptyLatentImage"));
+    const QJsonObject inputs = n5.value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(inputs.value(QStringLiteral("width")).toInt(), 640);
+    QCOMPARE(inputs.value(QStringLiteral("height")).toInt(), 512);
+    QCOMPARE(inputs.value(QStringLiteral("batch_size")).toInt(), 2);
+}
+
+void ComfyUIRemoteDockTest::testConvertComfyUiWorkflowUiToApiThreeTupleLink()
+{
+    // §13.101: links as [link_id, source_node_id, source_output_slot] — target from node inputs
+    const QJsonObject objectInfo = QJsonDocument::fromJson(QByteArray(R"json({
+        "CheckpointLoaderSimple": {
+            "input": {
+                "required": {
+                    "ckpt_name": ["COMBO", []]
+                }
+            }
+        },
+        "CLIPTextEncode": {
+            "input": {
+                "required": {
+                    "clip": ["CLIP", {}],
+                    "text": ["STRING", {"default": ""}]
+                }
+            }
+        }
+    })json"))
+                                     .object();
+
+    const QJsonObject uiWf = QJsonDocument::fromJson(QByteArray(R"json({
+        "version": 1,
+        "nodes": [
+            {
+                "id": 4,
+                "type": "CheckpointLoaderSimple",
+                "inputs": [],
+                "widgets_values": ["model.safetensors"]
+            },
+            {
+                "id": 6,
+                "type": "CLIPTextEncode",
+                "inputs": [
+                    {"name": "clip", "type": "CLIP", "link": 12},
+                    {"name": "text", "type": "STRING", "link": null}
+                ],
+                "widgets_values": ["a cat"]
+            }
+        ],
+        "links": [[12, 4, 1]]
+    })json"))
+                               .object();
+
+    QJsonObject out;
+    const auto r = ComfyUIUtils::convertComfyUiWorkflowUiToApi(uiWf, objectInfo, &out);
+    QVERIFY2(r.first, qPrintable(r.second));
+    const QJsonObject n4 = out.value(QStringLiteral("4")).toObject();
+    QCOMPARE(n4.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("ckpt_name")).toString(),
+             QStringLiteral("model.safetensors"));
+    const QJsonObject n6 = out.value(QStringLiteral("6")).toObject();
+    const QJsonObject in6 = n6.value(QStringLiteral("inputs")).toObject();
+    const QJsonArray clipRef = in6.value(QStringLiteral("clip")).toArray();
+    QCOMPARE(clipRef.size(), 2);
+    QCOMPARE(clipRef.at(0).toString(), QStringLiteral("4"));
+    QCOMPARE(clipRef.at(1).toInt(), 1);
+    QCOMPARE(in6.value(QStringLiteral("text")).toString(), QStringLiteral("a cat"));
+}
+
+void ComfyUIRemoteDockTest::testCompositeControlImageOntoExtent()
+{
+    QImage small(2, 2, QImage::Format_ARGB32);
+    small.fill(Qt::white);
+    const QImage out =
+        ComfyUIUtils::compositeControlImageOntoExtent(small, QSize(8, 8), QRect(3, 3, 2, 2));
+    QCOMPARE(out.size(), QSize(8, 8));
+    QCOMPARE(out.pixel(0, 0), qRgb(0, 0, 0));
+    QVERIFY(out.pixel(3, 3) != qRgb(0, 0, 0));
+    const QImage passthrough = ComfyUIUtils::compositeControlImageOntoExtent(small, QSize(2, 2), QRect(0, 0, 2, 2));
+    QCOMPARE(passthrough.size(), QSize(2, 2));
+}
+
+void ComfyUIRemoteDockTest::testKritaIconNameForThemeStem()
+{
+    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-generation")), QStringLiteral("tools-wizard"));
+    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-active")), QStringLiteral("run-build"));
+    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("star")), QStringLiteral("rating"));
+    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("not-a-real-theme-stem-xyz")),
+             QStringLiteral("applications-graphics"));
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

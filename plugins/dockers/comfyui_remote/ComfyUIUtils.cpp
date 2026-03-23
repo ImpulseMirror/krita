@@ -33,8 +33,13 @@
 #include <QPoint>
 #include <QRect>
 #include <QSize>
+#include <QPainter>
 #include <thread>
 #include <KoColorConversionTransformation.h>
+
+#ifdef COMFYUI_HAVE_KARCHIVE
+#include <KZip>
+#endif
 
 #include <kis_image.h>
 #include <kis_annotation.h>
@@ -42,6 +47,7 @@
 #include <kis_selection.h>
 #include <kis_paint_device.h>
 #include <kis_layer.h>
+#include <kis_mask.h>
 #include <kis_paint_layer.h>
 #include <KoColorSpaceRegistry.h>
 #include <KoColorProfile.h>
@@ -120,6 +126,8 @@ DocumentUiJsonLoadOutcome loadDocumentUiJsonWithMeta(KisImageSP image)
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(ann->annotation(), &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        out.parseFailed = true;
+        out.parseError = (err.error != QJsonParseError::NoError) ? err.errorString() : QStringLiteral("JSON root is not an object");
         return out;
     }
     QJsonObject o = doc.object();
@@ -333,6 +341,125 @@ void applyPerformancePreferencesToWorkflow(QJsonObject &workflow)
 {
     applyTiledVaePreferenceToWorkflow(workflow);
     applyDynamicCachingPreferenceToWorkflow(workflow);
+}
+
+QJsonObject buildControlImageWorkflow(const QString &inputImageName,
+                                      const QString &controlMode,
+                                      int resolution,
+                                      bool invertOutput)
+{
+    const QString mode = controlMode.trimmed().toLower();
+    QString preprocessor;
+    QJsonObject preInputs;
+    bool useScribbleSecondStage = false;
+    if (mode == QLatin1String("hands")) {
+        preprocessor = QStringLiteral("MeshGraphormer-DepthMapPreprocessor");
+        preInputs.insert(QStringLiteral("mask_type"), QStringLiteral("based_on_depth"));
+        preInputs.insert(QStringLiteral("rand_seed"), 0);
+    } else if (mode == QLatin1String("scribble")) {
+        preprocessor = QStringLiteral("PiDiNetPreprocessor");
+        preInputs.insert(QStringLiteral("safe"), QStringLiteral("enable"));
+        useScribbleSecondStage = true;
+    } else if (mode == QLatin1String("line_art")) {
+        preprocessor = QStringLiteral("LineArtPreprocessor");
+        preInputs.insert(QStringLiteral("coarse"), QStringLiteral("disable"));
+    } else if (mode == QLatin1String("soft_edge")) {
+        preprocessor = QStringLiteral("AnyLineArtPreprocessor_aux");
+        preInputs.insert(QStringLiteral("merge_with_lineart"), QStringLiteral("lineart_standard"));
+        preInputs.insert(QStringLiteral("lineart_lower_bound"), 0);
+        preInputs.insert(QStringLiteral("lineart_upper_bound"), 1);
+        preInputs.insert(QStringLiteral("object_min_size"), 36);
+        preInputs.insert(QStringLiteral("object_connectivity"), 1);
+    } else if (mode == QLatin1String("canny_edge")) {
+        preprocessor = QStringLiteral("CannyEdgePreprocessor");
+        preInputs.insert(QStringLiteral("low_threshold"), 80);
+        preInputs.insert(QStringLiteral("high_threshold"), 200);
+    } else if (mode == QLatin1String("depth")) {
+        preprocessor = QStringLiteral("DepthAnythingV2Preprocessor");
+        preInputs.insert(QStringLiteral("ckpt_name"), QStringLiteral("depth_anything_v2_vitb.pth"));
+    } else if (mode == QLatin1String("normal")) {
+        preprocessor = QStringLiteral("BAE-NormalMapPreprocessor");
+    } else if (mode == QLatin1String("pose")) {
+        preprocessor = QStringLiteral("DWPreprocessor");
+        preInputs.insert(QStringLiteral("detect_hand"), QStringLiteral("enable"));
+        preInputs.insert(QStringLiteral("detect_body"), QStringLiteral("enable"));
+        preInputs.insert(QStringLiteral("detect_face"), QStringLiteral("enable"));
+        preInputs.insert(QStringLiteral("bbox_detector"), QStringLiteral("yolox_l.onnx"));
+        preInputs.insert(QStringLiteral("pose_estimator"), QStringLiteral("dw-ll_ucoco_384_bs5.torchscript.pt"));
+    } else if (mode == QLatin1String("segmentation")) {
+        preprocessor = QStringLiteral("OneFormer-COCO-SemSegPreprocessor");
+    } else {
+        return QJsonObject();
+    }
+
+    // §13.53: \p resolution = shortest side of extent; normalize to 64-multiple; non-hands ≥512.
+    int res = qMax(64, resolution);
+    res = ((res + 63) / 64) * 64;
+    if (mode != QLatin1String("hands")) {
+        res = qMax(512, res);
+    }
+    preInputs.insert(QStringLiteral("image"), QJsonArray{QStringLiteral("1"), 0});
+    preInputs.insert(QStringLiteral("resolution"), res);
+
+    QJsonObject workflow;
+    workflow.insert(QStringLiteral("1"),
+                    QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoadImage")},
+                                {QStringLiteral("inputs"), QJsonObject{{QStringLiteral("image"), inputImageName}}}});
+    workflow.insert(QStringLiteral("2"),
+                    QJsonObject{{QStringLiteral("class_type"), preprocessor},
+                                {QStringLiteral("inputs"), preInputs}});
+    QString sourceNode = QStringLiteral("2");
+    if (useScribbleSecondStage) {
+        workflow.insert(QStringLiteral("3"),
+                        QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ScribblePreprocessor")},
+                                    {QStringLiteral("inputs"), QJsonObject{
+                                                                      {QStringLiteral("image"), QJsonArray{QStringLiteral("2"), 0}},
+                                                                      {QStringLiteral("resolution"), res},
+                                                                  }}});
+        sourceNode = QStringLiteral("3");
+    }
+    const bool shouldInvert = invertOutput || isControlModeLines(mode);
+    if (shouldInvert) {
+        workflow.insert(QStringLiteral("4"),
+                        QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageInvert")},
+                                    {QStringLiteral("inputs"), QJsonObject{{QStringLiteral("image"), QJsonArray{sourceNode, 0}}}}});
+        sourceNode = QStringLiteral("4");
+    }
+    workflow.insert(QStringLiteral("9"),
+                    QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")},
+                                {QStringLiteral("inputs"), QJsonObject{{QStringLiteral("filename_prefix"), QStringLiteral("ComfyUI_control")},
+                                                                       {QStringLiteral("images"), QJsonArray{sourceNode, 0}}}}});
+    return workflow;
+}
+
+bool isControlModeLines(const QString &controlMode)
+{
+    const QString m = controlMode.trimmed().toLower();
+    return m == QLatin1String("scribble")
+        || m == QLatin1String("line_art")
+        || m == QLatin1String("soft_edge")
+        || m == QLatin1String("canny_edge");
+}
+
+QImage compositeControlImageOntoExtent(const QImage &processedCrop,
+                                       const QSize &fullExtentSize,
+                                       const QRect &cropInExtentCoords)
+{
+    if (processedCrop.isNull() || !fullExtentSize.isValid() || fullExtentSize.width() <= 0
+        || fullExtentSize.height() <= 0)
+        return processedCrop;
+    if (!cropInExtentCoords.isValid())
+        return processedCrop;
+    const QRect fullRect(QPoint(0, 0), fullExtentSize);
+    if (cropInExtentCoords == fullRect)
+        return processedCrop;
+    QImage out(fullExtentSize.width(), fullExtentSize.height(), QImage::Format_ARGB32);
+    out.fill(Qt::black);
+    const QImage patch =
+        processedCrop.scaled(cropInExtentCoords.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QPainter painter(&out);
+    painter.drawImage(cropInExtentCoords.topLeft(), patch);
+    return out;
 }
 
 void applyUpscaleRefineVaedecodeTiling(QJsonObject &workflow,
@@ -721,6 +848,26 @@ QString pluginVersion()
     return QStringLiteral("1.0.0");
 }
 
+QString intersticeApiBaseUrl()
+{
+    QString base = QString::fromUtf8(qgetenv("INTERSTICE_URL")).trimmed();
+    if (base.isEmpty())
+        return QStringLiteral("https://api.interstice.cloud");
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    return base;
+}
+
+QString intersticeWebBaseUrl()
+{
+    QString base = QString::fromUtf8(qgetenv("INTERSTICE_WEB_URL")).trimmed();
+    if (base.isEmpty())
+        return QStringLiteral("https://www.interstice.cloud");
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    return base;
+}
+
 // §13.191: Same contract and message format as document.check_color_mode()
 std::pair<bool, QString> checkColorMode(KisImageSP image)
 {
@@ -729,10 +876,12 @@ std::pair<bool, QString> checkColorMode(KisImageSP image)
     }
     const KoColorSpace *cs = image->colorSpace();
     if (cs->colorModelId() != RGBAColorModelID) {
-        return {false, i18n("Incompatible document: Color model must be RGB/Alpha (current model: %1).", cs->colorModelId().name())};
+        return {false,
+                i18n("Incompatible document: Color model must be RGB/Alpha (current model: %1)", cs->colorModelId().name())};
     }
     if (cs->colorDepthId() != Integer8BitsColorDepthID) {
-        return {false, i18n("Incompatible document: Color depth must be 8-bit integer (current depth: %1).", cs->colorDepthId().name())};
+        return {false,
+                i18n("Incompatible document: Color depth must be 8-bit integer (current depth: %1)", cs->colorDepthId().name())};
     }
     return {true, QString()};
 }
@@ -1492,6 +1641,118 @@ QString sanitizePrompt(const QString &prompt)
     return out.trimmed().isEmpty() ? QStringLiteral("no prompt") : out.trimmed();
 }
 
+QString kritaIconNameForThemeStem(const QString &stem)
+{
+    static const QHash<QString, QString> map = [] {
+        QHash<QString, QString> h;
+        static const struct {
+            const char *stem;
+            const char *kritaIcon;
+        } rows[] = {
+            {"workspace-generation", "tools-wizard"},
+            {"workspace-upscaling", "view-zoom"},
+            {"workspace-live", "view-refresh"},
+            {"workspace-animation", "video-x-generic"},
+            {"workspace-custom", "project-development-open"},
+            {"apply", "dialog-ok"},
+            {"apply-layer", "document-edit"},
+            {"cancel", "dialog-cancel"},
+            {"generate", "tools-wizard"},
+            {"refine", "transform-scale"},
+            {"refine-region", "transform-crop"},
+            {"random", "random"},
+            {"seed", "random"},
+            {"settings", "configure"},
+            {"save", "document-save"},
+            {"discard", "edit-delete"},
+            {"upload", "upload"},
+            {"import", "document-import"},
+            {"reset", "view-refresh"},
+            {"remove", "list-remove"},
+            {"filter", "view-filter"},
+            {"more", "overflow-menu"},
+            {"queue-active", "run-build"},
+            {"queue-inactive", "dialog-ok"},
+            {"queue-upload", "network-transmit-receive"},
+            {"queue-waiting", "chronometer"},
+            {"play", "media-playback-start"},
+            {"pause", "media-playback-pause"},
+            {"record", "media-record"},
+            {"record-active", "media-record"},
+            {"region-add", "list-add"},
+            {"region-prompt", "insert-text"},
+            {"region-alpha", "draw-freehand"},
+            {"region-alpha-active", "format-stroke-color"},
+            {"root", "folder"},
+            {"context", "edit-paste"},
+            {"context-automatic", "system-run"},
+            {"context-mask", "path-mask-edit"},
+            {"context-layer", "layer-visible-on"},
+            {"context-image", "image-x-generic"},
+            {"fill", "fill-color"},
+            {"fill-empty", "draw-eraser"},
+            {"inpaint-automatic", "tools-wizard"},
+            {"inpaint-fill", "fill-color"},
+            {"inpaint-expand", "transform-scale"},
+            {"inpaint-add_object", "list-add"},
+            {"inpaint-remove_object", "list-remove"},
+            {"inpaint-replace_background", "view-preview"},
+            {"inpaint-custom", "preferences-desktop-color"},
+            {"control-add", "list-add"},
+            {"control-generate", "tools-wizard"},
+            {"add-pose", "edit-image"},
+            {"control-reference", "link"},
+            {"control-style", "color-picker-black"},
+            {"control-composition", "view-grid"},
+            {"control-face", "im-user"},
+            {"control-inpaint", "draw-brush"},
+            {"control-universal", "applications-graphics"},
+            {"control-scribble", "draw-freehand"},
+            {"control-line_art", "draw-line"},
+            {"control-soft_edge", "blur"},
+            {"control-canny_edge", "path-shape"},
+            {"control-depth", "view-media-visualization"},
+            {"control-normal", "map-flat"},
+            {"control-pose", "edit-image"},
+            {"control-segmentation", "select-rectangular"},
+            {"control-hands", "preferences-desktop-peripherals"},
+            {"control-blur", "blur"},
+            {"control-stencil", "draw-brush"},
+            {"link", "link"},
+            {"link-active", "link"},
+            {"link-off", "link-off"},
+            {"link-disabled", "link-off"},
+            {"warning", "dialog-warning"},
+            {"alert", "dialog-warning"},
+            {"interstice", "internet-web-browser"},
+            {"resolution-multiplier", "zoom-original"},
+            {"file-json", "text-x-ldif"},
+            {"file-kra", "application-x-krita"},
+            {"web-connection", "network-connect"},
+            {"comfyui", "applications-graphics"},
+            {"star", "rating"},
+            {"logo-128", "view-preview"},
+            {"sd-version-15", "applications-graphics"},
+            {"sd-version-xl", "applications-graphics"},
+            {"sd-version-3", "applications-graphics"},
+            {"sd-version-flux", "applications-graphics"},
+            {"sd-version-flux-k", "applications-graphics"},
+            {"sd-version-flux-2", "applications-graphics"},
+            {"sd-version-illu", "applications-graphics"},
+            {"sd-version-illu-v", "applications-graphics"},
+            {"sd-version-chroma", "applications-graphics"},
+            {"sd-version-qwen", "applications-graphics"},
+            {"sd-version-z-image", "applications-graphics"},
+        };
+        for (const auto &r : rows) {
+            h.insert(QString::fromLatin1(r.stem), QString::fromLatin1(r.kritaIcon));
+        }
+        return h;
+    }();
+    const QString v = map.value(stem);
+    return v.isEmpty() ? QStringLiteral("applications-graphics") : v;
+}
+
 QString formatSaveImageFileName(const QString &templateStr, const QString &documentName, const QString &jobTimestamp,
                                 int jobIndex1Based, const QString &promptTrimmed)
 {
@@ -1654,6 +1915,327 @@ QByteArray stripJsonLineComments(QByteArray data)
             out.append(line);
     }
     return out.join('\n');
+}
+
+namespace
+{
+struct LinkEntry {
+    int id = -1;
+    int fromNode = -1;
+    int fromSlot = -1;
+    int toNode = -1;
+    int toSlot = -1;
+};
+
+int jsonIntFlexible(const QJsonValue &v)
+{
+    if (v.isDouble())
+        return static_cast<int>(v.toDouble());
+    if (v.isString())
+        return v.toString().toInt();
+    return v.toInt();
+}
+
+bool isWidgetTypeTag(const QString &t)
+{
+    return t == QStringLiteral("INT") || t == QStringLiteral("FLOAT") || t == QStringLiteral("BOOLEAN")
+        || t == QStringLiteral("BOOL") || t == QStringLiteral("STRING") || t == QStringLiteral("COMBO")
+        || t == QStringLiteral("LIST");
+}
+
+bool isConnectionInputSpec(const QJsonValue &specVal)
+{
+    if (!specVal.isArray())
+        return false;
+    const QJsonArray a = specVal.toArray();
+    if (a.isEmpty())
+        return false;
+    return !isWidgetTypeTag(a.at(0).toString());
+}
+
+bool uiInputHasLink(const QJsonObject &inObj)
+{
+    if (!inObj.contains(QStringLiteral("link")))
+        return false;
+    const QJsonValue v = inObj.value(QStringLiteral("link"));
+    if (v.isNull() || v.isUndefined())
+        return false;
+    if (v.isBool())
+        return false;
+    if (v.isDouble())
+        return v.toDouble() != 0.0;
+    if (v.isString()) {
+        const QString s = v.toString().trimmed();
+        return !s.isEmpty() && s != QStringLiteral("null");
+    }
+    return true;
+}
+
+QJsonValue coerceWidgetForSpec(const QJsonValue &w, const QJsonValue &specVal)
+{
+    if (!specVal.isArray())
+        return w;
+    const QJsonArray a = specVal.toArray();
+    if (a.isEmpty())
+        return w;
+    const QString t = a.at(0).toString();
+    if (t == QStringLiteral("INT")) {
+        if (w.isDouble())
+            return static_cast<int>(w.toDouble());
+        if (w.isString())
+            return w.toString().toInt();
+    }
+    return w;
+}
+
+QJsonValue resolveOutputToApi(const QHash<int, QJsonObject> &nodesById,
+                              const QHash<int, LinkEntry> &linksById,
+                              int fromNode,
+                              int fromSlot,
+                              int depth)
+{
+    if (depth > 64)
+        return QJsonValue();
+    const QJsonObject srcNode = nodesById.value(fromNode);
+    if (srcNode.isEmpty())
+        return QJsonValue();
+    const QString stype = srcNode.value(QStringLiteral("type")).toString();
+    if (stype == QStringLiteral("Reroute")) {
+        for (auto it = linksById.constBegin(); it != linksById.constEnd(); ++it) {
+            const LinkEntry &e = it.value();
+            if (e.toNode != fromNode)
+                continue;
+            const QJsonValue r = resolveOutputToApi(nodesById, linksById, e.fromNode, e.fromSlot, depth + 1);
+            if (!r.isNull() && !r.isUndefined())
+                return r;
+        }
+        return QJsonValue();
+    }
+    if (stype == QStringLiteral("PrimitiveNode") || stype.startsWith(QStringLiteral("Primitive"))) {
+        const QJsonArray wv = srcNode.value(QStringLiteral("widgets_values")).toArray();
+        if (!wv.isEmpty())
+            return wv.at(0);
+        return QJsonValue();
+    }
+    QJsonArray ref;
+    ref.append(QString::number(fromNode));
+    ref.append(fromSlot);
+    return ref;
+}
+
+bool parseLinksArray(const QJsonArray &linksArr, QHash<int, LinkEntry> *out)
+{
+    for (const QJsonValue &lv : linksArr) {
+        if (lv.isArray()) {
+            const QJsonArray a = lv.toArray();
+            if (a.size() >= 6) {
+                LinkEntry e;
+                e.id = jsonIntFlexible(a.at(0));
+                e.fromNode = jsonIntFlexible(a.at(1));
+                e.fromSlot = jsonIntFlexible(a.at(2));
+                e.toNode = jsonIntFlexible(a.at(3));
+                e.toSlot = jsonIntFlexible(a.at(4));
+                if (e.id >= 0)
+                    out->insert(e.id, e);
+            } else if (a.size() >= 3) {
+                // §13.101: [link_id, source_node_id, source_output_slot] — target inferred from node inputs
+                LinkEntry e;
+                e.id = jsonIntFlexible(a.at(0));
+                e.fromNode = jsonIntFlexible(a.at(1));
+                e.fromSlot = jsonIntFlexible(a.at(2));
+                e.toNode = -1;
+                e.toSlot = -1;
+                if (e.id >= 0)
+                    out->insert(e.id, e);
+            }
+        } else if (lv.isObject()) {
+            const QJsonObject o = lv.toObject();
+            LinkEntry e;
+            e.id = jsonIntFlexible(o.value(QStringLiteral("id")));
+            e.fromNode = jsonIntFlexible(o.value(QStringLiteral("origin_id")));
+            e.fromSlot = jsonIntFlexible(o.value(QStringLiteral("origin_slot")));
+            e.toNode = jsonIntFlexible(o.value(QStringLiteral("target_id")));
+            e.toSlot = jsonIntFlexible(o.value(QStringLiteral("target_slot")));
+            if (e.id >= 0)
+                out->insert(e.id, e);
+        }
+    }
+    return true;
+}
+
+void enrichLinkTargetsFromNodeInputs(const QHash<int, QJsonObject> &nodesById, QHash<int, LinkEntry> *linksById)
+{
+    for (auto nit = nodesById.constBegin(); nit != nodesById.constEnd(); ++nit) {
+        const int nodeId = nit.key();
+        const QJsonArray uiInputs = nit.value().value(QStringLiteral("inputs")).toArray();
+        for (int i = 0; i < uiInputs.size(); ++i) {
+            const QJsonObject inObj = uiInputs.at(i).toObject();
+            if (!uiInputHasLink(inObj))
+                continue;
+            const int linkId = jsonIntFlexible(inObj.value(QStringLiteral("link")));
+            if (!linksById->contains(linkId))
+                continue;
+            LinkEntry e = linksById->value(linkId);
+            if (e.toNode >= 0)
+                continue;
+            e.toNode = nodeId;
+            e.toSlot = i;
+            linksById->insert(linkId, e);
+        }
+    }
+}
+
+bool shouldSkipUiNodeForApi(const QString &type)
+{
+    return type == QStringLiteral("Note") || type == QStringLiteral("MarkdownNote") || type == QStringLiteral("Reroute")
+        || type == QStringLiteral("PrimitiveNode") || type.startsWith(QStringLiteral("Primitive"));
+}
+
+} // namespace
+
+QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow,
+                                                 const QJsonObject &objectInfoRoot,
+                                                 QJsonObject *outApi)
+{
+    if (!outApi)
+        return qMakePair(false, QString());
+    outApi->clear();
+    if (objectInfoRoot.isEmpty())
+        return qMakePair(false,
+                         i18n("UI workflow conversion needs ComfyUI node definitions (connect and refresh object_info)."));
+
+    const QJsonArray nodesArr = uiWorkflow.value(QStringLiteral("nodes")).toArray();
+    const QJsonArray linksArr = uiWorkflow.value(QStringLiteral("links")).toArray();
+    if (nodesArr.isEmpty())
+        return qMakePair(false, i18n("UI workflow has no nodes."));
+
+    QHash<int, QJsonObject> nodesById;
+    for (const QJsonValue &nv : nodesArr) {
+        if (!nv.isObject())
+            continue;
+        const QJsonObject n = nv.toObject();
+        const int id = jsonIntFlexible(n.value(QStringLiteral("id")));
+        if (id >= 0)
+            nodesById.insert(id, n);
+    }
+
+    QHash<int, LinkEntry> linksById;
+    parseLinksArray(linksArr, &linksById);
+    enrichLinkTargetsFromNodeInputs(nodesById, &linksById);
+
+    for (const QJsonValue &nv : nodesArr) {
+        if (!nv.isObject())
+            continue;
+        const QJsonObject uiNode = nv.toObject();
+        const int nodeId = jsonIntFlexible(uiNode.value(QStringLiteral("id")));
+        const QString classType = uiNode.value(QStringLiteral("type")).toString();
+        if (nodeId < 0 || classType.isEmpty() || shouldSkipUiNodeForApi(classType))
+            continue;
+
+        const QJsonObject nodeDef = objectInfoRoot.value(classType).toObject();
+        const QJsonObject inputWrapper = nodeDef.value(QStringLiteral("input")).toObject();
+        const QJsonObject required = inputWrapper.value(QStringLiteral("required")).toObject();
+        const QJsonObject optional = inputWrapper.value(QStringLiteral("optional")).toObject();
+        if (required.isEmpty() && optional.isEmpty())
+            return qMakePair(false,
+                             i18n("Node type \"%1\" is not in object_info — connect to the matching ComfyUI server.",
+                                  classType));
+
+        const QJsonArray uiInputs = uiNode.value(QStringLiteral("inputs")).toArray();
+        const QJsonArray widgetsValues = uiNode.value(QStringLiteral("widgets_values")).toArray();
+        int widgetIdx = 0;
+        QJsonObject inputs;
+
+        for (int i = 0; i < uiInputs.size(); ++i) {
+            const QJsonObject inObj = uiInputs.at(i).toObject();
+            const QString name = inObj.value(QStringLiteral("name")).toString();
+            if (name.isEmpty())
+                continue;
+            QJsonValue specVal;
+            if (required.contains(name))
+                specVal = required.value(name);
+            else if (optional.contains(name))
+                specVal = optional.value(name);
+            else
+                continue;
+
+            if (uiInputHasLink(inObj)) {
+                const int linkId = jsonIntFlexible(inObj.value(QStringLiteral("link")));
+                if (!linksById.contains(linkId))
+                    return qMakePair(false,
+                                     i18n("Unknown link id %1 on node %2, input \"%3\".", linkId, nodeId, name));
+                const LinkEntry &le = linksById.value(linkId);
+                if (le.toNode >= 0 && le.toNode != nodeId)
+                    return qMakePair(false,
+                                     i18n("Link %1 does not target node %2 (input \"%3\").", linkId, nodeId, name));
+                const QJsonValue resolved =
+                    resolveOutputToApi(nodesById, linksById, le.fromNode, le.fromSlot, 0);
+                if (resolved.isNull() || resolved.isUndefined())
+                    return qMakePair(false,
+                                     i18n("Could not resolve link %1 (node %2, input \"%3\").", linkId, nodeId, name));
+                inputs.insert(name, resolved);
+            } else {
+                if (isConnectionInputSpec(specVal)) {
+                    // Unconnected optional socket — omit
+                    continue;
+                }
+                if (widgetIdx >= widgetsValues.size())
+                    return qMakePair(false,
+                                     i18n("Not enough widget values for node %1 (input \"%2\").", nodeId, name));
+                const QJsonValue w = widgetsValues.at(widgetIdx++);
+                inputs.insert(name, coerceWidgetForSpec(w, specVal));
+            }
+        }
+
+        // ComfyUI often saves nodes with no `inputs` array — only widgets_values in object_info order
+        if (uiInputs.isEmpty() && !widgetsValues.isEmpty()) {
+            int wix = 0;
+            const auto appendWidgetInputs = [&](const QJsonObject &section) {
+                for (auto it = section.begin(); it != section.end(); ++it) {
+                    if (wix >= widgetsValues.size())
+                        return;
+                    const QString key = it.key();
+                    if (inputs.contains(key))
+                        continue;
+                    if (isConnectionInputSpec(it.value()))
+                        continue;
+                    inputs.insert(key, coerceWidgetForSpec(widgetsValues.at(wix++), it.value()));
+                }
+            };
+            appendWidgetInputs(required);
+            appendWidgetInputs(optional);
+        }
+
+        QJsonObject apiNode;
+        apiNode.insert(QStringLiteral("class_type"), classType);
+        apiNode.insert(QStringLiteral("inputs"), inputs);
+        outApi->insert(QString::number(nodeId), apiNode);
+    }
+
+    if (outApi->isEmpty())
+        return qMakePair(false, i18n("No exportable nodes found in UI workflow (after filtering notes/primitives)."));
+    return qMakePair(true, QString());
+}
+
+bool tryResolveCustomWorkflowJsonToApi(QJsonObject *inOut, const QJsonObject &objectInfoRoot, QString *errorOut)
+{
+    if (!inOut)
+        return false;
+    if (!inOut->contains(QStringLiteral("nodes")) || !inOut->contains(QStringLiteral("links")))
+        return true;
+    const QJsonValue nodesV = inOut->value(QStringLiteral("nodes"));
+    const QJsonValue linksV = inOut->value(QStringLiteral("links"));
+    if (!nodesV.isArray() || !linksV.isArray())
+        return true;
+    QJsonObject api;
+    const auto r = convertComfyUiWorkflowUiToApi(*inOut, objectInfoRoot, &api);
+    if (!r.first) {
+        if (errorOut)
+            *errorOut = r.second;
+        return false;
+    }
+    *inOut = api;
+    return true;
 }
 
 void setComfyUIRequestHeaders(QNetworkRequest &req)
@@ -2313,7 +2895,30 @@ QImage getMaskAsQImage(KisImageSP image, KisViewManager *viewManager, const QStr
             if (n->name() == layerName) { foundNode = n; break; }
             for (int i = 0; i < static_cast<int>(n->childCount()); i++) nodes.append(n->at(i));
         }
-        KisLayer *foundLayer = foundNode ? dynamic_cast<KisLayer*>(foundNode.data()) : nullptr;
+        // §13.157: Mask-type nodes (transparency / filter masks) are KisMask, not KisLayer — use projection exactBounds, not full-image bounds
+        if (foundNode) {
+            if (auto *foundMask = dynamic_cast<KisMask *>(foundNode.data())) {
+                KisPaintDeviceSP dev = foundMask->projection();
+                if (!dev) return QImage();
+                QRect rect = dev->exactBounds() & bounds;
+                if (rect.isEmpty()) return QImage();
+                const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
+                QImage rgba = dev->convertToQImage(profile, rect.x(), rect.y(), rect.width(), rect.height(),
+                                                   KoColorConversionTransformation::internalRenderingIntent(),
+                                                   KoColorConversionTransformation::internalConversionFlags());
+                if (rgba.isNull()) return QImage();
+                for (int y = 0; y < rgba.height(); y++) {
+                    for (int x = 0; x < rgba.width(); x++) {
+                        const QRgb px = rgba.pixel(x, y);
+                        int v = qAlpha(px);
+                        if (v == 0) v = qGray(px);
+                        maskImage.setPixel(rect.x() + x, rect.y() + y, qRgb(v, v, v));
+                    }
+                }
+                return maskImage;
+            }
+        }
+        KisLayer *foundLayer = foundNode ? dynamic_cast<KisLayer *>(foundNode.data()) : nullptr;
         if (!foundLayer || !foundLayer->projection()) return QImage();
         const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
         QImage rgba = foundLayer->projection()->convertToQImage(profile, bounds,
@@ -2441,7 +3046,7 @@ QString collectDiagnostics(const QString &pluginVersion, bool redactUser, const 
 QString createImgMetadata(const QString &prompt, const QString &negative, int steps, double cfg, qint64 seed,
                           int width, int height, int strength, const QString &samplerName, const QString &checkpoint)
 {
-    // §13.36: A1111-style "parameters" for PNG tEXt chunk (readable by A1111, external tools)
+    // §13.36: A1111-style "parameters" for PNG tEXt chunk (positive includes <lora:name:weight> from library when caller merges)
     QString s = prompt;
     if (!negative.isEmpty()) {
         s += QStringLiteral("\nNegative prompt: ");
@@ -2458,6 +3063,41 @@ QString createImgMetadata(const QString &prompt, const QString &negative, int st
         s += QStringLiteral(", Model: %1").arg(checkpoint);
     }
     return s;
+}
+
+bool ComfyUIUtils::extractZipToDirectory(const QString &zipPath, const QString &destDir, QString *errorOut)
+{
+#ifdef COMFYUI_HAVE_KARCHIVE
+    KZip zip(zipPath);
+    if (!zip.open(QIODevice::ReadOnly)) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Could not open update package.");
+        return false;
+    }
+    const KArchiveDirectory *root = zip.directory();
+    if (!root) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Update package is empty or corrupt.");
+        return false;
+    }
+    if (!QDir().mkpath(destDir)) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Could not create extract folder.");
+        return false;
+    }
+    if (!root->copyTo(destDir, true)) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Could not extract update package.");
+        return false;
+    }
+    return true;
+#else
+    Q_UNUSED(zipPath);
+    Q_UNUSED(destDir);
+    if (errorOut)
+        *errorOut = QStringLiteral("ZIP extraction not available in this build.");
+    return false;
+#endif
 }
 
 // §13.215: Tag CSV — columns tag, type, count, aliases; returns tag column for autocomplete

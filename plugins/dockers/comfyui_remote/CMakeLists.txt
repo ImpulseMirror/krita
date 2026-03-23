@@ -2,6 +2,8 @@ add_subdirectory(tests)
 
 # Static lib for dock (used by plugin and tests)
 set(kritacomfyuiremote_static_SOURCES
+    ComfyUIIntervalSlider.cpp
+    ComfyUIPoseLayers.cpp
     ComfyUIUtils.cpp
     ComfyUIWorkflows.cpp
     ComfyUIRemoteDock.cpp
@@ -18,6 +20,13 @@ set(kritacomfyuiremote_static_SOURCES
 )
 kis_add_library(kritacomfyuiremote_static STATIC ${kritacomfyuiremote_static_SOURCES})
 target_link_libraries(kritacomfyuiremote_static kritaimage kritaui)
+
+# §13.37: optional ZIP extract after verified download (KF Archive)
+find_package(KF${KF_MAJOR} ${MIN_FRAMEWORKS_VERSION} QUIET COMPONENTS Archive)
+if(KF${KF_MAJOR}Archive_FOUND)
+    target_link_libraries(kritacomfyuiremote_static PRIVATE KF${KF_MAJOR}::Archive)
+    target_compile_definitions(kritacomfyuiremote_static PRIVATE COMFYUI_HAVE_KARCHIVE=1)
+endif()
 
 # §13.170: Optional Qt WebSockets for ETN workflow_published (same client_id as prompt API)
 set(_comfy_ws_libs "")

@@ -9,6 +9,7 @@
 #include "ComfyUIRemoteDock.h"
 
 #include <QPointer>
+#include <QScopedPointer>
 #include <QMap>
 #include <QSet>
 #include <QLineEdit>
@@ -23,7 +24,11 @@
 #include <QTimer>
 #include <QListWidget>
 #include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QTemporaryFile>
 #include <QUrl>
+#include <QRect>
+#include <QSize>
 #include <QJsonObject>
 #include <QVariant>
 #include <QDialog>
@@ -35,6 +40,8 @@
 #include <QRadioButton>
 #include <QStackedWidget>
 #include <QWidget>
+
+class ComfyUIIntervalSlider;
 #include <QRect>
 #include <QImage>
 #include <QVector>
@@ -94,6 +101,8 @@ struct ComfyUIRemoteDock::Private
     QSpinBox *spinBatchCount = nullptr;
     QLabel *labelQueueCount = nullptr;
     QPushButton *btnTest = nullptr;
+    /// §13.81: one-shot probe when ServerMode is undefined (settings URL then 127.0.0.1:8000)
+    bool autostartServerProbeDone = false;
     QPushButton *btnGenerate = nullptr;
     QPushButton *btnCancelQueue = nullptr;
     QPushButton *btnInpaint = nullptr;
@@ -107,6 +116,7 @@ struct ComfyUIRemoteDock::Private
     bool inpaintPersistUsePromptFocus = false; // §13.194: use_prompt_focus
     QSet<QString> documentDefaultsAppliedDocIds; // §13.194: apply document_defaults once per document id
     QSet<QString> warnedFutureUiJsonVersionDocIds; // §13.199: one user-visible warning per document_id
+    QSet<QString> warnedUiJsonParseFailDocIds;     // §13.140: one parse-failure dialog per document_id
     QTimer *documentDefaultsSaveTimer = nullptr; // debounce persist (checkpoint text edits)
     QPushButton *btnUpscale = nullptr;
     QSpinBox *spinAnimationFrames = nullptr;
@@ -233,7 +243,9 @@ struct ComfyUIRemoteDock::Private
     QStringList batchCollectIds;
     int batchSubmitIndex = 0;
     int batchCountTarget = 0;
-    qint64 batchBaseSeed = 0;    // §13.212: base seed for batch (seed_i = batchBaseSeed + i * batchCountTarget)
+    /// §13.212: performance batch_size (seed_i = batchBaseSeed + i * batchSeedStep), not capped job count
+    int batchSeedStep = 1;
+    qint64 batchBaseSeed = 0;
     // §13.45 / §13.74: Full Animation batch — each prompt_id writes .animation/frame-{time}.png; import at playback start
     bool isFullAnimationBatch = false;
     QMap<QString, int> animationBatchPromptIdToIndex;  // prompt_id → timeline frame index (filename)
@@ -322,9 +334,15 @@ struct ComfyUIRemoteDock::Private
     int stylesTabLoraFilterMode = 0; // 0 = All, 1 = On server, 2 = Not on server (§4.5)
     QString comfyDeviceSummary;               // Last formatted line from system_stats (after Connect)
     QJsonObject lastComfySystemStats;         // §13.17: Parsed GET /system_stats body (empty if disconnected / failed)
+    /// §13.101 / §13.123: Last GET /object_info root (empty until a successful fetch) — UI workflow → API conversion
+    QJsonObject lastObjectInfoRoot;
 
     // Queue popup button (jobs, batch, seed, enqueue mode, cancel)
     QToolButton *btnQueuePopup = nullptr;
+    /// §5.7 / §13.92: Queue button on Generate + Animation; batch/enqueue rows hidden when not supports_batch.
+    QWidget *queueButtonRowWidget = nullptr;
+    QWidget *queueBatchOptionsRow = nullptr;
+    QWidget *queueEnqueueModeRow = nullptr;
     QWidget *queueResolutionRow = nullptr; // §13.213: Resolution slider row (visible when perf preset = custom)
     QSlider *sliderResolutionMultiplier = nullptr;
     QLabel *labelResolutionMultiplier = nullptr;
@@ -334,6 +352,22 @@ struct ComfyUIRemoteDock::Private
     QGroupBox *genGroupBox = nullptr;
     QGroupBox *histGroupBox = nullptr;
     QGroupBox *regionsGroupBox = nullptr;
+    /// §13.49 / §13.53: Control timing range + server-side preprocessor preview (Generate workspace)
+    QGroupBox *controlPreviewGroupBox = nullptr;
+    QComboBox *comboControlPreviewMode = nullptr;
+    ComfyUIIntervalSlider *controlPreviewRangeSlider = nullptr;
+    QPushButton *btnControlPreviewRun = nullptr;
+    /// §13.98: Add default pose skeleton to active vector layer (Pose.create_default extent + people_count)
+    QSpinBox *spinPoseGuidePeopleCount = nullptr;
+    QPushButton *btnAddPoseGuide = nullptr;
+    QLabel *labelControlPreviewImage = nullptr;
+    QTimer *controlPreviewPollTimer = nullptr;
+    QString controlPreviewPromptId;
+    int controlPreviewPollCount = 0;
+    /// §13.53 hands: after server returns crop output, composite onto full canvas extent for preview
+    bool controlPreviewHandsCompositeBack = false;
+    QRect controlPreviewCompositeLocalRect;
+    QSize controlPreviewCompositeFullSize;
     QWidget *genContentContainer = nullptr;   // Generate view content (prompt, params, buttons)
     QWidget *graphPlaceholderWidget = nullptr; // Graph workspace: "Open Settings" placeholder
 
@@ -342,12 +376,34 @@ struct ComfyUIRemoteDock::Private
     QWidget *welcomePage = nullptr;
     // §13.190: Welcome layout order — AutoUpdateWidget, NewsWidget, ConnectionWidget (at most one visible)
     QWidget *welcomeUpdateWidget = nullptr;   // §13.37: visible when update available
+    QLabel *welcomeUpdateTitleLabel = nullptr;
+    QLabel *welcomeUpdateVersionLabel = nullptr; // §5.2: version text below headline when update available
+    QProgressBar *welcomeUpdateProgressBar = nullptr;
+    QCheckBox *welcomeCheckAutoUpdate = nullptr; // §5.2: same setting as Plugin tab (auto_update)
+    QPushButton *welcomeUpdateButton = nullptr;
     QWidget *welcomeNewsWidget = nullptr;     // §13.38: visible when client has news and digest ≠ last_news
     QLabel *welcomeNewsLabel = nullptr;       // §13.38: shows news.text (set when fetch returns)
     QWidget *welcomeConnectionWidget = nullptr;  // status + error + Configure
-    bool hasUpdateAvailable = false;          // §13.37: set when update check reports available
-    QString updateDownloadUrl;                // §13.160: url from plugin/latest response (for Download and Install)
-    bool updateCheckRequested = false;        // §13.37: avoid duplicate update checks per session
+    /// §13.37 UpdateState — unknown, checking, latest, available, failed_check, downloading, installing, restart_required, failed_update
+    enum class PluginUpdateState {
+        Unknown,
+        Checking,
+        Latest,
+        Available,
+        FailedCheck,
+        Downloading,
+        Installing,
+        RestartRequired,
+        FailedUpdate,
+    };
+    PluginUpdateState pluginUpdateState = PluginUpdateState::Unknown;
+    QString updateDownloadUrl;                // §13.160: url from plugin/latest response
+    QString updatePackageSha256;              // §13.160: required when a newer version is advertised
+    QString updateRemoteVersion;              // §13.160: server "version" when an update exists
+    QString updateExtractPath;                // folder with extracted/saved package (restart message)
+    QPointer<QNetworkReply> pluginUpdateDownloadReply;
+    QScopedPointer<QTemporaryFile> pluginUpdateSaveFile;
+    bool updateCheckRequested = false;        // §13.37: avoid duplicate auto update checks per session
     bool updateCheckInProgress = false;      // §13.37: true while GET plugin/latest is in flight (show "Checking for updates...")
     /// §4.9 Plugin tab: last successful plugin/latest "version" string (empty until first successful check).
     QString lastReportedLatestPluginVersion;
@@ -369,6 +425,8 @@ struct ComfyUIRemoteDock::Private
     QPointer<QStackedWidget> connectionStack;       // 0 = initial setup, 1 = mode selector + panels
     QPointer<QStackedWidget> innerConnectionStack;  // 0 = cloud, 1 = managed, 2 = custom (external)
     QButtonGroup *connectionModeGroup = nullptr;   // 3 options: Online Service, Local Managed Server, Custom ComfyUI
+    /// §13.89: Cloud panel — auth_missing when access_token empty (Online Service not fully implemented in this build)
+    QLabel *labelCloudAuthStatus = nullptr;
 };
 
 // §13.125: active_regions — edit_regions when Generate workspace + Edit mode, else root regions.
