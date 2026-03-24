@@ -14,6 +14,7 @@
 #include <algorithm>
 
 #include <commands/KoShapeCreateCommand.h>
+#include <KoShapeControllerBase.h>
 #include <KoShapeContainer.h>
 #include <kis_image.h>
 #include <kis_layer_utils.h>

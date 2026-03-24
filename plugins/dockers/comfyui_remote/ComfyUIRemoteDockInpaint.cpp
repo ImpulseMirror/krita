@@ -22,6 +22,7 @@
 
 #include <klocalizedstring.h>
 #include <KisViewManager.h>
+#include <kis_image_manager.h>
 #include <kis_selection.h>
 
 void ComfyUIRemoteDock::slotInpaint()

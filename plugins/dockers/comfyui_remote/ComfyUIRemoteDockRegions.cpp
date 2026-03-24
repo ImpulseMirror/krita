@@ -33,6 +33,7 @@
 #include <KSharedConfig>
 #include <KConfigGroup>
 #include <KisViewManager.h>
+#include <kis_image_manager.h>
 #include <kis_types.h>
 #include <kis_layer.h>
 #include <kis_group_layer.h>
@@ -42,7 +43,7 @@
 
 void ComfyUIRemoteDock::slotAddRegion()
 {
-    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d);
+    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
     QStringList maskSources;
     maskSources << "selection";
     QString createdLayerName;  // §13.207: if we create a layer/group, use it as default mask source
@@ -98,7 +99,7 @@ void ComfyUIRemoteDock::slotAddRegion()
         comboMask->addItem(s, s);
     }
     if (!createdLayerName.isEmpty())
-        comboMask->setCurrentIndex(comboMask->findData("layer:" + createdLayerName));
+        comboMask->setCurrentIndex(comboMask->findData(QVariant(QStringLiteral("layer:") + createdLayerName)));
     form->addRow(i18n("Name:"), editName);
     form->addRow(i18n("Prompt:"), editPrompt);
     form->addRow(i18n("Mask source:"), comboMask);
@@ -119,7 +120,7 @@ void ComfyUIRemoteDock::slotAddRegion()
 
 void ComfyUIRemoteDock::slotRemoveRegion()
 {
-    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d);
+    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
     int row = m_d->listRegions->currentRow();
     if (row < 0 || row >= regs.size()) return;
     QString name = regs.at(row).name;
@@ -131,7 +132,7 @@ void ComfyUIRemoteDock::slotRemoveRegion()
 
 void ComfyUIRemoteDock::slotMoveRegionUp()
 {
-    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d);
+    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
     int row = m_d->listRegions->currentRow();
     if (row <= 0 || row >= regs.size()) return;
     regs.move(row, row - 1);
@@ -142,7 +143,7 @@ void ComfyUIRemoteDock::slotMoveRegionUp()
 
 void ComfyUIRemoteDock::slotMoveRegionDown()
 {
-    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d);
+    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
     int row = m_d->listRegions->currentRow();
     if (row < 0 || row >= regs.size() - 1) return;
     regs.move(row, row + 1);
@@ -153,7 +154,7 @@ void ComfyUIRemoteDock::slotMoveRegionDown()
 
 void ComfyUIRemoteDock::slotEditRegion()
 {
-    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d);
+    QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
     int row = m_d->listRegions->currentRow();
     if (row < 0 || row >= regs.size()) return;
     QStringList maskSources;
@@ -205,7 +206,7 @@ void ComfyUIRemoteDock::slotEditRegion()
 
 void ComfyUIRemoteDock::slotGenerateRegions()
 {
-    if (comfyActiveRegionEntries(m_d).isEmpty()) {
+    if (comfyActiveRegionEntries(m_d.data()).isEmpty()) {
         setStatusMessage(i18n("Add at least one region (name, prompt, mask source)."), true);
         return;
     }
@@ -236,7 +237,7 @@ void ComfyUIRemoteDock::slotGenerateRegions()
         return;
     }
     m_d->regionCurrentImage = m_d->regionCurrentImage.convertToFormat(QImage::Format_ARGB32);
-    m_d->regionGenerationSnapshot = comfyActiveRegionEntries(m_d);
+    m_d->regionGenerationSnapshot = comfyActiveRegionEntries(m_d.data());
     m_d->regionJobId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_d->regionIndex = 0;
     m_d->regionUploadedImageName.clear();

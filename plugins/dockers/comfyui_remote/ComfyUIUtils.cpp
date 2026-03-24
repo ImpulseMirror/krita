@@ -44,6 +44,7 @@
 #include <kis_image.h>
 #include <kis_annotation.h>
 #include <kis_node.h>
+#include <kis_group_layer.h>
 #include <kis_selection.h>
 #include <kis_paint_device.h>
 #include <kis_layer.h>
@@ -2099,7 +2100,7 @@ QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow
 {
     if (!outApi)
         return qMakePair(false, QString());
-    outApi->clear();
+    *outApi = QJsonObject();
     if (objectInfoRoot.isEmpty())
         return qMakePair(false,
                          i18n("UI workflow conversion needs ComfyUI node definitions (connect and refresh object_info)."));
@@ -2599,7 +2600,7 @@ QString paintLayerNameByUuid(KisImageSP image, const QString &uuidWithoutBraces)
 {
     if (!image || uuidWithoutBraces.isEmpty())
         return QString();
-    KisNodeSP root = image->rootLayer();
+    KisGroupLayerSP root = image->rootLayer();
     if (!root)
         return QString();
     QList<KisNodeSP> nodes;
@@ -2610,8 +2611,8 @@ QString paintLayerNameByUuid(KisImageSP image, const QString &uuidWithoutBraces)
             && n->uuid().toString(QUuid::WithoutBraces) == uuidWithoutBraces) {
             return n->name();
         }
-        for (int i = 0; i < n->childCount(); ++i)
-            nodes.append(n->child(i));
+        for (quint32 i = 0; i < n->childCount(); ++i)
+            nodes.append(n->at(i));
     }
     return QString();
 }

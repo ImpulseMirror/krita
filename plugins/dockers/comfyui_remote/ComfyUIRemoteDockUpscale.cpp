@@ -21,6 +21,7 @@
 #include <QUuid>
 
 #include <klocalizedstring.h>
+#include <kis_image_manager.h>
 
 void ComfyUIRemoteDock::slotUpscale()
 {

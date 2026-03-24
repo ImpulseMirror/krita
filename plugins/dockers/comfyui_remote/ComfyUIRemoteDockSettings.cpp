@@ -145,13 +145,13 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         };
 
         QPushButton *btnOnlineService = new QPushButton(i18n("Online Service — Login or Sign up"), initialSetupPage);
-        connect(btnOnlineService, &QPushButton::clicked, this, [applyServerMode]() { applyServerMode(QStringLiteral("cloud")); });
+        connect(btnOnlineService, &QPushButton::clicked, this, [applyServerMode](bool) { applyServerMode(QStringLiteral("cloud")); });
         setupLayout->addWidget(btnOnlineService);
         QPushButton *btnManagedServer = new QPushButton(i18n("Local Managed Server — Start Installation"), initialSetupPage);
-        connect(btnManagedServer, &QPushButton::clicked, this, [applyServerMode]() { applyServerMode(QStringLiteral("managed")); });
+        connect(btnManagedServer, &QPushButton::clicked, this, [applyServerMode](bool) { applyServerMode(QStringLiteral("managed")); });
         setupLayout->addWidget(btnManagedServer);
         QPushButton *btnCustomComfy = new QPushButton(i18n("Custom ComfyUI — Connect via URL"), initialSetupPage);
-        connect(btnCustomComfy, &QPushButton::clicked, this, [applyServerMode]() { applyServerMode(QStringLiteral("external")); });
+        connect(btnCustomComfy, &QPushButton::clicked, this, [applyServerMode](bool) { applyServerMode(QStringLiteral("external")); });
         setupLayout->addWidget(btnCustomComfy);
         setupLayout->addStretch();
         m_d->connectionStack->addWidget(initialSetupPage);
@@ -212,7 +212,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
 
         m_d->btnTest = new QPushButton(i18n("Connect"), connPage);
         m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
-        connect(m_d->btnTest, &QPushButton::clicked, this, [this]() {
+        connect(m_d->btnTest, &QPushButton::clicked, this, [this](bool) {
             if (m_d->isConnected)
                 slotDisconnect();
             else
@@ -225,7 +225,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         connLayout->addWidget(m_d->labelConnectionStatus);
 
         QPushButton *viewLogsButton = new QPushButton(i18n("View log files"), connPage);
-        connect(viewLogsButton, &QPushButton::clicked, this, [this]() {
+        connect(viewLogsButton, &QPushButton::clicked, this, [this](bool) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginLogDir()));
         });
         connLayout->addWidget(viewLogsButton);
@@ -585,8 +585,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     m_d->editCustomWorkflow->setPlainText(
                         QString::fromUtf8(ComfyUIUtils::stripJsonLineComments(f.readAll())));
                 });
-        connect(btnWorkflowRefresh, &QPushButton::clicked, dlg, [refillLocalWorkflowCombo]() { refillLocalWorkflowCombo(); });
-        connect(btnWorkflowFolder, &QPushButton::clicked, dlg, []() {
+        connect(btnWorkflowRefresh, &QPushButton::clicked, dlg, [refillLocalWorkflowCombo](bool) { refillLocalWorkflowCombo(); });
+        connect(btnWorkflowFolder, &QPushButton::clicked, dlg, [](bool) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::workflowsStorageDir()));
         });
         workflowLayout->addWidget(m_d->checkUseReferenceImage);
@@ -653,7 +653,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         };
         comboLoraFilter->setCurrentIndex(m_d->stylesTabLoraFilterMode);
         reloadLoraListFromDisk();
-        connect(btnLoraAdd, &QPushButton::clicked, dlg, [listLora, loraBody, persistLoraList]() {
+        connect(btnLoraAdd, &QPushButton::clicked, dlg, [listLora, loraBody, persistLoraList, this](bool) {
             const QString path = QFileDialog::getOpenFileName(
                 loraBody,
                 i18n("Select LoRA file"),
@@ -679,7 +679,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             applyStylesTabLoraListFilter();
             refreshStylesTabLoraWarning();
         });
-        connect(btnLoraRemove, &QPushButton::clicked, dlg, [listLora, spinLoraStrength, persistLoraList, this]() {
+        connect(btnLoraRemove, &QPushButton::clicked, dlg, [listLora, spinLoraStrength, persistLoraList, this](bool) {
             const int row = listLora->currentRow();
             if (row < 0)
                 return;
@@ -689,11 +689,11 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             applyStylesTabLoraListFilter();
             refreshStylesTabLoraWarning();
         });
-        connect(btnLoraRefresh, &QPushButton::clicked, this, [this, reloadLoraListFromDisk]() {
+        connect(btnLoraRefresh, &QPushButton::clicked, this, [this, reloadLoraListFromDisk](bool) {
             reloadLoraListFromDisk();
             slotRefreshCheckpoints();
         });
-        connect(btnLoraUpload, &QPushButton::clicked, dlg, [listLora, loraBody, persistLoraList, dlg, this]() {
+        connect(btnLoraUpload, &QPushButton::clicked, dlg, [listLora, loraBody, persistLoraList, dlg, this](bool) {
             const QString path = QFileDialog::getOpenFileName(
                 loraBody,
                 i18n("Select LoRA file"),
@@ -997,7 +997,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             }
             syncStylesFromDock();
         });
-        connect(btnStylesRefresh, &QPushButton::clicked, this, [this, syncStylesFromDock]() {
+        connect(btnStylesRefresh, &QPushButton::clicked, this, [this, syncStylesFromDock](bool) {
             rebuildPresetComboItems();
             slotRefreshCheckpoints();
             syncStylesFromDock();
@@ -1327,7 +1327,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QWidget *tagDirRow = new QWidget(interfacePage);
         tagDirRow->setLayout(tagDirLayout);
         ifaceForm->addRow(i18n("Tag CSV folder:"), tagDirRow);
-        connect(btnBrowseTagDir, &QPushButton::clicked, dlg, [editTagDir, interfacePage]() {
+        connect(btnBrowseTagDir, &QPushButton::clicked, dlg, [editTagDir, interfacePage](bool) {
             const QString start = editTagDir->text().trimmed().isEmpty() ? ComfyUIUtils::tagsStorageDir() : editTagDir->text().trimmed();
             const QString d = QFileDialog::getExistingDirectory(interfacePage, i18n("Tag CSV folder"), start);
             if (!d.isEmpty())
@@ -1370,8 +1370,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QWidget *tagActionRow = new QWidget(interfacePage);
         tagActionRow->setLayout(tagActionLayout);
         ifaceForm->addRow(QString(), tagActionRow);
-        connect(btnLookNewTagFiles, &QPushButton::clicked, this, [this]() { refreshPromptTagCompleter(); });
-        connect(btnOpenTagFolder, &QPushButton::clicked, dlg, [editTagDir]() {
+        connect(btnLookNewTagFiles, &QPushButton::clicked, this, [this](bool) { refreshPromptTagCompleter(); });
+        connect(btnOpenTagFolder, &QPushButton::clicked, dlg, [editTagDir](bool) {
             const QString dir = editTagDir->text().trimmed().isEmpty() ? ComfyUIUtils::tagsStorageDir() : editTagDir->text().trimmed();
             QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
         });
@@ -2014,7 +2014,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         sysInfoHint->setWordWrap(true);
         pluginLayout->addWidget(sysInfoHint);
         QPushButton *collectDiagBtn = new QPushButton(i18n("Collect Diagnostics"), pluginPage);
-        connect(collectDiagBtn, &QPushButton::clicked, this, [this]() {
+        connect(collectDiagBtn, &QPushButton::clicked, this, [this](bool) {
             QString diag = ComfyUIUtils::collectDiagnostics(ComfyUIUtils::pluginVersion(), true,
                                                             &m_d->objectInfoSpec58NodesPresent);
             if (QClipboard *cb = QApplication::clipboard()) {
@@ -2036,7 +2036,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         });
         pluginLayout->addWidget(collectDiagBtn);
         QPushButton *viewLogsBtn = new QPushButton(i18n("View log files"), pluginPage);
-        connect(viewLogsBtn, &QPushButton::clicked, this, [this]() {
+        connect(viewLogsBtn, &QPushButton::clicked, this, [this](bool) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginLogDir()));
         });
         pluginLayout->addWidget(viewLogsBtn);
@@ -2044,33 +2044,33 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         supportHeading->setStyleSheet(QStringLiteral("font-weight: bold;"));
         pluginLayout->addWidget(supportHeading);
         QPushButton *websiteButton = new QPushButton(i18n("Website"), pluginPage);
-        connect(websiteButton, &QPushButton::clicked, this, []() {
+        connect(websiteButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
         });
         pluginLayout->addWidget(websiteButton);
         QPushButton *handbookButton = new QPushButton(i18n("Handbook: Guides and Tips"), pluginPage);
-        connect(handbookButton, &QPushButton::clicked, this, []() {
+        connect(handbookButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://docs.interstice.cloud")));
         });
         pluginLayout->addWidget(handbookButton);
         QPushButton *githubButton = new QPushButton(i18n("GitHub"), pluginPage);
-        connect(githubButton, &QPushButton::clicked, this, []() {
+        connect(githubButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion")));
         });
         pluginLayout->addWidget(githubButton);
         // §4.9 / §13.200: same heading — Issues, Discussions, Discord
         QPushButton *issuesButton = new QPushButton(i18n("Issues"), pluginPage);
-        connect(issuesButton, &QPushButton::clicked, this, []() {
+        connect(issuesButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/issues")));
         });
         pluginLayout->addWidget(issuesButton);
         QPushButton *discussionsButton = new QPushButton(i18n("Discussions"), pluginPage);
-        connect(discussionsButton, &QPushButton::clicked, this, []() {
+        connect(discussionsButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/discussions")));
         });
         pluginLayout->addWidget(discussionsButton);
         QPushButton *discordButton = new QPushButton(i18n("Discord"), pluginPage);
-        connect(discordButton, &QPushButton::clicked, this, []() {
+        connect(discordButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));
         });
         pluginLayout->addWidget(discordButton);
@@ -2095,7 +2095,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         footerVersion->setStyleSheet(QStringLiteral("color: gray; font-style: italic;"));
         footerLayout->addWidget(footerVersion, 1);
         QPushButton *openSettingsFolder = new QPushButton(i18n("Open Settings folder"), dlg);
-        connect(openSettingsFolder, &QPushButton::clicked, this, [this]() {
+        connect(openSettingsFolder, &QPushButton::clicked, this, [this](bool) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginUserDataDir()));
         });
         footerLayout->addWidget(openSettingsFolder);
@@ -2103,7 +2103,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QPushButton *okButton = new QPushButton(i18n("Ok"), dlg);
         okButton->setDefault(true);
         okButton->setAutoDefault(true);
-        connect(okButton, &QPushButton::clicked, dlg, [dlg]() {
+        connect(okButton, &QPushButton::clicked, dlg, [dlg](bool) {
             KSharedConfig::openConfig()->sync();
             dlg->accept();
         });

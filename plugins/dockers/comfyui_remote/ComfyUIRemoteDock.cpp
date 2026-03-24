@@ -98,6 +98,7 @@
 #include <kis_image_manager.h>
 #include <kis_selection.h>
 #include <kis_types.h>
+#include <KoUpdater.h>
 #include <kis_animation_importer.h>
 #include <kis_annotation.h>
 #include <kis_paint_device.h>
@@ -111,7 +112,7 @@
 #include <KisDocument.h>
 #include <KisImportExportErrorCode.h>
 #include <commands/KisNodeRenameCommand.h>
-#include <kis_image_change_visibility_command.h>
+#include <kis_layer_properties_icons.h>
 #include <kis_layer_utils.h>
 #include <KisImageBarrierLock.h>
 #include <kis_undo_adapter.h>
@@ -170,11 +171,23 @@ static KisPaintLayer *findPaintLayerByUuidInTree(KisNodeSP node, const QString &
     KisPaintLayer *pl = dynamic_cast<KisPaintLayer *>(node.data());
     if (pl && node->uuid().toString(QUuid::WithoutBraces) == uuidWithoutBraces)
         return pl;
-    for (int i = 0; i < node->childCount(); ++i) {
-        if (KisPaintLayer *found = findPaintLayerByUuidInTree(node->child(i), uuidWithoutBraces))
+    for (quint32 i = 0; i < node->childCount(); ++i) {
+        if (KisPaintLayer *found = findPaintLayerByUuidInTree(node->at(i), uuidWithoutBraces))
             return found;
     }
     return nullptr;
+}
+
+static void collectPaintLayerNodes(KisNodeSP node, QVector<QPair<QString, QString>> *out)
+{
+    if (!node || !out)
+        return;
+    if (dynamic_cast<KisPaintLayer *>(node.data())) {
+        const QString id = node->uuid().toString(QUuid::WithoutBraces);
+        out->append(qMakePair(id, node->name()));
+    }
+    for (quint32 i = 0; i < node->childCount(); ++i)
+        collectPaintLayerNodes(node->at(i), out);
 }
 } // namespace
 
@@ -281,7 +294,7 @@ protected:
     {
         if (e->button() == Qt::LeftButton && m_dragging) {
             m_dragging = false;
-            ungrabMouse();
+            releaseMouse();
             if (m_editor && m_persistLines) {
                 const QFontMetrics fm(m_editor->font());
                 const int h = m_editor->height();
@@ -629,7 +642,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                                 } else if (!keyframePaths.isEmpty()) {
                                     KisImageSP img = m_d->canvas->image().toStrongRef();
                                     if (img) {
-                                        KisAnimationImporter importer(img, nullptr);
+                                        KisAnimationImporter importer(img);
                                         const int firstFrame = m_d->animationImportStartFrame;
                                         KisImportExportErrorCode impRes =
                                             importer.import(keyframePaths, firstFrame, 1, false, false, 1);
@@ -765,7 +778,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     });
     updateLayout->addWidget(m_d->welcomeCheckAutoUpdate);
     m_d->welcomeUpdateButton = new QPushButton(i18n("Download and Install"), m_d->welcomeUpdateWidget);
-    connect(m_d->welcomeUpdateButton, &QPushButton::clicked, this, [this]() {
+    connect(m_d->welcomeUpdateButton, &QPushButton::clicked, this, [this](bool) {
         if (m_d->pluginUpdateState == Private::PluginUpdateState::RestartRequired) {
             const QString p = m_d->updateExtractPath;
             if (!p.isEmpty() && (QFileInfo::exists(p)))
@@ -784,7 +797,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->welcomeNewsLabel->setObjectName(QStringLiteral("newsText"));
     newsLayout->addWidget(m_d->welcomeNewsLabel);
     QPushButton *btnNewsOk = new QPushButton(i18n("Ok"), m_d->welcomeNewsWidget);
-    connect(btnNewsOk, &QPushButton::clicked, this, [this]() {
+    connect(btnNewsOk, &QPushButton::clicked, this, [this](bool) {
         m_d->hasUnseenNews = false;
         QJsonObject s = ComfyUIUtils::loadSettingsJson();
         s.insert(QStringLiteral("last_news"), m_d->lastNewsDigest);
@@ -817,19 +830,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QPushButton *linkInterstice = new QPushButton(QStringLiteral("Interstice.cloud"), m_d->welcomePage);
     linkInterstice->setFlat(true);
     linkInterstice->setCursor(Qt::PointingHandCursor);
-    connect(linkInterstice, &QPushButton::clicked, this, []() {
+    connect(linkInterstice, &QPushButton::clicked, this, [](bool) {
         QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
     });
     QPushButton *linkGitHub = new QPushButton(i18n("GitHub Project"), m_d->welcomePage);
     linkGitHub->setFlat(true);
     linkGitHub->setCursor(Qt::PointingHandCursor);
-    connect(linkGitHub, &QPushButton::clicked, this, []() {
+    connect(linkGitHub, &QPushButton::clicked, this, [](bool) {
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion")));
     });
     QPushButton *linkDiscord = new QPushButton(QStringLiteral("Discord"), m_d->welcomePage);
     linkDiscord->setFlat(true);
     linkDiscord->setCursor(Qt::PointingHandCursor);
-    connect(linkDiscord, &QPushButton::clicked, this, []() {
+    connect(linkDiscord, &QPushButton::clicked, this, [](bool) {
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));
     });
     footerLinks->addWidget(linkInterstice);
@@ -1008,8 +1021,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             saveInpaintWorkspaceToDocument();
         if (idx == 2 && img && m_d->spinStrength) {
             KisAnnotationSP liveAnn = img->annotation(liveKey);
-            if (liveAnn && !liveAnn->data().isEmpty()) {
-                QJsonObject o = QJsonDocument::fromJson(liveAnn->data()).object();
+            if (liveAnn && !liveAnn->annotation().isEmpty()) {
+                QJsonObject o = QJsonDocument::fromJson(liveAnn->annotation()).object();
                 double s = o.value(QStringLiteral("strength")).toDouble(0.75);
                 m_d->spinStrength->setValue(qBound(1, qRound(s * 100.0), 100));
             }
@@ -1983,7 +1996,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     // §13.170: Open Web UI — open client.url in default browser (QDesktopServices::openUrl)
     QPushButton *btnOpenWebUI = new QPushButton(i18n("Open Web UI"));
     btnOpenWebUI->setToolTip(i18n("Open Web UI to create custom workflows"));
-    connect(btnOpenWebUI, &QPushButton::clicked, this, [this]() {
+    connect(btnOpenWebUI, &QPushButton::clicked, this, [this](bool) {
         QString urlStr = m_d->editServerUrl->text().trimmed();
         if (urlStr.isEmpty()) {
             setStatusMessage(i18n("Set server URL in Settings first."), true);
@@ -2184,8 +2197,8 @@ void ComfyUIRemoteDock::loadEmbeddedCustomWorkflowFromDocument()
     m_d->customWorkflowParamOverrides.clear();
     QByteArray wfBytes;
     if (KisAnnotationSP ann = img->annotation(ComfyUIUtils::customWorkflowAnnotationKey())) {
-        if (!ann->data().isEmpty())
-            wfBytes = ann->data();
+        if (!ann->annotation().isEmpty())
+            wfBytes = ann->annotation();
     }
     if (wfBytes.isEmpty()) {
         const QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
@@ -2293,7 +2306,11 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             if (lo > hi)
                 std::swap(lo, hi);
             sp->setRange(lo, hi);
-            sp->setValue(cur.toInt(sl.defaultValue.toInt()));
+            {
+                bool ok = false;
+                int v = cur.toInt(&ok);
+                sp->setValue(ok ? v : sl.defaultValue.toInt());
+            }
             const QString sk = storageKey;
             connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, sk](int v) {
                 m_d->customWorkflowParamOverrides.insert(sk, v);
@@ -2306,7 +2323,11 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             auto *sp = new QDoubleSpinBox(m_d->customWorkflowParamsGroup);
             sp->setDecimals(4);
             sp->setRange(sl.minV, sl.maxV);
-            sp->setValue(cur.toDouble(sl.defaultValue.toDouble()));
+            {
+                bool ok = false;
+                double v = cur.toDouble(&ok);
+                sp->setValue(ok ? v : sl.defaultValue.toDouble());
+            }
             const QString sk = storageKey;
             connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, sk](double v) {
                 m_d->customWorkflowParamOverrides.insert(sk, v);
@@ -2333,7 +2354,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterPromptPositive:
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterPromptNegative: {
             auto *le = new QLineEdit(m_d->customWorkflowParamsGroup);
-            le->setText(cur.toString(sl.defaultValue.toString()));
+            le->setText(cur.isNull() ? sl.defaultValue.toString() : cur.toString());
             const QString sk = storageKey;
             connect(le, &QLineEdit::editingFinished, this, [this, sk, le]() {
                 m_d->customWorkflowParamOverrides.insert(sk, le->text());
@@ -2348,7 +2369,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
                 auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
                 for (const QString &ch : sl.choices)
                     cb->addItem(ch, ch);
-                const QString pick = cur.toString(sl.defaultValue.toString());
+                const QString pick = cur.isNull() ? sl.defaultValue.toString() : cur.toString();
                 int ix = cb->findData(pick);
                 if (ix < 0)
                     ix = 0;
@@ -2360,7 +2381,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
                 m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), cb);
             } else {
                 auto *le = new QLineEdit(m_d->customWorkflowParamsGroup);
-                le->setText(cur.toString(sl.defaultValue.toString()));
+                le->setText(cur.isNull() ? sl.defaultValue.toString() : cur.toString());
                 connect(le, &QLineEdit::editingFinished, this, [this, sk, le]() {
                     m_d->customWorkflowParamOverrides.insert(sk, le->text());
                 });
@@ -2374,7 +2395,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             cb->addItem(i18n("Auto"), QStringLiteral("auto"));
             cb->addItem(i18n("Regular"), QStringLiteral("regular"));
             cb->addItem(i18n("Live"), QStringLiteral("live"));
-            const QString pick = cur.toString(sl.defaultValue.toString());
+            const QString pick = cur.isNull() ? sl.defaultValue.toString() : cur.toString();
             int ix = cb->findData(pick);
             if (ix < 0)
                 ix = 0;
@@ -2471,8 +2492,8 @@ void ComfyUIRemoteDock::loadInpaintWorkspaceFromDocument()
         return;
     QJsonObject root;
     if (KisAnnotationSP ann = img->annotation(ComfyUIUtils::inpaintWorkspaceAnnotationKey())) {
-        if (!ann->data().isEmpty())
-            root = QJsonDocument::fromJson(ann->data()).object();
+        if (!ann->annotation().isEmpty())
+            root = QJsonDocument::fromJson(ann->annotation()).object();
     }
     if (root.isEmpty()) {
         const QJsonObject ui = ComfyUIUtils::loadDocumentUiJsonObject(img);
@@ -2660,7 +2681,7 @@ void ComfyUIRemoteDock::tryApplyDocumentDefaultsForNewDocument(KisImageSP image)
         return;
     const QString key = ComfyUIUtils::documentIdAnnotationKey();
     KisAnnotationSP idAnn = image->annotation(key);
-    const QString docId = idAnn ? QString::fromUtf8(idAnn->data()).trimmed() : QString();
+    const QString docId = idAnn ? QString::fromUtf8(idAnn->annotation()).trimmed() : QString();
     if (docId.isEmpty())
         return;
     if (m_d->documentDefaultsAppliedDocIds.contains(docId))
@@ -3119,7 +3140,7 @@ void ComfyUIRemoteDock::slotAiDiffusionTogglePreview()
     }
     KisImageBarrierLock lock(image);
     lock.unlock();
-    image->undoAdapter()->addCommand(new KisImageChangeVisibilityCommand(!node->visible(), node));
+    KisLayerPropertiesIcons::setNodePropertyAutoUndo(node, KisLayerPropertiesIcons::visible, !node->visible(), image);
     if (m_d->canvas)
         m_d->canvas->updateCanvas();
 }
@@ -3205,7 +3226,7 @@ static void ensureDocumentId(KisImageSP image, KisCanvas2 *canvas)
 
     KisAnnotationSP ann = image->annotation(key);
     if (ann) {
-        QString existingId = QString::fromUtf8(ann->data());
+        QString existingId = QString::fromUtf8(ann->annotation());
         if (!existingId.isEmpty() && currentDoc) {
             const QList<QPointer<KisDocument> > docs = KisPart::instance()->documents();
             for (const QPointer<KisDocument> &doc : docs) {
@@ -3213,7 +3234,7 @@ static void ensureDocumentId(KisImageSP image, KisCanvas2 *canvas)
                 KisImageSP otherImg = doc->image().toStrongRef();
                 if (!otherImg) continue;
                 KisAnnotationSP otherAnn = otherImg->annotation(key);
-                if (otherAnn && QString::fromUtf8(otherAnn->data()) == existingId) {
+                if (otherAnn && QString::fromUtf8(otherAnn->annotation()) == existingId) {
                     QString newUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
                     image->removeAnnotation(key);
                     image->addAnnotation(KisAnnotationSP(new KisAnnotation(key, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("document_id")), newUuid.toUtf8())));
@@ -3242,7 +3263,7 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             ensureDocumentId(img, c);
             QString docIdWarn;
             if (KisAnnotationSP idAnn = img->annotation(ComfyUIUtils::documentIdAnnotationKey())) {
-                docIdWarn = QString::fromUtf8(idAnn->data()).trimmed();
+                docIdWarn = QString::fromUtf8(idAnn->annotation()).trimmed();
             }
             QString docPathLabel;
             if (KisDocument *doc = c->imageView() ? c->imageView()->document() : nullptr)
@@ -3278,7 +3299,7 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             // §13.44 / §13.189: preview_layer from annotation or ui.json
             const QString previewKey = ComfyUIUtils::previewLayerAnnotationKey();
             KisAnnotationSP previewAnn = img->annotation(previewKey);
-            m_d->previewLayerId = previewAnn ? QString::fromUtf8(previewAnn->data()).trimmed() : QString();
+            m_d->previewLayerId = previewAnn ? QString::fromUtf8(previewAnn->annotation()).trimmed() : QString();
             if (m_d->previewLayerId.isEmpty()) {
                 m_d->previewLayerId = uiMeta.object.value(QStringLiteral("preview_layer")).toString().trimmed();
             }
@@ -3287,8 +3308,8 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
                 const QString liveKey = ComfyUIUtils::liveWorkspaceAnnotationKey();
                 QJsonObject liveObj;
                 if (KisAnnotationSP liveAnn = img->annotation(liveKey)) {
-                    if (!liveAnn->data().isEmpty())
-                        liveObj = QJsonDocument::fromJson(liveAnn->data()).object();
+                    if (!liveAnn->annotation().isEmpty())
+                        liveObj = QJsonDocument::fromJson(liveAnn->annotation()).object();
                 }
                 if (liveObj.isEmpty()) {
                     liveObj = uiMeta.object.value(QStringLiteral("live")).toObject();
@@ -3928,18 +3949,6 @@ void ComfyUIRemoteDock::updateAnimationButtonLabel()
     }
 }
 
-static void collectPaintLayerNodes(KisNodeSP node, QVector<QPair<QString, QString>> *out)
-{
-    if (!node || !out)
-        return;
-    if (dynamic_cast<KisPaintLayer *>(node.data())) {
-        const QString id = node->uuid().toString(QUuid::WithoutBraces);
-        out->append(qMakePair(id, node->name()));
-    }
-    for (int i = 0; i < node->childCount(); ++i)
-        collectPaintLayerNodes(node->child(i), out);
-}
-
 QJsonObject ComfyUIRemoteDock::animationWorkspaceToJson() const
 {
     QJsonObject o;
@@ -4454,19 +4463,19 @@ void ComfyUIRemoteDock::setProgressBarKind(bool isUpload)
 
 void ComfyUIRemoteDock::setLiveProgress(int percent)
 {
-    auto *w = qobject_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
+    auto *w = static_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
     if (w) w->setProgress(percent);
 }
 
 void ComfyUIRemoteDock::startLiveSpinner()
 {
-    auto *w = qobject_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
+    auto *w = static_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
     if (w) w->startAnimation();
 }
 
 void ComfyUIRemoteDock::stopLiveSpinner()
 {
-    auto *w = qobject_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
+    auto *w = static_cast<LiveSpinnerWidget *>(m_d->liveSpinner);
     if (w) w->stopAnimation();
 }
 
@@ -4897,7 +4906,7 @@ void ComfyUIRemoteDock::updateHistoryUsageLabel()
         m_d->labelHistoryUsageMb->setText(i18n("Currently using %1 MB", QString::number(mb, 'f', 1)));
     }
     if (m_d->labelStoredHistoryMb) {
-        KisImageSP img = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+        KisImageSP img = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
         const qint64 docBytes = ComfyUIUtils::documentEmbeddedHistoryStorageBytes(img);
         const double docMb = docBytes / (1024.0 * 1024.0);
         m_d->labelStoredHistoryMb->setText(i18n("Currently using %1 MB", QString::number(docMb, 'f', 1)));
@@ -4959,7 +4968,7 @@ void ComfyUIRemoteDock::refreshRegionsList()
     if (!m_d->listRegions)
         return;
     m_d->listRegions->clear();
-    for (const Private::RegionEntry &r : comfyActiveRegionEntries(m_d)) {
+    for (const Private::RegionEntry &r : comfyActiveRegionEntries(m_d.data())) {
         QString src = r.maskSource == "selection" ? i18n("(selection)") : r.maskSource;
         m_d->listRegions->addItem(r.name + " — " + r.prompt.left(30) + (r.prompt.size() > 30 ? "…" : "") + " " + src);
     }
