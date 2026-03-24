@@ -198,9 +198,11 @@ void ComfyUIIntervalSlider::mousePressEvent(QMouseEvent *event)
         QWidget::mousePressEvent(event);
         return;
     }
-    m_activeHandle = pickHandle(event->position().toPoint().x());
+    // Qt5: use pos()/x(); QMouseEvent::position() is Qt6-only.
+    const int mx = event->pos().x();
+    m_activeHandle = pickHandle(mx);
     Q_EMIT sliderPressed(m_activeHandle);
-    applyDraggedHandle(event->position().toPoint().x());
+    applyDraggedHandle(mx);
     event->accept();
 }
 
@@ -210,7 +212,7 @@ void ComfyUIIntervalSlider::mouseMoveEvent(QMouseEvent *event)
         QWidget::mouseMoveEvent(event);
         return;
     }
-    applyDraggedHandle(event->position().toPoint().x());
+    applyDraggedHandle(event->pos().x());
     event->accept();
 }
 

@@ -25,6 +25,7 @@
 #include <QImage>
 
 #include <klocalizedstring.h>
+#include <KisDocument.h>
 
 void ComfyUIRemoteDock::slotLiveTick()
 {

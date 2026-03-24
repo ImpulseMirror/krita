@@ -27,11 +27,12 @@
 
 #include <utility>
 
+#include <kis_types.h>
+
 class QNetworkAccessManager;
 class QNetworkReply;
 class QObject;
 
-class KisImageSP;
 class KisViewManager;
 
 namespace ComfyUIUtils {

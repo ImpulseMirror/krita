@@ -721,7 +721,7 @@ void ComfyUIRemoteDock::tryAutostartServerFallback()
     ComfyUIUtils::setComfyUIRequestHeaders(req1);
     QNetworkReply *reply1 = m_d->nam->get(req1);
     connect(reply1, &QNetworkReply::finished, this, [this, reply1, primary, fallback, applyExternalAndConnect,
-                                                      finishCloudFallback]() {
+                                                      finishCloudFallback, probeSystemStats]() {
         reply1->deleteLater();
         const int http1 = reply1->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool ok1 = reply1->error() == QNetworkReply::NoError && http1 == 200;

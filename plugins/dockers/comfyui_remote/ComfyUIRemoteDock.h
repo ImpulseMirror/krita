@@ -20,6 +20,8 @@ class ComfyUIRemoteDock : public QDockWidget, public KisMainwindowObserver
 {
     Q_OBJECT
 public:
+    /// Opaque implementation (definition in ComfyUIRemoteDockPrivate.h); must be public so helpers can use ComfyUIRemoteDock::Private *.
+    struct Private;
     ComfyUIRemoteDock();
     ~ComfyUIRemoteDock() override;
 
@@ -269,7 +271,6 @@ private:
     void refreshPluginInformationTabUpdateUi();
     void refreshWelcomeAutoUpdatePanel();
     void syncPluginUpdateUi();
-    struct Private;
     QScopedPointer<Private> m_d;
 };
 

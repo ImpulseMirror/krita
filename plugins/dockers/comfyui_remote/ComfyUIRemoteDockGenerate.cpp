@@ -24,9 +24,11 @@
 #include <kis_types.h>
 #include <kis_image.h>
 #include <KisViewManager.h>
+#include <KisDocument.h>
 #include <kis_selection.h>
 #include <kis_image_animation_interface.h>
 #include <kis_time_span.h>
+#include <KoUpdater.h>
 #include <kis_animation_importer.h>
 
 #include <QDir>
@@ -108,7 +110,7 @@ void ComfyUIRemoteDock::slotGenerate()
                 return;
             }
             {
-                KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+                KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
                 ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
             }
             ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
@@ -239,7 +241,7 @@ void ComfyUIRemoteDock::slotGenerate()
                 return;
             }
             {
-                KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+                KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
                 ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
             }
             ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
@@ -318,7 +320,7 @@ void ComfyUIRemoteDock::slotGenerate()
             return;
         }
         {
-            KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+            KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
             ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
         }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
@@ -511,7 +513,7 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
 
     if (m_d->batchUseCustomWorkflow && m_d->batchNeedsPerFrameReference) {
         QString urlStr = m_d->editServerUrl->text().trimmed();
-        KisImageSP image = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+        KisImageSP image = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
         QImage refImg = ComfyUIUtils::getCanvasAsQImage(image);
         if (refImg.isNull()) {
             setStatusMessage(i18n("Could not export canvas for reference."), true);
@@ -690,7 +692,7 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
 void ComfyUIRemoteDock::dispatchBatchPromptRequest(QJsonObject workflow, int submitIndex)
 {
     {
-        KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+        KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
         ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
     }
     ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
@@ -883,7 +885,7 @@ void ComfyUIRemoteDock::slotImportAnimation()
         setStatusMessage(i18n("No image in document."), true);
         return;
     }
-    KisAnimationImporter importer(image, nullptr);
+    KisAnimationImporter importer(image);
     KisImportExportErrorCode result = importer.import(pathList, 0, 1, false, false, 1);
     if (!result.isOk() && !result.isInternalError()) {
         setStatusMessage(result.errorMessage().isEmpty() ? i18n("Import failed.") : result.errorMessage(), true);

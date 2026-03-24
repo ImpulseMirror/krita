@@ -36,6 +36,7 @@
 #include <KSharedConfig>
 #include <KConfigGroup>
 #include <kis_image_manager.h>
+#include <KisDocument.h>
 #include <kis_image.h>
 #include <kis_layer.h>
 #include <kis_layer_utils.h>

@@ -51,6 +51,8 @@ endif()
 # Plugin module
 set(kritacomfyuiremote_SOURCES ComfyUIRemotePlugin.cpp)
 kis_add_library(kritacomfyuiremote MODULE ${kritacomfyuiremote_SOURCES})
-target_link_libraries(kritacomfyuiremote kritacomfyuiremote_static)
+# MODULE needs kritaui (Qt includes) for MOC/ComfyUIRemotePlugin.h; static lib alone does not propagate them.
+# Link order: static first, then resolve symbols from kritaimage/kritaui (Unix linkers are order-sensitive).
+target_link_libraries(kritacomfyuiremote PRIVATE kritacomfyuiremote_static kritaimage kritaui)
 install(TARGETS kritacomfyuiremote DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})
 install(FILES ComfyUIRemote.action DESTINATION ${KDE_INSTALL_DATADIR}/krita/actions)
