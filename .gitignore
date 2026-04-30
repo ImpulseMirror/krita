@@ -51,3 +51,15 @@ _packaging
 env
 env_deactivate
 krita-deps-management/
+
+# Local tooling (hide from git UI; not part of APK tree)
+.tools/
+
+# Generic local noise (android-build-cache/ dirs still visible if needed)
+cache/
+logs.txt
+*.log
+branch-corrected-deps.yml
+
+# F-Droid / Gradle experiments (not main APK packaging flow)
+packaging/android/fdroid/.gradle/
