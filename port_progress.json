@@ -72,7 +72,8 @@
     "P1.4": {
       "title": "process_regions equivalent + regional generate",
       "phase": "P1",
-      "status": "not_started",
+      "status": "in_progress",
+      "evidence": "applyRegionalGeneration ETN nodes; main Generate with 2+ regions uploads masks; process_regions overlap deferred",
       "depends_on": ["P1.2", "P2.3"],
       "python_refs": ["ai_diffusion/region.py", "ai_diffusion/workflow.py"],
       "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp", "ComfyUIRemoteDockRegions.cpp"]

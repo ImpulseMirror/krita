@@ -8,6 +8,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyControlLayer.h"
+#include "ComfyWorkflowEngine.h"
 
 #include <QPointer>
 #include <QScopedPointer>
@@ -194,6 +195,10 @@ struct ComfyUIRemoteDock::Private
     double generateStashedMul = 1.0;
     QJsonObject generatePendingBaseWorkflow;
     ComfyResources::Arch generatePendingArch = ComfyResources::Arch::Sd15;
+    QList<ComfyWorkflowEngine::RegionalPromptInput> generateRegionalInputs;
+    QList<RegionEntry> generateRegionSnapshot;
+    bool generateAwaitingRegionMaskUploads = false;
+    int generateRegionMaskUploadIndex = 0;
     QList<RegionEntry> regionEntries;
     QList<RegionEntry> editRegionEntries;  // §13.125: edit_regions (Generate + Edit mode)
     /// Snapshot of active regions when "Generate regions" started (async chain must not follow live toggles).

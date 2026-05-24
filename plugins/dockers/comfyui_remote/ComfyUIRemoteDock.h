@@ -228,7 +228,9 @@ private Q_SLOTS:
 
 private:
     void uploadNextGenerateControlImage();
+    void uploadNextGenerateRegionMask();
     void continueGenerateAfterControlUploads();
+    void finalizeGenerateWorkflowAndSubmit(QJsonObject workflow);
     // §13.194 / §13.137: RecentlyUsedSync — document_defaults in settings.json; skip layer_bounds on fresh docs
     void persistDocumentDefaultsToSettings();
     void tryApplyDocumentDefaultsForNewDocument(KisImageSP image);

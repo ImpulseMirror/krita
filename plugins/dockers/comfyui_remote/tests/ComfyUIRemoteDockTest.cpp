@@ -68,6 +68,7 @@ private Q_SLOTS:
     void testComfyWorkflowEngineApplyControlNet();
     void testComfyWorkflowEngineApplyIpAdapter();
     void testComfyControlLayerNeedsGenerateUpload();
+    void testComfyWorkflowEngineApplyRegionalGeneration();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -911,6 +912,37 @@ void ComfyUIRemoteDockTest::testComfyControlLayerNeedsGenerateUpload()
     QVERIFY(ComfyControlLayer::needsGenerateUpload(e));
     e.layerName.clear();
     QVERIFY(!ComfyControlLayer::needsGenerateUpload(e));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyRegionalGeneration()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.arch = ComfyResources::Arch::Sdxl;
+    QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    QList<ComfyWorkflowEngine::RegionalPromptInput> regions;
+    ComfyWorkflowEngine::RegionalPromptInput bg;
+    bg.positivePrompt = QStringLiteral("background scene");
+    bg.isBackground = true;
+    regions.append(bg);
+    ComfyWorkflowEngine::RegionalPromptInput r1;
+    r1.positivePrompt = QStringLiteral("red hair character");
+    r1.maskImageName = QStringLiteral("mask1.png");
+    regions.append(r1);
+    ComfyWorkflowEngine::RegionalPromptInput r2;
+    r2.positivePrompt = QStringLiteral("blue sky");
+    r2.maskImageName = QStringLiteral("mask2.png");
+    regions.append(r2);
+    const ComfyWorkflowEngine::RegionalWorkflowNodes nodes =
+        ComfyWorkflowEngine::applyRegionalGeneration(&wf, regions, QStringLiteral("4"), QStringLiteral("6"),
+                                                     QStringLiteral("7"));
+    QVERIFY(nodes.applied);
+    bool hasEtn = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString ct = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (ct == QLatin1String("ETN_AttentionMask") || ct == QLatin1String("ETN_DefineRegion"))
+            hasEtn = true;
+    }
+    QVERIFY(hasEtn);
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

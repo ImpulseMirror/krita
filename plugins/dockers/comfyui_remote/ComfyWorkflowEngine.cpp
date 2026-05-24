@@ -264,13 +264,15 @@ bool applyIpAdapterLayers(QJsonObject *workflow,
 
 bool applyControlNetLayers(QJsonObject *workflow,
                              const QList<ControlNetLayerInput> &layers,
-                             ComfyResources::Arch arch)
+                             ComfyResources::Arch arch,
+                             const QString &positiveNodeStart,
+                             const QString &negativeNodeStart)
 {
     if (!workflow || workflow->isEmpty())
         return false;
 
-    QString positiveNode = QStringLiteral("6");
-    const QString negativeNode = QStringLiteral("7");
+    QString positiveNode = positiveNodeStart;
+    const QString negativeNode = negativeNodeStart;
     int nextId = 50;
     bool applied = false;
 
@@ -321,6 +323,144 @@ bool applyControlNetLayers(QJsonObject *workflow,
     sampler.insert(QStringLiteral("inputs"), samplerInputs);
     workflow->insert(QStringLiteral("3"), sampler);
     return true;
+}
+
+RegionalWorkflowNodes applyRegionalGeneration(QJsonObject *workflow,
+                                              const QList<RegionalPromptInput> &regions,
+                                              const QString &modelSourceNode,
+                                              const QString &rootPositiveNode,
+                                              const QString &rootNegativeNode,
+                                              const QString &clipSourceNode)
+{
+    RegionalWorkflowNodes result;
+    if (!workflow || regions.size() < 2)
+        return result;
+
+    int nextId = 200;
+    const QString bgRegionId = QString::number(nextId++);
+    workflow->insert(bgRegionId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_BackgroundRegion")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("conditioning"), QJsonArray{rootPositiveNode, 0}}}}});
+    QString regionsChain = bgRegionId;
+
+    for (const RegionalPromptInput &region : regions) {
+        if (region.isBackground || region.maskImageName.isEmpty())
+            continue;
+
+        const QString loadId = QString::number(nextId++);
+        workflow->insert(loadId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoadImage")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), region.maskImageName}}}});
+        const QString maskId = QString::number(nextId++);
+        workflow->insert(maskId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageToMask")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), QJsonArray{loadId, 0}},
+                                                  {QStringLiteral("channel"), QStringLiteral("alpha")}}}});
+        const QString regionPosId = QString::number(nextId++);
+        workflow->insert(regionPosId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CLIPTextEncode")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("clip"), QJsonArray{clipSourceNode, 1}},
+                                                  {QStringLiteral("text"), region.positivePrompt}}}});
+        const QString defineId = QString::number(nextId++);
+        workflow->insert(defineId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_DefineRegion")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("regions"), QJsonArray{regionsChain, 0}},
+                                                  {QStringLiteral("mask"), QJsonArray{maskId, 0}},
+                                                  {QStringLiteral("conditioning"), QJsonArray{regionPosId, 0}}}}});
+        regionsChain = defineId;
+    }
+
+    const QString attnId = QString::number(nextId++);
+    workflow->insert(attnId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_AttentionMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("model"), QJsonArray{modelSourceNode, 0}},
+                                              {QStringLiteral("regions"), QJsonArray{regionsChain, 0}}}}});
+
+    const QString listMasksId = QString::number(nextId++);
+    workflow->insert(listMasksId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_ListRegionMasks")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("regions"), QJsonArray{regionsChain, 0}}}}});
+
+    const QString maskBatchImgId = QString::number(nextId++);
+    workflow->insert(maskBatchImgId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("MaskToImage")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{listMasksId, 0}}}}});
+
+    QString combinedPos;
+    for (int i = 0; i < regions.size(); i++) {
+        const RegionalPromptInput &region = regions.at(i);
+        const QString regionPosId = QString::number(nextId++);
+        workflow->insert(regionPosId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CLIPTextEncode")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("clip"), QJsonArray{clipSourceNode, 1}},
+                                                  {QStringLiteral("text"), region.positivePrompt}}}});
+
+        const QString batchImgId = QString::number(nextId++);
+        workflow->insert(batchImgId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageFromBatch")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), QJsonArray{maskBatchImgId, 0}},
+                                                  {QStringLiteral("batch_index"), i},
+                                                  {QStringLiteral("length"), 1}}}});
+        const QString regionMaskId = QString::number(nextId++);
+        workflow->insert(regionMaskId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageToMask")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), QJsonArray{batchImgId, 0}},
+                                                  {QStringLiteral("channel"), QStringLiteral("red")}}}});
+
+        const QString combineId = QString::number(nextId++);
+        if (combinedPos.isEmpty()) {
+            workflow->insert(combineId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("PairConditioningSetProperties")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("positive_NEW"), QJsonArray{regionPosId, 0}},
+                                                      {QStringLiteral("negative_NEW"), QJsonArray{rootNegativeNode, 0}},
+                                                      {QStringLiteral("mask"), QJsonArray{regionMaskId, 0}},
+                                                      {QStringLiteral("strength"), 1.0},
+                                                      {QStringLiteral("set_cond_area"), QStringLiteral("default")}}}});
+        } else {
+            workflow->insert(combineId,
+                             QJsonObject{{QStringLiteral("class_type"),
+                                          QStringLiteral("PairConditioningSetPropertiesAndCombine")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("positive"), QJsonArray{combinedPos, 0}},
+                                                      {QStringLiteral("negative"), QJsonArray{combinedPos, 1}},
+                                                      {QStringLiteral("positive_NEW"), QJsonArray{regionPosId, 0}},
+                                                      {QStringLiteral("negative_NEW"), QJsonArray{rootNegativeNode, 0}},
+                                                      {QStringLiteral("mask"), QJsonArray{regionMaskId, 0}},
+                                                      {QStringLiteral("strength"), 1.0},
+                                                      {QStringLiteral("set_cond_area"), QStringLiteral("default")}}}});
+        }
+        combinedPos = combineId;
+    }
+
+    if (combinedPos.isEmpty())
+        combinedPos = rootPositiveNode;
+
+    result.modelNodeId = attnId;
+    result.positiveNodeId = combinedPos;
+    result.negativeNodeId = combinedPos;
+    result.applied = true;
+
+    QJsonObject sampler = workflow->value(QStringLiteral("3")).toObject();
+    QJsonObject samplerInputs = sampler.value(QStringLiteral("inputs")).toObject();
+    samplerInputs.insert(QStringLiteral("model"), QJsonArray{attnId, 0});
+    samplerInputs.insert(QStringLiteral("positive"), QJsonArray{combinedPos, 0});
+    samplerInputs.insert(QStringLiteral("negative"), QJsonArray{combinedPos, 1});
+    sampler.insert(QStringLiteral("inputs"), samplerInputs);
+    workflow->insert(QStringLiteral("3"), sampler);
+
+    return result;
 }
 
 } // namespace ComfyWorkflowEngine

@@ -56,6 +56,77 @@
 
 #include <algorithm>
 
+namespace {
+
+QList<ComfyUIRemoteDock::Private::RegionEntry> regionsForGenerate(const ComfyUIRemoteDock::Private *d)
+{
+    QList<ComfyUIRemoteDock::Private::RegionEntry> regs = comfyActiveRegionEntries(d);
+    if (d->checkRegionOnly && d->checkRegionOnly->isChecked() && d->listRegions) {
+        const int row = d->listRegions->currentRow();
+        if (row >= 0 && row < regs.size())
+            return {regs.at(row)};
+    }
+    return regs;
+}
+
+QList<ComfyWorkflowEngine::RegionalPromptInput>
+buildRegionalPromptInputs(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions, const QString &rootPrompt)
+{
+    QList<ComfyWorkflowEngine::RegionalPromptInput> out;
+    ComfyWorkflowEngine::RegionalPromptInput bg;
+    bg.positivePrompt = rootPrompt;
+    bg.isBackground = true;
+    out.append(bg);
+    for (const ComfyUIRemoteDock::Private::RegionEntry &e : regions) {
+        ComfyWorkflowEngine::RegionalPromptInput r;
+        r.positivePrompt = ComfyUIUtils::mergeStylePromptWithInstruction(rootPrompt, e.prompt).trimmed();
+        if (r.positivePrompt.isEmpty())
+            r.positivePrompt = rootPrompt;
+        out.append(r);
+    }
+    return out;
+}
+
+QImage maskPngForComfyUpload(const QImage &maskGray)
+{
+    QImage maskPng(maskGray.size(), QImage::Format_ARGB32);
+    for (int y = 0; y < maskGray.height(); y++) {
+        for (int x = 0; x < maskGray.width(); x++) {
+            const int g = qGray(maskGray.pixel(x, y));
+            maskPng.setPixel(x, y, qRgba(255, 255, 255, 255 - g));
+        }
+    }
+    return maskPng;
+}
+
+QString samplerModelNodeId(const QJsonObject &workflow)
+{
+    const QJsonArray model = workflow.value(QStringLiteral("3"))
+                               .toObject()
+                               .value(QStringLiteral("inputs"))
+                               .toObject()
+                               .value(QStringLiteral("model"))
+                               .toArray();
+    if (model.size() >= 1)
+        return model.at(0).toString();
+    return QStringLiteral("4");
+}
+
+QString samplerPositiveNodeId(const QJsonObject &workflow)
+{
+    const QJsonArray pos = workflow.value(QStringLiteral("3"))
+                               .toObject()
+                               .value(QStringLiteral("inputs"))
+                               .toObject()
+                               .value(QStringLiteral("positive"))
+                               .toArray();
+    if (pos.size() >= 1)
+        return pos.at(0).toString();
+    return QStringLiteral("6");
+}
+
+} // namespace
+
 // §13.126: End-to-end flow — user action → workflow build (check_color_mode) → queue per QueueMode → POST prompt → poll result → history + UI → Apply
 void ComfyUIRemoteDock::slotGenerate()
 {
@@ -373,6 +444,10 @@ void ComfyUIRemoteDock::slotGenerate()
         genParams.batchSize = 1;
 
         QString userPos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
+        const QList<Private::RegionEntry> regsForGen = regionsForGenerate(m_d.data());
+        if (regsForGen.size() == 1 && !regsForGen.first().prompt.isEmpty()) {
+            userPos = ComfyUIUtils::mergeStylePromptWithInstruction(userPos, regsForGen.first().prompt).trimmed();
+        }
         QString promptText = link.active
             ? ComfyUIUtils::mergeStylePromptWithInstruction(link.stylePositiveTemplate, userPos).trimmed()
             : userPos;
@@ -390,6 +465,22 @@ void ComfyUIRemoteDock::slotGenerate()
         }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
 
+        m_d->generatePendingBaseWorkflow = workflow;
+        m_d->generatePendingArch = genParams.arch;
+        m_d->generateStashedCustomJson = customJson;
+        m_d->generateStashedBatch = genBatch;
+        m_d->generateStashedMul = genMul;
+
+        if (regsForGen.size() >= 2 && ComfyResources::supportsRegions(genParams.arch)) {
+            m_d->generateRegionSnapshot = regsForGen;
+            m_d->generateRegionalInputs = buildRegionalPromptInputs(regsForGen, genParams.positivePrompt);
+            m_d->generateAwaitingRegionMaskUploads = true;
+            m_d->generateRegionMaskUploadIndex = 0;
+            m_d->btnGenerate->setEnabled(false);
+            uploadNextGenerateRegionMask();
+            return;
+        }
+
         bool needsControlUpload = false;
         for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
             if (ComfyControlLayer::needsGenerateUpload(ce)) {
@@ -398,11 +489,6 @@ void ComfyUIRemoteDock::slotGenerate()
             }
         }
         if (needsControlUpload) {
-            m_d->generatePendingBaseWorkflow = workflow;
-            m_d->generatePendingArch = genParams.arch;
-            m_d->generateStashedCustomJson = customJson;
-            m_d->generateStashedBatch = genBatch;
-            m_d->generateStashedMul = genMul;
             m_d->generateAwaitingControlUploads = true;
             m_d->generateControlUploadIndex = 0;
             m_d->generateControlUploadedNames.clear();
@@ -410,6 +496,9 @@ void ComfyUIRemoteDock::slotGenerate()
             uploadNextGenerateControlImage();
             return;
         }
+
+        finalizeGenerateWorkflowAndSubmit(workflow);
+        return;
     }
 
     const int batchCount = genBatch;
@@ -1491,10 +1580,114 @@ void ComfyUIRemoteDock::uploadNextGenerateControlImage()
     continueGenerateAfterControlUploads();
 }
 
+void ComfyUIRemoteDock::uploadNextGenerateRegionMask()
+{
+    if (!m_d->generateAwaitingRegionMaskUploads || !m_d->viewManager) {
+        m_d->btnGenerate->setEnabled(true);
+        return;
+    }
+    KisImageSP image = m_d->viewManager->image();
+    while (m_d->generateRegionMaskUploadIndex < m_d->generateRegionSnapshot.size()) {
+        const int snapIdx = m_d->generateRegionMaskUploadIndex;
+        m_d->generateRegionMaskUploadIndex++;
+        const Private::RegionEntry &region = m_d->generateRegionSnapshot.at(snapIdx);
+        const int inputIdx = snapIdx + 1;
+        if (inputIdx >= m_d->generateRegionalInputs.size())
+            continue;
+
+        QImage maskImg = ComfyUIUtils::getMaskAsQImage(image, m_d->viewManager, region.maskSource);
+        if (maskImg.isNull()) {
+            setStatusMessage(i18n("Region \"%1\": could not get mask.", region.name), true);
+            m_d->generateAwaitingRegionMaskUploads = false;
+            m_d->btnGenerate->setEnabled(true);
+            return;
+        }
+        const QImage maskPng = maskPngForComfyUpload(maskImg);
+        QTemporaryFile *tmp = new QTemporaryFile(this);
+        tmp->setFileTemplate(tmp->fileTemplate() + QStringLiteral(".png"));
+        tmp->open();
+        tmp->close();
+        if (!maskPng.save(tmp->fileName())) {
+            setStatusMessage(i18n("Could not save region mask."), true);
+            m_d->generateAwaitingRegionMaskUploads = false;
+            m_d->btnGenerate->setEnabled(true);
+            return;
+        }
+
+        QString urlStr = m_d->editServerUrl->text().trimmed();
+        QUrl uploadUrl(urlStr);
+        QString up = uploadUrl.path();
+        if (up.isEmpty() || up == QLatin1Char('/'))
+            uploadUrl.setPath(QStringLiteral("/upload/image"));
+        else if (!up.endsWith(QLatin1Char('/')))
+            uploadUrl.setPath(up + QStringLiteral("/upload/image"));
+        else
+            uploadUrl.setPath(up + QStringLiteral("upload/image"));
+
+        tmp->open();
+        QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+        QHttpPart part;
+        part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"region_mask_%1.png\"")
+                                    .arg(snapIdx)));
+        part.setBodyDevice(tmp);
+        tmp->setParent(multiPart);
+        multiPart->append(part);
+        QNetworkRequest reqUp(uploadUrl);
+        ComfyUIUtils::setComfyUIRequestHeaders(reqUp);
+        QNetworkReply *replyUp = m_d->nam->post(reqUp, multiPart);
+        multiPart->setParent(replyUp);
+        m_d->labelStatus->setText(i18n("Uploading region mask %1…", region.name));
+        setProgressBarKind(true);
+        connect(replyUp, &QNetworkReply::finished, this, [this, replyUp, inputIdx]() {
+            replyUp->deleteLater();
+            setProgressBarKind(false);
+            if (replyUp->error() != QNetworkReply::NoError) {
+                setStatusMessage(i18n("Region mask upload error: %1", replyUp->errorString()), true);
+                m_d->generateAwaitingRegionMaskUploads = false;
+                m_d->btnGenerate->setEnabled(true);
+                return;
+            }
+            const QString name =
+                QJsonDocument::fromJson(replyUp->readAll()).object().value(QStringLiteral("name")).toString();
+            if (name.isEmpty() || inputIdx >= m_d->generateRegionalInputs.size()) {
+                setStatusMessage(i18n("Server did not return region mask name."), true);
+                m_d->generateAwaitingRegionMaskUploads = false;
+                m_d->btnGenerate->setEnabled(true);
+                return;
+            }
+            m_d->generateRegionalInputs[inputIdx].maskImageName = name;
+            uploadNextGenerateRegionMask();
+        });
+        return;
+    }
+
+    m_d->generateAwaitingRegionMaskUploads = false;
+    bool needsControlUpload = false;
+    for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
+        if (ComfyControlLayer::needsGenerateUpload(ce)) {
+            needsControlUpload = true;
+            break;
+        }
+    }
+    if (needsControlUpload) {
+        m_d->generateAwaitingControlUploads = true;
+        m_d->generateControlUploadIndex = 0;
+        m_d->generateControlUploadedNames.clear();
+        uploadNextGenerateControlImage();
+        return;
+    }
+    finalizeGenerateWorkflowAndSubmit(m_d->generatePendingBaseWorkflow);
+}
+
 void ComfyUIRemoteDock::continueGenerateAfterControlUploads()
 {
     m_d->generateAwaitingControlUploads = false;
-    QJsonObject workflow = m_d->generatePendingBaseWorkflow;
+    finalizeGenerateWorkflowAndSubmit(m_d->generatePendingBaseWorkflow);
+}
+
+void ComfyUIRemoteDock::finalizeGenerateWorkflowAndSubmit(QJsonObject workflow)
+{
     QList<ComfyWorkflowEngine::IpAdapterLayerInput> ipInputs;
     QList<ComfyWorkflowEngine::ControlNetLayerInput> cnInputs;
     int uploadIdx = 0;
@@ -1522,8 +1715,20 @@ void ComfyUIRemoteDock::continueGenerateAfterControlUploads()
             cnInputs.append(in);
         }
     }
+
     ComfyWorkflowEngine::applyIpAdapterLayers(&workflow, ipInputs, m_d->generatePendingArch);
-    ComfyWorkflowEngine::applyControlNetLayers(&workflow, cnInputs, m_d->generatePendingArch);
+
+    QString posNode = samplerPositiveNodeId(workflow);
+    const QString negNode = QStringLiteral("7");
+    if (m_d->generateRegionalInputs.size() >= 2) {
+        const ComfyWorkflowEngine::RegionalWorkflowNodes regional = ComfyWorkflowEngine::applyRegionalGeneration(
+            &workflow, m_d->generateRegionalInputs, samplerModelNodeId(workflow), posNode, negNode);
+        if (regional.applied) {
+            posNode = regional.positiveNodeId;
+        }
+    }
+
+    ComfyWorkflowEngine::applyControlNetLayers(&workflow, cnInputs, m_d->generatePendingArch, posNode, negNode);
     ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
 
     const int genBatch = m_d->generateStashedBatch;
@@ -1589,7 +1794,11 @@ void ComfyUIRemoteDock::continueGenerateAfterControlUploads()
     if (m_d->clientId.isEmpty())
         m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
+    m_d->generateRegionalInputs.clear();
+    m_d->generateRegionSnapshot.clear();
+
     m_d->labelStatus->setText(i18n("Submitting…"));
     m_d->progressBar->setValue(0);
+    m_d->btnGenerate->setEnabled(false);
     slotBatchSubmitNext();
 }

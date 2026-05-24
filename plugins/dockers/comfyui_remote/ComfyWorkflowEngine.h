@@ -61,7 +61,32 @@ bool applyIpAdapterLayers(QJsonObject *workflow,
 /// Skips IP-Adapter modes; returns false if no structural layers were applied.
 bool applyControlNetLayers(QJsonObject *workflow,
                              const QList<ControlNetLayerInput> &layers,
-                             ComfyResources::Arch arch);
+                             ComfyResources::Arch arch,
+                             const QString &positiveNode = QStringLiteral("6"),
+                             const QString &negativeNode = QStringLiteral("7"));
+
+/// One region for ETN_BackgroundRegion / ETN_DefineRegion / ETN_AttentionMask (mask on ComfyUI server).
+struct RegionalPromptInput {
+    QString positivePrompt;
+    QString maskImageName;
+    bool isBackground = false;
+};
+
+/// Result node ids for KSampler wiring after regional conditioning.
+struct RegionalWorkflowNodes {
+    QString modelNodeId;
+    QString positiveNodeId;
+    QString negativeNodeId;
+    bool applied = false;
+};
+
+/// Build ETN regional graph (requires comfyui-tooling-nodes). Use when region count >= 2.
+RegionalWorkflowNodes applyRegionalGeneration(QJsonObject *workflow,
+                                              const QList<RegionalPromptInput> &regions,
+                                              const QString &modelSourceNode,
+                                              const QString &rootPositiveNode,
+                                              const QString &rootNegativeNode,
+                                              const QString &clipSourceNode = QStringLiteral("4"));
 
 /// Resolve arch from checkpoint + optional style architecture string ("auto", "sdxl", …).
 ComfyResources::Arch resolveArch(const QString &checkpoint, const QString &styleArchitecture = QString());
