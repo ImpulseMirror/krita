@@ -1,0 +1,359 @@
+{
+  "plan_file": "comfyui-perfect-port.plan.md",
+  "reference_repo": "https://github.com/Acly/krita-ai-diffusion",
+  "reference_version": "1.49.0",
+  "reference_path": "/Users/ackeejag/Source/krita-ai-diffusion",
+  "target_path": "plugins/dockers/comfyui_remote",
+  "branch": "comfyui-perfect-port",
+  "updated": "2026-05-24",
+  "critical_path": ["P0.1", "P0.2", "P1.1", "P1.2", "P1.3", "P1.4", "P2.1", "P2.3", "C-control-layers"],
+  "workstreams": {
+    "P0.1": {
+      "title": "Bundle plugin data/ + CMake install + Android copy",
+      "phase": "P0",
+      "status": "complete",
+      "evidence": "plugins/dockers/comfyui_remote/data/, CMakeLists.txt install, pluginInstallDataDir()"
+      "depends_on": [],
+      "python_refs": ["ai_diffusion/styles/", "ai_diffusion/presets/", "ai_diffusion/tags/", "ai_diffusion/icons/", "ai_diffusion/language/"],
+      "cpp_targets": ["plugins/dockers/comfyui_remote/data/", "CMakeLists.txt", "ComfyUIUtils.cpp"]
+    },
+    "P0.2": {
+      "title": "StyleCollection — load 14 JSON presets",
+      "phase": "P0",
+      "status": "complete",
+      "evidence": "ComfyStyleCollection.cpp, rebuildPresetComboItems, applyComfyStyleEntry"
+      "depends_on": ["P0.1"],
+      "python_refs": ["ai_diffusion/style.py", "ai_diffusion/styles/*.json"],
+      "cpp_targets": ["ComfyStyleCollection.h", "ComfyStyleCollection.cpp", "ComfyUIRemoteDockPresets.cpp"]
+    },
+    "P0.3": {
+      "title": "ComfyTheme — palette, icons, flat combos",
+      "phase": "P0",
+      "status": "not_started",
+      "depends_on": ["P0.1"],
+      "python_refs": ["ai_diffusion/ui/theme.py"],
+      "cpp_targets": ["ComfyTheme.h", "ComfyTheme.cpp"]
+    },
+    "P0.4": {
+      "title": "Spec traceability / CI checklist (optional)",
+      "phase": "P0",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": [],
+      "cpp_targets": []
+    },
+    "P1.1": {
+      "title": "Port resources.py — Arch, ControlMode, ResourceId",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P0.2"],
+      "python_refs": ["ai_diffusion/resources.py"],
+      "cpp_targets": ["ComfyResources.h", "ComfyResources.cpp"]
+    },
+    "P1.2": {
+      "title": "ComfyWorkflowEngine::build_generate (SD15, SDXL, Flux)",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.1", "P0.2"],
+      "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/model.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.h", "ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp"]
+    },
+    "P1.3": {
+      "title": "Control layer + IP-Adapter workflow injection",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.2", "C-control-layers"],
+      "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/control.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.cpp"]
+    },
+    "P1.4": {
+      "title": "process_regions equivalent + regional generate",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.2", "P2.3"],
+      "python_refs": ["ai_diffusion/region.py", "ai_diffusion/workflow.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp", "ComfyUIRemoteDockRegions.cpp"]
+    },
+    "P1.5": {
+      "title": "Inpaint/refine/edit paths; hasStructuralControl",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.2", "P1.3"],
+      "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/api.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockInpaint.cpp"]
+    },
+    "P1.6": {
+      "title": "Live + animation workflow builders",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.2"],
+      "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/model.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockLive.cpp", "ComfyUIRemoteDockGenerate.cpp"]
+    },
+    "P1.7": {
+      "title": "Upscale + upscale_tiled workflows",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.2"],
+      "python_refs": ["ai_diffusion/workflow.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockUpscale.cpp"]
+    },
+    "P1.8": {
+      "title": "Golden JSON tests vs Python fixtures",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P1.2"],
+      "python_refs": ["scripts/export_workflow_fixture.py"],
+      "cpp_targets": ["tests/ComfyWorkflowEngineTest.cpp"]
+    },
+    "P2.1": {
+      "title": "ControlLayerList UI in generation/regions",
+      "phase": "P2",
+      "status": "not_started",
+      "depends_on": ["C-control-layers"],
+      "python_refs": ["ai_diffusion/ui/control.py", "ai_diffusion/ui/region.py"],
+      "cpp_targets": ["ComfyControlLayerWidget.cpp", "ComfyUIRemoteDock.cpp"]
+    },
+    "P2.2": {
+      "title": "Region inline editor + link + region-only",
+      "phase": "P2",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": ["ai_diffusion/ui/region.py", "ai_diffusion/region.py"],
+      "cpp_targets": ["ComfyRegionPromptWidget.cpp", "ComfyUIRemoteDockRegions.cpp"]
+    },
+    "P2.3": {
+      "title": "Persist ui.json region/control schema",
+      "phase": "P2",
+      "status": "not_started",
+      "depends_on": ["C-control-layers", "P2.2"],
+      "python_refs": ["ai_diffusion/persistence.py"],
+      "cpp_targets": ["ComfyUIUtils.cpp", "ComfyUIRemoteDock.cpp"]
+    },
+    "P2.4": {
+      "title": "generate_control_layer jobs",
+      "phase": "P2",
+      "status": "not_started",
+      "depends_on": ["P1.3", "P2.1"],
+      "python_refs": ["ai_diffusion/model.py", "ai_diffusion/control.py"],
+      "cpp_targets": ["ComfyUIRemoteDockGenerate.cpp"]
+    },
+    "P3.1": {
+      "title": "ComfyCloudClient — OAuth, API, auth states",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": ["ai_diffusion/cloud_client.py", "ai_diffusion/ui/settings.py"],
+      "cpp_targets": ["ComfyCloudClient.h", "ComfyCloudClient.cpp", "ComfyUIRemoteDockConnection.cpp", "ComfyUIRemoteDockSettings.cpp"]
+    },
+    "P3.2": {
+      "title": "Managed server OR Android guided external setup",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": ["ai_diffusion/server.py", "ai_diffusion/ui/server.py"],
+      "cpp_targets": ["ComfyManagedServer.cpp", "ComfyUIRemoteDockSettings.cpp"]
+    },
+    "P3.3": {
+      "title": "Graph workspace — CustomWorkflowWidget layout",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": ["ai_diffusion/ui/custom_workflow.py", "ai_diffusion/custom_workflow.py"],
+      "cpp_targets": ["ComfyUIRemoteDock.cpp", "ComfyUIRemoteDockWebWorkflow.cpp"]
+    },
+    "P3.4": {
+      "title": "WebSocket workflow publish (Android WebSockets ON)",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": ["P3.3"],
+      "python_refs": ["ai_diffusion/comfy_client.py"],
+      "cpp_targets": ["ComfyUIRemoteDockWebWorkflow.cpp", "CMakeLists.txt"]
+    },
+    "P4.1": {
+      "title": "All inpaint modes + Seamless/Focus labels",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": ["P1.5"],
+      "python_refs": ["ai_diffusion/api.py", "ai_diffusion/ui/generation.py"],
+      "cpp_targets": ["ComfyUIRemoteDock.cpp", "ComfyUIUtils.cpp"]
+    },
+    "P4.2": {
+      "title": "Prompt translation in generate path",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": ["P1.2"],
+      "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/text.py"],
+      "cpp_targets": ["ComfyUIRemoteDockGenerate.cpp"]
+    },
+    "P4.3": {
+      "title": "Styles tab — VAE, clip skip, sampler editors",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": ["P0.2"],
+      "python_refs": ["ai_diffusion/ui/style.py"],
+      "cpp_targets": ["ComfyUIRemoteDockSettings.cpp"]
+    },
+    "P4.4": {
+      "title": "Language JSON catalogs",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": ["P0.1"],
+      "python_refs": ["ai_diffusion/localization.py", "ai_diffusion/language/"],
+      "cpp_targets": ["ComfyLocalization.cpp"]
+    },
+    "P4.5": {
+      "title": "FileLibrary checkpoints + hashing",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": ["ai_diffusion/files.py"],
+      "cpp_targets": ["ComfyUIUtils.cpp"]
+    },
+    "P5.1": {
+      "title": "Unit tests — workflow, persistence, styles",
+      "phase": "P5",
+      "status": "not_started",
+      "depends_on": ["P1.8"],
+      "python_refs": [],
+      "cpp_targets": ["tests/"]
+    },
+    "P5.2": {
+      "title": "Mock ComfyUI HTTP integration tests",
+      "phase": "P5",
+      "status": "not_started",
+      "depends_on": ["P1.2"],
+      "python_refs": [],
+      "cpp_targets": ["tests/"]
+    },
+    "P5.3": {
+      "title": "Manual matrix — Android APK vs Python plugin",
+      "phase": "P5",
+      "status": "not_started",
+      "depends_on": [],
+      "python_refs": [],
+      "cpp_targets": []
+    },
+    "P5.4": {
+      "title": "Document Android-only deviations",
+      "phase": "P5",
+      "status": "not_started",
+      "depends_on": ["P3.2"],
+      "python_refs": [],
+      "cpp_targets": ["comfyui-perfect-port.plan.md"]
+    },
+    "C-control-layers": {
+      "title": "ControlLayer + ControlLayerList model",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": ["P0.1"],
+      "python_refs": ["ai_diffusion/control.py"],
+      "cpp_targets": ["ComfyControlLayer.h", "ComfyControlLayer.cpp"]
+    },
+    "GAP-A": {
+      "title": "Detail: ComfyWorkflowEngine (workflow.py port)",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.1.A",
+      "notes": "See plan §3.1.A"
+    },
+    "GAP-B": {
+      "title": "Detail: Style presets from JSON",
+      "phase": "P0",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.1.B"
+    },
+    "GAP-C": {
+      "title": "Detail: Control layers UI + gen",
+      "phase": "P2",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.1.C"
+    },
+    "GAP-D": {
+      "title": "Detail: Regions UI + semantics",
+      "phase": "P2",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.1.D"
+    },
+    "GAP-E": {
+      "title": "Detail: Cloud client",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.2.E"
+    },
+    "GAP-F": {
+      "title": "Detail: Managed server",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.2.F"
+    },
+    "GAP-G": {
+      "title": "Detail: Graph/custom workspace",
+      "phase": "P3",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.2.G"
+    },
+    "GAP-H": {
+      "title": "Detail: Inpaint modes",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.2.H"
+    },
+    "GAP-I": {
+      "title": "Detail: Prompt translation",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.2.I"
+    },
+    "GAP-J": {
+      "title": "Detail: Tiled upscale",
+      "phase": "P1",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.2.J"
+    },
+    "GAP-K": {
+      "title": "Detail: Bundle data directory",
+      "phase": "P0",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.3.K"
+    },
+    "GAP-L": {
+      "title": "Detail: Theme system",
+      "phase": "P0",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.3.L"
+    },
+    "GAP-M": {
+      "title": "Detail: Localization JSON",
+      "phase": "P4",
+      "status": "not_started",
+      "depends_on": [],
+      "plan_section": "3.3.M"
+    }
+  },
+  "acceptance_manual": [
+    "M1-connect-custom-comfyui",
+    "M2-generate-sdxl",
+    "M3-inpaint-modes",
+    "M4-regions-control",
+    "M5-live-record",
+    "M6-upscale-refine",
+    "M7-animation-batch",
+    "M8-custom-workflow",
+    "M9-history-roundtrip",
+    "M10-settings-roundtrip",
+    "M11-cloud-signin"
+  ]
+}

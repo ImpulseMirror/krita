@@ -5,6 +5,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
 
 #include <QInputDialog>
@@ -34,35 +35,12 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
         return; // None
     }
     if (index < firstCustom) {
-        switch (index) {
-        case 1: // Portrait
-            m_d->editPrompt->setPlainText("portrait, face, detailed skin, soft lighting");
-            m_d->editNegative->setPlainText("blurry, deformed");
-            m_d->spinWidth->setValue(512);
-            m_d->spinHeight->setValue(768);
-            break;
-        case 2: // Landscape
-            m_d->editPrompt->setPlainText("landscape, scenery, detailed environment, atmosphere");
-            m_d->editNegative->setPlainText("blurry, text");
-            m_d->spinWidth->setValue(768);
-            m_d->spinHeight->setValue(512);
-            break;
-        case 3: // Anime
-            m_d->editPrompt->setPlainText("anime style, vibrant colors, clean lines");
-            m_d->editNegative->setPlainText("realistic, photo");
-            m_d->spinWidth->setValue(512);
-            m_d->spinHeight->setValue(512);
-            break;
-        case 4: // Realistic
-            m_d->editPrompt->setPlainText("photorealistic, 8k, detailed, high quality");
-            m_d->editNegative->setPlainText("cartoon, anime, painting");
-            m_d->spinWidth->setValue(512);
-            m_d->spinHeight->setValue(512);
-            break;
-        default:
-            break;
-        }
-        m_d->ksamplerScheduler = QStringLiteral("normal");
+        const bool showBuiltin =
+            ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
+        const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
+        const int styleIdx = index - 1;
+        if (styleIdx >= 0 && styleIdx < styles.size())
+            applyComfyStyleEntry(*styles.at(styleIdx));
         persistDocumentDefaultsToSettings();  // §13.194
         return;
     }

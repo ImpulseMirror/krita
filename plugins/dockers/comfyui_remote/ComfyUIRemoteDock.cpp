@@ -5,6 +5,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
 #include "ComfyUIIntervalSlider.h"
 #include "ComfyUIPoseLayers.h"
@@ -2553,21 +2554,9 @@ QString ComfyUIRemoteDock::encodeStyleIdFromPresetCombo(const QComboBox *cb) con
     const int idx = cb->currentIndex();
     if (idx <= 0)
         return QStringLiteral("none");
-    const int fc = firstCustomPresetIndex();
-    if (idx < fc) {
-        switch (idx) {
-        case 1:
-            return QStringLiteral("portrait");
-        case 2:
-            return QStringLiteral("landscape");
-        case 3:
-            return QStringLiteral("anime");
-        case 4:
-            return QStringLiteral("realistic");
-        default:
-            return QStringLiteral("none");
-        }
-    }
+    const QVariant data = cb->itemData(idx);
+    if (data.isValid() && !data.toString().isEmpty())
+        return data.toString();
     return QStringLiteral("custom:") + cb->currentText();
 }
 
@@ -2589,23 +2578,32 @@ void ComfyUIRemoteDock::applyStyleIdToPresetCombo(QComboBox *cb, const QString &
     }
     if (id.startsWith(QLatin1String("custom:"))) {
         const QString name = id.mid(7);
+        for (int i = 0; i < cb->count(); ++i) {
+            if (cb->itemData(i).toString() == id) {
+                cb->setCurrentIndex(i);
+                return;
+            }
+        }
         const int fi = cb->findText(name);
         if (fi >= 0)
             cb->setCurrentIndex(fi);
         return;
     }
-    const int fc = firstCustomPresetIndex();
-    int target = -1;
-    if (id == QLatin1String("portrait"))
-        target = 1;
-    else if (id == QLatin1String("landscape"))
-        target = 2;
-    else if (id == QLatin1String("anime"))
-        target = 3;
-    else if (id == QLatin1String("realistic"))
-        target = 4;
-    if (target > 0 && target < fc)
-        cb->setCurrentIndex(target);
+    for (int i = 0; i < cb->count(); ++i) {
+        if (cb->itemData(i).toString() == id) {
+            cb->setCurrentIndex(i);
+            return;
+        }
+    }
+    const ComfyStyleEntry *legacy = ComfyStyleCollection::instance().findByStyleId(id);
+    if (legacy) {
+        for (int i = 0; i < cb->count(); ++i) {
+            if (cb->itemData(i).toString() == legacy->styleId) {
+                cb->setCurrentIndex(i);
+                return;
+            }
+        }
+    }
 }
 
 QString ComfyUIRemoteDock::checkpointNameForUpscaleRefinementPreset() const
@@ -4655,6 +4653,13 @@ void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
     bool showAlert = false;
     if (index == 0) {
         showAlert = true;  // "None" — no style selected, may not use negative prompt
+    } else if (index < firstCustom) {
+        const bool showBuiltin =
+            ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
+        const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
+        const int styleIdx = index - 1;
+        if (styleIdx >= 0 && styleIdx < styles.size())
+            showAlert = !styles.at(styleIdx)->usesNegativePrompt();
     } else if (index >= firstCustom) {
         QString name = m_d->comboPreset->itemText(index);
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote_Preset_" + name);
@@ -4663,41 +4668,104 @@ void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
     m_d->labelNegativePromptAlert->setVisible(showAlert);
 }
 
+int ComfyUIRemoteDock::legacyKConfigPresetCount() const
+{
+    return KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote")).readEntry(QStringLiteral("PresetNames"), QStringList()).size();
+}
+
 int ComfyUIRemoteDock::firstCustomPresetIndex() const
 {
     const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
-    return showBuiltin ? Private::builtinPresetCount : 1;
+    return 1 + ComfyStyleCollection::instance().filtered(showBuiltin).size();
+}
+
+void ComfyUIRemoteDock::applyComfyStyleEntry(const ComfyStyleEntry &style)
+{
+    if (!m_d->editPrompt || !m_d->editNegative)
+        return;
+    if (!style.stylePrompt.contains(QStringLiteral("{prompt}")))
+        m_d->editPrompt->setPlainText(style.stylePrompt);
+    m_d->editNegative->setPlainText(style.negativePrompt);
+
+    if (style.preferredResolution > 0) {
+        const int side = style.preferredResolution;
+        m_d->spinWidth->setValue(side);
+        m_d->spinHeight->setValue(side);
+    }
+
+    if (m_d->comboCheckpoint && !style.checkpoints.isEmpty()) {
+        QString ckpt = style.checkpoints.first();
+        for (int i = 0; i < m_d->comboCheckpoint->count(); ++i) {
+            if (m_d->comboCheckpoint->itemText(i) == ckpt) {
+                m_d->comboCheckpoint->setCurrentIndex(i);
+                ckpt.clear();
+                break;
+            }
+        }
+        if (!ckpt.isEmpty())
+            m_d->comboCheckpoint->setCurrentText(ckpt);
+    }
+
+    const QJsonObject samplerRoot = ComfyUIUtils::builtinSamplerPresetsRoot();
+    QString sam, sch;
+    int steps = style.samplerSteps;
+    int minSteps = 1;
+    double cfg = style.cfgScale;
+    if (!style.samplerPresetName.isEmpty()
+        && ComfyUIUtils::samplerPresetLookup(samplerRoot, style.samplerPresetName, &sam, &sch, &steps, &minSteps, &cfg)) {
+        m_d->spinSteps->setValue(qMax(steps, minSteps));
+        m_d->spinCfg->setValue(cfg);
+        if (m_d->comboSampler) {
+            const int si = m_d->comboSampler->findText(sam);
+            if (si >= 0)
+                m_d->comboSampler->setCurrentIndex(si);
+            else
+                m_d->comboSampler->setCurrentText(sam);
+        }
+        m_d->ksamplerScheduler = sch;
+    } else {
+        m_d->spinSteps->setValue(style.samplerSteps);
+        m_d->spinCfg->setValue(style.cfgScale);
+    }
+
+    if (m_d->layerCountRow) {
+        const QString arch = style.architecture.toLower();
+        const bool qwenLayered = arch.contains(QLatin1String("qwen")) && arch.contains(QLatin1String("layered"));
+        m_d->layerCountRow->setVisible(qwenLayered);
+    }
 }
 
 void ComfyUIRemoteDock::rebuildPresetComboItems()
 {
     if (!m_d->comboPreset) return;
-    const QString prevText = m_d->comboPreset->currentText();
+    ComfyUIUtils::ensureBundledPluginDataInstalled();
+    ComfyStyleCollection::instance().reload();
+    const QString prevStyleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
     m_d->comboPreset->blockSignals(true);
     m_d->comboPreset->clear();
     m_d->comboPreset->addItem(i18n("None"));
+    m_d->comboPreset->setItemData(0, QStringLiteral("none"));
     m_d->comboPreset->setItemIcon(0, KisIconUtils::loadIcon("document-new"));
     const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
-    if (showBuiltin) {
-        m_d->comboPreset->addItem(i18n("Portrait"));
-        m_d->comboPreset->addItem(i18n("Landscape"));
-        m_d->comboPreset->addItem(i18n("Anime"));
-        m_d->comboPreset->addItem(i18n("Realistic"));
-        m_d->comboPreset->setItemIcon(1, KisIconUtils::loadIcon("user-identity"));
-        m_d->comboPreset->setItemIcon(2, KisIconUtils::loadIcon("view-landscape"));
-        m_d->comboPreset->setItemIcon(3, KisIconUtils::loadIcon("draw-brush"));
-        m_d->comboPreset->setItemIcon(4, KisIconUtils::loadIcon("camera-photo"));
+    const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
+    for (const ComfyStyleEntry *s : styles) {
+        const int idx = m_d->comboPreset->addItem(s->name);
+        m_d->comboPreset->setItemData(idx, s->styleId);
     }
     KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
     const QStringList customNames = cfg.readEntry("PresetNames", QStringList());
     for (const QString &name : customNames) {
-        if (!name.isEmpty()) m_d->comboPreset->addItem(name);
+        if (name.isEmpty())
+            continue;
+        const int idx = m_d->comboPreset->addItem(name);
+        m_d->comboPreset->setItemData(idx, QStringLiteral("custom:") + name);
     }
     int restoreIdx = 0;
-    if (!prevText.isEmpty()) {
-        const int fi = m_d->comboPreset->findText(prevText);
-        if (fi >= 0) restoreIdx = fi;
-    }
+    if (!prevStyleId.isEmpty() && prevStyleId != QLatin1String("none"))
+        applyStyleIdToPresetCombo(m_d->comboPreset, prevStyleId);
+    restoreIdx = m_d->comboPreset->currentIndex();
+    if (restoreIdx < 0)
+        restoreIdx = 0;
     m_d->comboPreset->setCurrentIndex(restoreIdx);
     m_d->comboPreset->blockSignals(false);
     if (m_d->btnDeletePreset)

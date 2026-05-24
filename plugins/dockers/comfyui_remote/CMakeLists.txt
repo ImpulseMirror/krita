@@ -2,6 +2,7 @@ add_subdirectory(tests)
 
 # Static lib for dock (used by plugin and tests)
 set(kritacomfyuiremote_static_SOURCES
+    ComfyStyleCollection.cpp
     ComfyUIIntervalSlider.cpp
     ComfyUIPoseLayers.cpp
     ComfyUIUtils.cpp
@@ -20,6 +21,8 @@ set(kritacomfyuiremote_static_SOURCES
 )
 kis_add_library(kritacomfyuiremote_static STATIC ${kritacomfyuiremote_static_SOURCES})
 target_link_libraries(kritacomfyuiremote_static PRIVATE kritaimage kritaui)
+target_compile_definitions(kritacomfyuiremote_static PRIVATE
+    "COMFYUI_PLUGIN_SOURCE_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")
 
 # §13.37: optional ZIP extract after verified download (KF Archive)
 find_package(KF${KF_MAJOR} ${MIN_FRAMEWORKS_VERSION} QUIET COMPONENTS Archive)
@@ -55,4 +58,5 @@ kis_add_library(kritacomfyuiremote MODULE ${kritacomfyuiremote_SOURCES})
 # Link order: static first, then resolve symbols from kritaimage/kritaui (Unix linkers are order-sensitive).
 target_link_libraries(kritacomfyuiremote PRIVATE kritacomfyuiremote_static kritaimage kritaui)
 install(TARGETS kritacomfyuiremote DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION ${KRITA_PLUGIN_INSTALL_DIR}/data)
 install(FILES ComfyUIRemote.action DESTINATION ${KDE_INSTALL_DATADIR}/krita/actions)

@@ -105,6 +105,8 @@ private:
     // §5.5: Upscale refinement model list mirrors main style preset combo
     void syncUpscaleRefinementModelFromPresetCombo();
     int firstCustomPresetIndex() const;
+    int legacyKConfigPresetCount() const;
+    void applyComfyStyleEntry(const struct ComfyStyleEntry &style);
     // §4.5: Rename a custom preset in KConfig (Styles tab Name field).
     bool renameCustomPreset(const QString &oldName, const QString &newName);
     // §4.5 / §13.56: Apply quality_sampler_preset from settings.json to dock + ksamplerScheduler.

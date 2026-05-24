@@ -632,27 +632,39 @@ const char g_builtinSamplersJson[] = R"json({
     "Euler Ancestral": {"sampler": "euler_ancestral", "scheduler": "normal", "steps": 24, "minimum_steps": 1, "cfg": 7.0}
 })json";
 
+static void mergePresetJsonFile(QJsonObject *merged, const QString &path)
+{
+    if (!merged || path.isEmpty())
+        return;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(f.readAll()), &err);
+    f.close();
+    if (err.error != QJsonParseError::NoError || !doc.isObject())
+        return;
+    const QJsonObject fo = doc.object();
+    for (auto it = fo.constBegin(); it != fo.constEnd(); ++it) {
+        if (it.value().isObject())
+            merged->insert(it.key(), it.value());
+    }
+}
+
 static QJsonObject loadMergedSamplerPresets()
 {
+    ComfyUIUtils::ensureBundledPluginDataInstalled();
     QJsonObject merged;
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(g_builtinSamplersJson), &err);
-    if (err.error == QJsonParseError::NoError && doc.isObject())
-        merged = doc.object();
-    const QString path = ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/samplers.json");
-    QDir().mkpath(ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets"));
-    QFile f(path);
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QJsonDocument ud = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(f.readAll()), &err);
-        f.close();
-        if (err.error == QJsonParseError::NoError && ud.isObject()) {
-            const QJsonObject fo = ud.object();
-            for (auto it = fo.constBegin(); it != fo.constEnd(); ++it) {
-                if (it.value().isObject())
-                    merged.insert(it.key(), it.value());
-            }
-        }
+    const QString installPath = ComfyUIUtils::pluginInstallDataDir() + QStringLiteral("/presets/samplers.json");
+    mergePresetJsonFile(&merged, installPath);
+    if (merged.isEmpty()) {
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(g_builtinSamplersJson), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject())
+            merged = doc.object();
     }
+    QDir().mkpath(ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets"));
+    mergePresetJsonFile(&merged, ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/samplers.json"));
     return merged;
 }
 
@@ -698,25 +710,17 @@ const char g_builtinControlJson[] = R"json({
 
 static QJsonObject loadMergedControlPresets()
 {
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(QByteArray(g_builtinControlJson), &err);
+    ComfyUIUtils::ensureBundledPluginDataInstalled();
     QJsonObject merged;
-    if (err.error == QJsonParseError::NoError && doc.isObject())
-        merged = doc.object();
-    const QString path = ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/control.json");
-    QDir().mkpath(ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets"));
-    QFile f(path);
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QJsonDocument ud = QJsonDocument::fromJson(ComfyUIUtils::stripJsonLineComments(f.readAll()), &err);
-        f.close();
-        if (err.error == QJsonParseError::NoError && ud.isObject()) {
-            const QJsonObject fo = ud.object();
-            for (auto it = fo.constBegin(); it != fo.constEnd(); ++it) {
-                if (it.value().isObject())
-                    merged.insert(it.key(), it.value());
-            }
-        }
+    mergePresetJsonFile(&merged, ComfyUIUtils::pluginInstallDataDir() + QStringLiteral("/presets/control.json"));
+    if (merged.isEmpty()) {
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(g_builtinControlJson), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject())
+            merged = doc.object();
     }
+    QDir().mkpath(ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets"));
+    mergePresetJsonFile(&merged, ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/control.json"));
     return merged;
 }
 
@@ -1004,6 +1008,56 @@ void migrateLegacyDotLogsPath(const QString &legacyDotLogs, const QString &logDi
 }
 
 } // namespace
+
+QString pluginInstallDataDir()
+{
+    const QString binDir = pluginBinaryDirectory();
+    if (!binDir.isEmpty()) {
+        const QString nextToModule = binDir + QStringLiteral("/data");
+        if (QDir(nextToModule).exists())
+            return nextToModule;
+        const QString nested = binDir + QStringLiteral("/comfyui_remote/data");
+        if (QDir(nested).exists())
+            return nested;
+    }
+#ifdef COMFYUI_PLUGIN_SOURCE_DATA_DIR
+    {
+        const QString devPath = QStringLiteral(COMFYUI_PLUGIN_SOURCE_DATA_DIR);
+        if (QDir(devPath).exists())
+            return devPath;
+    }
+#endif
+    return QString();
+}
+
+static bool copyFileIfMissing(const QString &src, const QString &dest)
+{
+    if (src.isEmpty() || dest.isEmpty() || QFileInfo::exists(dest))
+        return false;
+    QDir().mkpath(QFileInfo(dest).absolutePath());
+    return QFile::copy(src, dest);
+}
+
+void ensureBundledPluginDataInstalled()
+{
+    const QString install = pluginInstallDataDir();
+    if (install.isEmpty())
+        return;
+    const QString user = pluginUserDataDir();
+    copyFileIfMissing(install + QStringLiteral("/presets/samplers.json"),
+                      user + QStringLiteral("/presets/samplers.json"));
+    copyFileIfMissing(install + QStringLiteral("/presets/control.json"),
+                      user + QStringLiteral("/presets/control.json"));
+    copyFileIfMissing(install + QStringLiteral("/presets/models.json"),
+                      user + QStringLiteral("/presets/models.json"));
+    const QDir tagSrc(install + QStringLiteral("/tags"));
+    if (tagSrc.exists()) {
+        const QString tagDst = tagsStorageDir();
+        for (const QString &fn : tagSrc.entryList(QStringList() << QStringLiteral("*.csv"), QDir::Files)) {
+            copyFileIfMissing(tagSrc.absoluteFilePath(fn), tagDst + QLatin1Char('/') + fn);
+        }
+    }
+}
 
 QString pluginLogDir()
 {

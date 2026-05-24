@@ -67,6 +67,7 @@ ComfyUIRemotePlugin::ComfyUIRemotePlugin(QObject *parent, const QVariantList &)
     warnIfKritaBelowDocumentedMinimum();
     ComfyUIUtils::migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(); // §10.2: preserve layout after factory id change
     ComfyUIUtils::checkPluginInstallationPath();  // §13.165: warn if not in expected location
+    ComfyUIUtils::ensureBundledPluginDataInstalled();
     KoDockRegistry::instance()->add(new ComfyUIRemoteDockFactory());
 }
 

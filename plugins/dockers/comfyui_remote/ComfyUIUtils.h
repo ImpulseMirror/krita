@@ -41,6 +41,9 @@ namespace ComfyUIUtils {
 std::pair<bool, QString> checkColorMode(KisImageSP image);
 
 QString historyCacheDir();
+/// Installed plugin data (styles, presets, tags) — sibling to kritacomfyuiremote module or source tree in dev.
+QString pluginInstallDataDir();
+void ensureBundledPluginDataInstalled();
 QString pluginUserDataDir();
 QString pluginLogDir();
 // §13.148: FileLibrary storage — database_dir = user_data_dir/database; LoRAs persist in database/loras.json, checkpoints in-memory from server
