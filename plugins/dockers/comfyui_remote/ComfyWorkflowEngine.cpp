@@ -103,4 +103,65 @@ QJsonObject buildTextToImage(const TextToImageParams &params)
     return workflow;
 }
 
+bool applyControlNetLayers(QJsonObject *workflow,
+                             const QList<ControlNetLayerInput> &layers,
+                             ComfyResources::Arch arch)
+{
+    if (!workflow || workflow->isEmpty())
+        return false;
+
+    QString positiveNode = QStringLiteral("6");
+    const QString negativeNode = QStringLiteral("7");
+    int nextId = 50;
+    bool applied = false;
+
+    for (const ControlNetLayerInput &layer : layers) {
+        if (layer.imageName.isEmpty())
+            continue;
+        if (ComfyResources::ControlMode::isIpAdapter(layer.mode))
+            continue;
+        if (!ComfyResources::ControlMode::isStructural(layer.mode))
+            continue;
+        const QString cnFile = ComfyResources::defaultControlNetFileName(arch, layer.mode);
+        if (cnFile.isEmpty())
+            continue;
+
+        const QString loaderId = QString::number(nextId++);
+        const QString imageId = QString::number(nextId++);
+        const QString applyId = QString::number(nextId++);
+
+        workflow->insert(imageId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoadImage")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), layer.imageName}}}});
+        workflow->insert(loaderId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ControlNetLoader")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("control_net_name"), cnFile}}}});
+        workflow->insert(applyId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ControlNetApplyAdvanced")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("positive"), QJsonArray{positiveNode, 0}},
+                                                  {QStringLiteral("negative"), QJsonArray{negativeNode, 0}},
+                                                  {QStringLiteral("control_net"), QJsonArray{loaderId, 0}},
+                                                  {QStringLiteral("image"), QJsonArray{imageId, 0}},
+                                                  {QStringLiteral("strength"), layer.strength},
+                                                  {QStringLiteral("start_percent"), layer.startPercent},
+                                                  {QStringLiteral("end_percent"), layer.endPercent}}}});
+
+        positiveNode = applyId;
+        applied = true;
+    }
+
+    if (!applied)
+        return false;
+
+    QJsonObject sampler = workflow->value(QStringLiteral("3")).toObject();
+    QJsonObject samplerInputs = sampler.value(QStringLiteral("inputs")).toObject();
+    samplerInputs.insert(QStringLiteral("positive"), QJsonArray{positiveNode, 0});
+    sampler.insert(QStringLiteral("inputs"), samplerInputs);
+    workflow->insert(QStringLiteral("3"), sampler);
+    return true;
+}
+
 } // namespace ComfyWorkflowEngine

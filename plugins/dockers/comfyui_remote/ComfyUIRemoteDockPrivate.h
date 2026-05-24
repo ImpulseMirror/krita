@@ -7,6 +7,7 @@
 #define COMFYUI_REMOTE_DOCK_PRIVATE_H_
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyControlLayer.h"
 
 #include <QPointer>
 #include <QScopedPointer>
@@ -175,7 +176,24 @@ struct ComfyUIRemoteDock::Private
         QString name;
         QString prompt;
         QString maskSource; // "selection" or "layer:LayerName"
+        QList<ComfyControlLayerEntry> controlLayers;
     };
+
+    QList<ComfyControlLayerEntry> rootControlLayers;
+    QGroupBox *controlLayersGroupBox = nullptr;
+    QListWidget *listRootControlLayers = nullptr;
+    QPushButton *btnAddControlLayer = nullptr;
+    QPushButton *btnRemoveControlLayer = nullptr;
+    void refreshRootControlLayersList();
+
+    bool generateAwaitingControlUploads = false;
+    int generateControlUploadIndex = 0;
+    QStringList generateControlUploadedNames;
+    QString generateStashedCustomJson;
+    int generateStashedBatch = 1;
+    double generateStashedMul = 1.0;
+    QJsonObject generatePendingBaseWorkflow;
+    ComfyResources::Arch generatePendingArch = ComfyResources::Arch::Sd15;
     QList<RegionEntry> regionEntries;
     QList<RegionEntry> editRegionEntries;  // §13.125: edit_regions (Generate + Edit mode)
     /// Snapshot of active regions when "Generate regions" started (async chain must not follow live toggles).

@@ -8,6 +8,7 @@
 #include "ComfyStyleCollection.h"
 #include "ComfyResources.h"
 #include "ComfyWorkflowEngine.h"
+#include "ComfyControlLayer.h"
 #include "ComfyUIUtils.h"
 #include "ComfyUIWorkflows.h"
 
@@ -388,6 +389,31 @@ void ComfyUIRemoteDock::slotGenerate()
             return;
         }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
+
+        bool needsControlUpload = false;
+        for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
+            if (ce.layerName.isEmpty())
+                continue;
+            if (ComfyResources::ControlMode::isIpAdapter(ce.mode))
+                continue;
+            if (ComfyResources::ControlMode::isStructural(ce.mode)) {
+                needsControlUpload = true;
+                break;
+            }
+        }
+        if (needsControlUpload) {
+            m_d->generatePendingBaseWorkflow = workflow;
+            m_d->generatePendingArch = genParams.arch;
+            m_d->generateStashedCustomJson = customJson;
+            m_d->generateStashedBatch = genBatch;
+            m_d->generateStashedMul = genMul;
+            m_d->generateAwaitingControlUploads = true;
+            m_d->generateControlUploadIndex = 0;
+            m_d->generateControlUploadedNames.clear();
+            m_d->btnGenerate->setEnabled(false);
+            uploadNextGenerateControlImage();
+            return;
+        }
     }
 
     const int batchCount = genBatch;
@@ -1363,4 +1389,200 @@ void ComfyUIRemoteDock::slotControlPreviewPoll()
             setStatusMessage(i18n("Control preprocessor preview finished."), false);
         });
     });
+}
+
+void ComfyUIRemoteDock::uploadNextGenerateControlImage()
+{
+    if (!m_d->generateAwaitingControlUploads || !m_d->viewManager) {
+        m_d->btnGenerate->setEnabled(true);
+        return;
+    }
+    KisImageSP image = m_d->viewManager->image();
+    const QString urlStr = m_d->editServerUrl->text().trimmed();
+    QUrl baseUrl(urlStr);
+    if (!baseUrl.isValid() || !image) {
+        setStatusMessage(i18n("Invalid server or document."), true);
+        m_d->generateAwaitingControlUploads = false;
+        m_d->btnGenerate->setEnabled(true);
+        return;
+    }
+
+    while (m_d->generateControlUploadIndex < m_d->rootControlLayers.size()) {
+        const ComfyControlLayerEntry ce = m_d->rootControlLayers.at(m_d->generateControlUploadIndex);
+        m_d->generateControlUploadIndex++;
+        if (ce.layerName.isEmpty() || ComfyResources::ControlMode::isIpAdapter(ce.mode)
+            || !ComfyResources::ControlMode::isStructural(ce.mode))
+            continue;
+
+        QImage img = ComfyUIUtils::getLayerProjectionAsQImage(image, ce.layerName);
+        if (img.isNull()) {
+            setStatusMessage(i18n("Could not export control layer \"%1\".", ce.layerName), true);
+            m_d->generateAwaitingControlUploads = false;
+            m_d->btnGenerate->setEnabled(true);
+            return;
+        }
+        if (ComfyUIUtils::isControlModeLines(ce.mode)) {
+            img = img.convertToFormat(QImage::Format_ARGB32);
+            for (int y = 0; y < img.height(); y++) {
+                for (int x = 0; x < img.width(); x++) {
+                    const QRgb px = img.pixel(x, y);
+                    const int a = qAlpha(px);
+                    if (a > 0)
+                        img.setPixel(x, y, qRgb(255, 255, 255));
+                    else
+                        img.setPixel(x, y, qRgb(0, 0, 0));
+                }
+            }
+        }
+
+        QTemporaryFile *tmp = new QTemporaryFile(this);
+        tmp->setFileTemplate(tmp->fileTemplate() + QStringLiteral(".png"));
+        tmp->open();
+        tmp->close();
+        if (!img.save(tmp->fileName())) {
+            setStatusMessage(i18n("Could not save control layer image."), true);
+            m_d->generateAwaitingControlUploads = false;
+            m_d->btnGenerate->setEnabled(true);
+            return;
+        }
+
+        QUrl uploadUrl(urlStr);
+        QString up = uploadUrl.path();
+        if (up.isEmpty() || up == QLatin1Char('/'))
+            uploadUrl.setPath(QStringLiteral("/upload/image"));
+        else if (!up.endsWith(QLatin1Char('/')))
+            uploadUrl.setPath(up + QStringLiteral("/upload/image"));
+        else
+            uploadUrl.setPath(up + QStringLiteral("upload/image"));
+
+        tmp->open();
+        QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+        QHttpPart part;
+        const QString fname =
+            QStringLiteral("control_%1.png").arg(m_d->generateControlUploadedNames.size());
+        part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"%1\"").arg(fname));
+        part.setBodyDevice(tmp);
+        tmp->setParent(multiPart);
+        multiPart->append(part);
+        QNetworkRequest reqUp(uploadUrl);
+        ComfyUIUtils::setComfyUIRequestHeaders(reqUp);
+        QNetworkReply *replyUp = m_d->nam->post(reqUp, multiPart);
+        multiPart->setParent(replyUp);
+        m_d->labelStatus->setText(i18n("Uploading control layer %1…", ce.layerName));
+        setProgressBarKind(true);
+        connect(replyUp, &QNetworkReply::finished, this, [this, replyUp]() {
+            replyUp->deleteLater();
+            setProgressBarKind(false);
+            if (replyUp->error() != QNetworkReply::NoError) {
+                setStatusMessage(i18n("Control upload error: %1", replyUp->errorString()), true);
+                m_d->generateAwaitingControlUploads = false;
+                m_d->btnGenerate->setEnabled(true);
+                return;
+            }
+            const QString name = QJsonDocument::fromJson(replyUp->readAll()).object().value(QStringLiteral("name")).toString();
+            if (name.isEmpty()) {
+                setStatusMessage(i18n("Server did not return control image name."), true);
+                m_d->generateAwaitingControlUploads = false;
+                m_d->btnGenerate->setEnabled(true);
+                return;
+            }
+            m_d->generateControlUploadedNames.append(name);
+            uploadNextGenerateControlImage();
+        });
+        return;
+    }
+
+    continueGenerateAfterControlUploads();
+}
+
+void ComfyUIRemoteDock::continueGenerateAfterControlUploads()
+{
+    m_d->generateAwaitingControlUploads = false;
+    QJsonObject workflow = m_d->generatePendingBaseWorkflow;
+    QList<ComfyWorkflowEngine::ControlNetLayerInput> inputs;
+    int uploadIdx = 0;
+    for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
+        if (ce.layerName.isEmpty() || ComfyResources::ControlMode::isIpAdapter(ce.mode)
+            || !ComfyResources::ControlMode::isStructural(ce.mode))
+            continue;
+        if (uploadIdx >= m_d->generateControlUploadedNames.size())
+            break;
+        ComfyWorkflowEngine::ControlNetLayerInput in;
+        in.mode = ce.mode;
+        in.imageName = m_d->generateControlUploadedNames.at(uploadIdx++);
+        in.strength = ComfyControlLayer::strengthAsFloat(ce.strength);
+        in.startPercent = ce.start;
+        in.endPercent = ce.end;
+        inputs.append(in);
+    }
+    ComfyWorkflowEngine::applyControlNetLayers(&workflow, inputs, m_d->generatePendingArch);
+    ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
+
+    const int genBatch = m_d->generateStashedBatch;
+    const double genMul = m_d->generateStashedMul;
+    QString urlStr = m_d->editServerUrl->text().trimmed();
+    QUrl baseUrl(urlStr);
+
+    int effW = m_d->spinWidth->value();
+    int effH = m_d->spinHeight->value();
+    effW = qBound(64, static_cast<int>(effW * genMul), 8192);
+    effH = qBound(64, static_cast<int>(effH * genMul), 8192);
+    ComfyUIUtils::clampExtentToMaxMegapixels(&effW, &effH);
+    int effectiveBatch = ComfyUIUtils::computeBatchSize(effW, effH, 512, genBatch);
+    if (m_d->isFullAnimationBatch && genBatch > 0)
+        effectiveBatch = genBatch;
+    m_d->batchSeedStep = qMax(1, genBatch);
+
+    int queueMode = m_d->comboQueueMode->currentData().toInt();
+    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
+        queueMode = 0;
+    if (queueMode == 2) {
+        m_d->pollTimer->stop();
+        for (const QString &id : m_d->jobQueue)
+            m_d->pendingHistoryByPromptId.remove(id);
+        if (!m_d->currentPromptId.isEmpty())
+            m_d->pendingHistoryByPromptId.remove(m_d->currentPromptId);
+        m_d->jobQueue.clear();
+        m_d->currentPromptId.clear();
+        QUrl interruptUrl(baseUrl);
+        QString ip = interruptUrl.path();
+        if (ip.isEmpty() || ip == QLatin1Char('/'))
+            interruptUrl.setPath(QStringLiteral("/interrupt"));
+        else if (!ip.endsWith(QLatin1Char('/')))
+            interruptUrl.setPath(ip + QStringLiteral("/interrupt"));
+        else
+            interruptUrl.setPath(ip + QStringLiteral("interrupt"));
+        QNetworkRequest reqI(interruptUrl);
+        ComfyUIUtils::setComfyUIRequestHeaders(reqI);
+        reqI.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        m_d->nam->post(reqI, QByteArray("{}"));
+    }
+
+    m_d->batchCollectIds.clear();
+    m_d->batchSubmitIndex = 0;
+    m_d->batchCountTarget = qMax(1, effectiveBatch);
+    m_d->batchQueueMode = queueMode;
+    m_d->batchBaseUrl = baseUrl;
+    QString path = baseUrl.path();
+    if (path.isEmpty() || path == QLatin1Char('/'))
+        m_d->batchBaseUrl.setPath(QStringLiteral("/prompt"));
+    else if (!path.endsWith(QLatin1Char('/')))
+        m_d->batchBaseUrl.setPath(path + QStringLiteral("/prompt"));
+    else
+        m_d->batchBaseUrl.setPath(path + QStringLiteral("prompt"));
+    m_d->batchNeedsPerFrameReference = false;
+    m_d->batchUseCustomWorkflow = true;
+    m_d->batchCustomWorkflow = workflow;
+    m_d->batchBaseSeed = m_d->checkFixedSeed->isChecked()
+        ? static_cast<qint64>(m_d->spinSeed->value())
+        : static_cast<qint64>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
+    if (!m_d->checkFixedSeed->isChecked())
+        m_d->spinSeed->setValue(static_cast<int>(m_d->batchBaseSeed));
+    if (m_d->clientId.isEmpty())
+        m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    m_d->labelStatus->setText(i18n("Submitting…"));
+    m_d->progressBar->setValue(0);
+    slotBatchSubmitNext();
 }

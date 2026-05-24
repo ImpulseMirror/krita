@@ -1,0 +1,48 @@
+/*
+ * SPDX-FileCopyrightText: 2025 Krita Project
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef COMFY_CONTROL_LAYER_H_
+#define COMFY_CONTROL_LAYER_H_
+
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QString>
+#include <QStringList>
+#include <QList>
+
+/// One control layer row (parity with ai_diffusion/control.py ControlLayer persisted fields).
+struct ComfyControlLayerEntry {
+    QString mode = QStringLiteral("depth");
+    QString layerId;
+    QString layerName;
+    int presetValue = 2;
+    int strength = 50;
+    double start = 0.0;
+    double end = 1.0;
+    bool useCustomStrength = false;
+
+    QJsonObject toJson() const;
+    static ComfyControlLayerEntry fromJson(const QJsonObject &o);
+};
+
+namespace ComfyControlLayer {
+
+constexpr int maxPresetValue = 4;
+constexpr int strengthMultiplier = 50;
+
+QStringList allModeKeys();
+QString modeLabel(const QString &mode);
+bool modeHasPreprocessor(const QString &mode);
+void applyPresetDefaults(ComfyControlLayerEntry *entry, const QString &archKey);
+double strengthAsFloat(int strengthPercent);
+
+QJsonArray toJsonArray(const QList<ComfyControlLayerEntry> &layers);
+QList<ComfyControlLayerEntry> fromJsonArray(const QJsonArray &arr);
+
+ComfyControlLayerEntry makeDefaultForLayer(const QString &layerName, const QString &archKey);
+
+} // namespace ComfyControlLayer
+
+#endif

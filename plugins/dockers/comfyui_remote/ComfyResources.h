@@ -68,6 +68,9 @@ bool isLines(const QString &mode);
 bool isStructural(const QString &mode);
 } // namespace ControlMode
 
+/// Default ControlNet filename for ComfyUI ControlNetLoader (first match from bundled models.json / Python search_paths).
+QString defaultControlNetFileName(Arch arch, const QString &mode);
+
 } // namespace ComfyResources
 
 #endif

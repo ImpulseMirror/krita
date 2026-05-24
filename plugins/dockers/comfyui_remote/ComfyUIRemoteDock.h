@@ -56,6 +56,8 @@ private:
     void setStatusMessage(const QString &msg, bool isError = false, bool isWarning = false);
     void loadRegionsFromConfig();
     void saveRegionsToConfig();
+    void setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout);
+    void refreshRootControlLayersList();
 
     // §13.44: Persist preview layer ID to document annotation (call when user sets preview layer)
     void savePreviewLayerIdToDocument(const QString &layerId);
@@ -220,8 +222,13 @@ private Q_SLOTS:
     void slotControlPreviewPoll();
     /// §13.98: Insert default pose SVG into active KisShapeLayer; register for 500 ms polling
     void slotAddPoseGuideToVectorLayer();
+    void slotAddControlLayer();
+    void slotRemoveControlLayer();
+    void slotControlLayerSelectionChanged();
 
 private:
+    void uploadNextGenerateControlImage();
+    void continueGenerateAfterControlUploads();
     // §13.194 / §13.137: RecentlyUsedSync — document_defaults in settings.json; skip layer_bounds on fresh docs
     void persistDocumentDefaultsToSettings();
     void tryApplyDocumentDefaultsForNewDocument(KisImageSP image);

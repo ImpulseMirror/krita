@@ -453,6 +453,8 @@ bool getSelectionModifiersSquare();
 QRect makeRectSquare(const QRect &rect, int extentWidth, int extentHeight);
 
 QImage getCanvasAsQImage(KisImageSP image);
+/// Export a paint layer by name (full image bounds); empty if not found.
+QImage getLayerProjectionAsQImage(KisImageSP image, const QString &layerName);
 // maskSource: "selection" or "layer:<name>". §13.102: when invertSelection true, invert mask (white↔black) after reading selection.
 QImage getMaskAsQImage(KisImageSP image, KisViewManager *viewManager, const QString &maskSource, bool invertSelection = false);
 

@@ -16,6 +16,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIIntervalSlider.h"
+#include "ComfyControlLayer.h"
 #include "ComfyResources.h"
 #include "ComfyWorkflowEngine.h"
 #include "ComfyUIUtils.h"
@@ -63,6 +64,8 @@ private Q_SLOTS:
     void testComfyResourcesControlModeHelpers();
     void testComfyWorkflowEngineBuildTextToImage();
     void testComfyWorkflowEngineFluxCfgCap();
+    void testComfyControlLayerJsonRoundtrip();
+    void testComfyWorkflowEngineApplyControlNet();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -839,6 +842,37 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineFluxCfgCap()
     const QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
     const double cfg = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("cfg")).toDouble();
     QCOMPARE(cfg, 3.5);
+}
+
+void ComfyUIRemoteDockTest::testComfyControlLayerJsonRoundtrip()
+{
+    ComfyControlLayerEntry e;
+    e.mode = QStringLiteral("depth");
+    e.layerName = QStringLiteral("Sketch");
+    e.presetValue = 2;
+    e.strength = 75;
+    const QJsonObject o = e.toJson();
+    const ComfyControlLayerEntry back = ComfyControlLayerEntry::fromJson(o);
+    QCOMPARE(back.mode, e.mode);
+    QCOMPARE(back.layerName, e.layerName);
+    QVERIFY(ComfyControlLayer::allModeKeys().contains(QStringLiteral("reference")));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyControlNet()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.arch = ComfyResources::Arch::Sd15;
+    QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    ComfyWorkflowEngine::ControlNetLayerInput in;
+    in.mode = QStringLiteral("depth");
+    in.imageName = QStringLiteral("control_0.png");
+    in.strength = 0.8;
+    in.startPercent = 0.0;
+    in.endPercent = 1.0;
+    QVERIFY(ComfyWorkflowEngine::applyControlNetLayers(&wf, {in}, ComfyResources::Arch::Sd15));
+    const QJsonArray pos = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("positive")).toArray();
+    QVERIFY(!pos.isEmpty());
+    QVERIFY(wf.contains(QStringLiteral("50")) || wf.contains(QStringLiteral("51")));
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

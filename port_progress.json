@@ -5,7 +5,7 @@
   "reference_path": "/Users/ackeejag/Source/krita-ai-diffusion",
   "target_path": "plugins/dockers/comfyui_remote",
   "branch": "comfyui-perfect-port",
-  "updated": "2026-05-24",
+  "updated": "2026-05-25",
   "critical_path": ["P0.1", "P0.2", "P1.1", "P1.2", "P1.3", "P1.4", "P2.1", "P2.3", "C-control-layers"],
   "workstreams": {
     "P0.1": {
@@ -63,10 +63,11 @@
     "P1.3": {
       "title": "Control layer + IP-Adapter workflow injection",
       "phase": "P1",
-      "status": "not_started",
+      "status": "in_progress",
+      "evidence": "applyControlNetLayers + generate upload chain; IP-Adapter pending",
       "depends_on": ["P1.2", "C-control-layers"],
       "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/control.py"],
-      "cpp_targets": ["ComfyWorkflowEngine.cpp"]
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp"]
     },
     "P1.4": {
       "title": "process_regions equivalent + regional generate",
@@ -247,10 +248,11 @@
     "C-control-layers": {
       "title": "ControlLayer + ControlLayerList model",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyControlLayer.h/cpp, root list UI, ui.json control[] persist",
       "depends_on": ["P0.1"],
       "python_refs": ["ai_diffusion/control.py"],
-      "cpp_targets": ["ComfyControlLayer.h", "ComfyControlLayer.cpp"]
+      "cpp_targets": ["ComfyControlLayer.h", "ComfyControlLayer.cpp", "ComfyUIRemoteDockControl.cpp"]
     },
     "GAP-A": {
       "title": "Detail: ComfyWorkflowEngine (workflow.py port)",

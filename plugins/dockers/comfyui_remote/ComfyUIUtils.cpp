@@ -2894,6 +2894,57 @@ QImage getCanvasAsQImage(KisImageSP image)
         KoColorConversionTransformation::internalConversionFlags());
 }
 
+static KisNodeSP findNodeByName(KisNodeSP root, const QString &layerName)
+{
+    if (!root || layerName.isEmpty())
+        return KisNodeSP();
+    QList<KisNodeSP> nodes;
+    nodes.append(root);
+    while (!nodes.isEmpty()) {
+        KisNodeSP n = nodes.takeFirst();
+        if (n->name() == layerName)
+            return n;
+        for (int i = 0; i < static_cast<int>(n->childCount()); i++)
+            nodes.append(n->at(i));
+    }
+    return KisNodeSP();
+}
+
+QImage getLayerProjectionAsQImage(KisImageSP image, const QString &layerName)
+{
+    if (!image || layerName.isEmpty())
+        return QImage();
+    KisNodeSP root = image->rootLayer();
+    if (!root)
+        return QImage();
+    KisNodeSP found = findNodeByName(root, layerName);
+    if (!found)
+        return QImage();
+    QRect bounds = image->bounds();
+    if (bounds.isEmpty())
+        return QImage();
+    const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
+    if (auto *layer = dynamic_cast<KisLayer *>(found.data())) {
+        if (!layer->projection())
+            return QImage();
+        return layer->projection()->convertToQImage(profile, bounds,
+                                                   KoColorConversionTransformation::internalRenderingIntent(),
+                                                   KoColorConversionTransformation::internalConversionFlags());
+    }
+    if (auto *mask = dynamic_cast<KisMask *>(found.data())) {
+        KisPaintDeviceSP dev = mask->projection();
+        if (!dev)
+            return QImage();
+        QRect rect = dev->exactBounds() & bounds;
+        if (rect.isEmpty())
+            return QImage();
+        return dev->convertToQImage(profile, rect.x(), rect.y(), rect.width(), rect.height(),
+                                  KoColorConversionTransformation::internalRenderingIntent(),
+                                  KoColorConversionTransformation::internalConversionFlags());
+    }
+    return QImage();
+}
+
 // §13.158: create_mask_from_selection equivalent — use Krita selection API (selection(), pixelSelection(), selectedExactRect())
 // §13.102: invertSelection inverts the mask (white↔black) after reading
 QImage getMaskAsQImage(KisImageSP image, KisViewManager *viewManager, const QString &maskSource, bool invertSelection)

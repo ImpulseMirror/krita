@@ -6,6 +6,8 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
+#include "ComfyControlLayer.h"
+#include "ComfyResources.h"
 #include "ComfyUIWorkflows.h"
 
 #include <QUrl>
@@ -204,7 +206,14 @@ void ComfyUIRemoteDock::slotInpaint()
             const double strength0to1 = (m_d->spinStrength ? m_d->spinStrength->value() : 100) / 100.0;
             QString posPromptRaw = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
             const bool positiveEmpty = posPromptRaw.isEmpty();
-            const bool hasStructuralControl = false;  // no control layers in this flow
+            bool hasStructuralControl = false;
+            for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
+                if (!ce.layerName.isEmpty() && ComfyResources::ControlMode::isStructural(ce.mode)
+                    && !ComfyResources::ControlMode::isIpAdapter(ce.mode)) {
+                    hasStructuralControl = true;
+                    break;
+                }
+            }
             ComfyUIUtils::InpaintParams inpaintParams = ComfyUIUtils::detectInpaintParams(
                 effectiveMode, arch, strength0to1, positiveEmpty, hasStructuralControl, false);
             // §13.169: CustomInpaint.use_inpaint — user can disable dedicated inpaint model path

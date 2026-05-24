@@ -241,4 +241,85 @@ int latentCompressionFactor(Arch arch)
     return 8;
 }
 
+QString defaultControlNetFileName(Arch arch, const QString &mode)
+{
+    const QString m = mode.trimmed().toLower();
+    auto sd15 = [&](const char *file) -> QString {
+        if (arch == Arch::Sd15 || arch == Arch::Unknown)
+            return QString::fromUtf8(file);
+        return QString();
+    };
+    auto sdxl = [&](const char *file) -> QString {
+        if (arch == Arch::Sdxl || arch == Arch::Illu || arch == Arch::IlluV)
+            return QString::fromUtf8(file);
+        return QString();
+    };
+    auto flux = [&](const char *file) -> QString {
+        if (arch == Arch::Flux || arch == Arch::Flux2_4b || arch == Arch::Flux2_9b)
+            return QString::fromUtf8(file);
+        return QString();
+    };
+
+    if (m == QLatin1String(ControlMode::depth)) {
+        if (QString f = sd15("control_lora_rank128_v11f1p_sd15_depth_fp16.safetensors"); !f.isEmpty())
+            return f;
+        if (QString f = sdxl("control-lora-depth-rank256.safetensors"); !f.isEmpty())
+            return f;
+        if (QString f = flux("flux1-dev-controlnet-depth.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::canny_edge)) {
+        if (QString f = sd15("control_lora_rank128_v11p_sd15_canny_fp16.safetensors"); !f.isEmpty())
+            return f;
+        if (QString f = sdxl("control-lora-canny-rank256.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::scribble)) {
+        if (QString f = sd15("control_lora_rank128_v11p_sd15_scribble_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::line_art)) {
+        if (QString f = sd15("control_v11p_sd15_lineart_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::soft_edge)) {
+        if (QString f = sd15("control_lora_rank128_v11p_sd15_softedge_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::normal)) {
+        if (QString f = sd15("control_lora_rank128_v11p_sd15_normalbae_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::pose)) {
+        if (QString f = sd15("control_lora_rank128_v11p_sd15_openpose_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::segmentation)) {
+        if (QString f = sd15("control_lora_rank128_v11p_sd15_seg_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::blur)) {
+        if (QString f = sd15("control_lora_rank128_v11f1e_sd15_tile_fp16.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::inpaint)) {
+        if (QString f = sd15("control_v11p_sd15_inpaint_fp16.safetensors"); !f.isEmpty())
+            return f;
+        if (QString f = flux("flux1-dev-controlnet-inpaint.safetensors"); !f.isEmpty())
+            return f;
+    }
+    if (m == QLatin1String(ControlMode::universal)) {
+        if (QString f = sdxl("xinsir-controlnet-union-sdxl-1.0.safetensors"); !f.isEmpty())
+            return f;
+        if (QString f = flux("FLUX.1-dev-ControlNet-Union-Pro-2.0-fp8.safetensors"); !f.isEmpty())
+            return f;
+    }
+    // Fallback: SDXL/Flux union for unknown structural modes on those arches
+    if (arch == Arch::Sdxl || arch == Arch::Illu || arch == Arch::IlluV)
+        return QStringLiteral("xinsir-controlnet-union-sdxl-1.0.safetensors");
+    if (arch == Arch::Flux || arch == Arch::Flux2_4b || arch == Arch::Flux2_9b)
+        return QStringLiteral("FLUX.1-dev-ControlNet-Union-Pro-2.0-fp8.safetensors");
+    return QString();
+}
+
 } // namespace ComfyResources

@@ -6,6 +6,7 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyStyleCollection.h"
+#include "ComfyControlLayer.h"
 #include "ComfyUIUtils.h"
 #include "ComfyUIIntervalSlider.h"
 #include "ComfyUIPoseLayers.h"
@@ -1920,6 +1921,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->progressBar->setFixedHeight(6);
     setProgressBarKind(false);  // §13.18: default = generation
     genContentLayout->addWidget(m_d->progressBar);
+
+    setupRootControlLayersUi(m_d->genContentContainer, genContentLayout);
 
     // §13.49 / §13.53: Control-layer timing range + server preprocessor preview (Generate workspace only)
     m_d->controlPreviewGroupBox = new QGroupBox(i18n("Control preprocessor preview"), m_d->genContentContainer);
@@ -3974,7 +3977,7 @@ QJsonArray comfyRegionEntriesToJsonArray(const QList<ComfyUIRemoteDock::Private:
         o.insert(QStringLiteral("name"), e.name);
         o.insert(QStringLiteral("prompt"), e.prompt);
         o.insert(QStringLiteral("mask_source"), e.maskSource);
-        o.insert(QStringLiteral("control"), QJsonArray());
+        o.insert(QStringLiteral("control"), ComfyControlLayer::toJsonArray(e.controlLayers));
         arr.append(o);
     }
     return arr;
@@ -3994,6 +3997,7 @@ QList<ComfyUIRemoteDock::Private::RegionEntry> comfyParseRegionEntriesFromJsonAr
         if (ms.isEmpty())
             ms = o.value(QStringLiteral("maskSource")).toString();
         e.maskSource = ms.isEmpty() ? QStringLiteral("selection") : ms;
+        e.controlLayers = ComfyControlLayer::fromJsonArray(o.value(QStringLiteral("control")).toArray());
         if (!e.name.isEmpty() || !e.prompt.isEmpty())
             out.append(e);
     }
@@ -4066,7 +4070,7 @@ void ComfyUIRemoteDock::mergeDocumentModelIntoUiJson(QJsonObject *ui, KisImageSP
     editWrap.insert(QStringLiteral("regions"), comfyRegionEntriesToJsonArray(m_d->editRegionEntries));
     ui->insert(QStringLiteral("edit"), editWrap);
     ui->insert(QStringLiteral("regions"), rootRegionArr);
-    ui->insert(QStringLiteral("control"), QJsonArray());
+    ui->insert(QStringLiteral("control"), ComfyControlLayer::toJsonArray(m_d->rootControlLayers));
 
     static const QStringList wsIds = { QStringLiteral("generation"), QStringLiteral("upscaling"), QStringLiteral("live"),
                                        QStringLiteral("animation"), QStringLiteral("custom") };
@@ -4159,6 +4163,9 @@ void ComfyUIRemoteDock::loadRegionsPersistedForDocument(KisImageSP img)
         m_d->editRegionEntries = comfyParseRegionEntriesFromJsonArray(ea);
     else
         loadEditFromKConfig();
+
+    m_d->rootControlLayers = ComfyControlLayer::fromJsonArray(ui.value(QStringLiteral("control")).toArray());
+    refreshRootControlLayersList();
 
     refreshRegionsList();
 }
