@@ -66,6 +66,8 @@ private Q_SLOTS:
     void testComfyWorkflowEngineFluxCfgCap();
     void testComfyControlLayerJsonRoundtrip();
     void testComfyWorkflowEngineApplyControlNet();
+    void testComfyWorkflowEngineApplyIpAdapter();
+    void testComfyControlLayerNeedsGenerateUpload();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -873,6 +875,42 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyControlNet()
     const QJsonArray pos = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("positive")).toArray();
     QVERIFY(!pos.isEmpty());
     QVERIFY(wf.contains(QStringLiteral("50")) || wf.contains(QStringLiteral("51")));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyIpAdapter()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.arch = ComfyResources::Arch::Sd15;
+    QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    ComfyWorkflowEngine::IpAdapterLayerInput in;
+    in.mode = QStringLiteral("reference");
+    in.imageName = QStringLiteral("ref.png");
+    in.strength = 0.6;
+    QVERIFY(ComfyWorkflowEngine::applyIpAdapterLayers(&wf, {in}, ComfyResources::Arch::Sd15));
+    const QJsonArray model = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("model")).toArray();
+    QVERIFY(!model.isEmpty());
+    QVERIFY(model.at(0).toString() != QStringLiteral("4"));
+    bool hasIpEmbeds = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QStringLiteral("IPAdapterEmbeds")) {
+            hasIpEmbeds = true;
+            break;
+        }
+    }
+    QVERIFY(hasIpEmbeds);
+}
+
+void ComfyUIRemoteDockTest::testComfyControlLayerNeedsGenerateUpload()
+{
+    ComfyControlLayerEntry e;
+    e.layerName = QStringLiteral("Sketch");
+    e.mode = QStringLiteral("reference");
+    QVERIFY(ComfyControlLayer::needsGenerateUpload(e));
+    e.mode = QStringLiteral("depth");
+    QVERIFY(ComfyControlLayer::needsGenerateUpload(e));
+    e.layerName.clear();
+    QVERIFY(!ComfyControlLayer::needsGenerateUpload(e));
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

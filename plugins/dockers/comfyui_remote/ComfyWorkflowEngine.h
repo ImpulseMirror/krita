@@ -43,6 +43,20 @@ struct ControlNetLayerInput {
     double endPercent = 1.0;
 };
 
+/// IP-Adapter layer (reference / style / composition / face) with uploaded image.
+struct IpAdapterLayerInput {
+    QString mode;
+    QString imageName;
+    double strength = 1.0;
+    double startPercent = 0.0;
+    double endPercent = 1.0;
+};
+
+/// Apply IP-Adapter to KSampler model input (SD1.5 / SDXL). Returns false if unsupported or no layers.
+bool applyIpAdapterLayers(QJsonObject *workflow,
+                          const QList<IpAdapterLayerInput> &layers,
+                          ComfyResources::Arch arch);
+
 /// Chain ControlNetApplyAdvanced nodes onto default text2img positive conditioning (P1.3).
 /// Skips IP-Adapter modes; returns false if no structural layers were applied.
 bool applyControlNetLayers(QJsonObject *workflow,

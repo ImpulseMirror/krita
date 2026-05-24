@@ -63,11 +63,11 @@
     "P1.3": {
       "title": "Control layer + IP-Adapter workflow injection",
       "phase": "P1",
-      "status": "in_progress",
-      "evidence": "applyControlNetLayers + generate upload chain; IP-Adapter pending",
+      "status": "complete",
+      "evidence": "applyControlNetLayers + applyIpAdapterLayers (SD15/SDXL), generate upload; Flux Redux reference deferred",
       "depends_on": ["P1.2", "C-control-layers"],
       "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/control.py"],
-      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp"]
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp", "ComfyResources.cpp"]
     },
     "P1.4": {
       "title": "process_regions equivalent + regional generate",

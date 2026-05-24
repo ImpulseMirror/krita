@@ -71,6 +71,13 @@ bool isStructural(const QString &mode);
 /// Default ControlNet filename for ComfyUI ControlNetLoader (first match from bundled models.json / Python search_paths).
 QString defaultControlNetFileName(Arch arch, const QString &mode);
 
+QString defaultClipVisionFileName(Arch arch);
+QString defaultIpAdapterFileName(Arch arch, const QString &mode);
+QString defaultIpAdapterFaceFileName(Arch arch);
+
+/// True when arch supports ComfyUI_IPAdapter_plus nodes (SD1.5 / SDXL family).
+bool supportsIpAdapterWorkflow(Arch arch);
+
 } // namespace ComfyResources
 
 #endif

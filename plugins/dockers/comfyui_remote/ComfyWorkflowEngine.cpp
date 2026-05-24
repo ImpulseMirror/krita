@@ -103,6 +103,165 @@ QJsonObject buildTextToImage(const TextToImageParams &params)
     return workflow;
 }
 
+static QString ipAdapterWeightType(const QString &mode)
+{
+    const QString m = mode.trimmed().toLower();
+    if (m == QLatin1String("style"))
+        return QStringLiteral("style transfer");
+    if (m == QLatin1String("composition"))
+        return QStringLiteral("composition");
+    return QStringLiteral("linear");
+}
+
+bool applyIpAdapterLayers(QJsonObject *workflow,
+                          const QList<IpAdapterLayerInput> &layers,
+                          ComfyResources::Arch arch)
+{
+    if (!workflow || workflow->isEmpty() || !ComfyResources::supportsIpAdapterWorkflow(arch))
+        return false;
+
+    const QString clipVisionFile = ComfyResources::defaultClipVisionFileName(arch);
+    const QString ipAdapterFile = ComfyResources::defaultIpAdapterFileName(arch, QStringLiteral("reference"));
+    const QString ipFaceFile = ComfyResources::defaultIpAdapterFaceFileName(arch);
+    if (clipVisionFile.isEmpty() || ipAdapterFile.isEmpty())
+        return false;
+
+    QString modelSource = QStringLiteral("4");
+    int nextId = 100;
+    bool applied = false;
+
+    const QString clipVisionId = QString::number(nextId++);
+    workflow->insert(clipVisionId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CLIPVisionLoader")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("clip_name"), clipVisionFile}}}});
+
+    const QString ipAdapterId = QString::number(nextId++);
+    workflow->insert(ipAdapterId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("IPAdapterModelLoader")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("ipadapter_file"), ipAdapterFile}}}});
+
+    QString insightFaceId;
+    if (!ipFaceFile.isEmpty()) {
+        for (const IpAdapterLayerInput &layer : layers) {
+            if (layer.imageName.isEmpty() || layer.mode != QLatin1String("face"))
+                continue;
+            if (insightFaceId.isEmpty()) {
+                insightFaceId = QString::number(nextId++);
+                workflow->insert(insightFaceId,
+                                 QJsonObject{
+                                     {QStringLiteral("class_type"), QStringLiteral("IPAdapterInsightFaceLoader")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("provider"), QStringLiteral("CPU")},
+                                                  {QStringLiteral("model_name"), QStringLiteral("buffalo_l")}}}});
+            }
+            const QString ipFaceAdapterId = QString::number(nextId++);
+            workflow->insert(ipFaceAdapterId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("IPAdapterModelLoader")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("ipadapter_file"), ipFaceFile}}}});
+            const QString imageId = QString::number(nextId++);
+            workflow->insert(imageId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoadImage")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("image"), layer.imageName}}}});
+            const QString faceApplyId = QString::number(nextId++);
+            workflow->insert(faceApplyId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("IPAdapterFaceID")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("model"), QJsonArray{modelSource, 0}},
+                                                      {QStringLiteral("ipadapter"), QJsonArray{ipFaceAdapterId, 0}},
+                                                      {QStringLiteral("image"), QJsonArray{imageId, 0}},
+                                                      {QStringLiteral("clip_vision"), QJsonArray{clipVisionId, 0}},
+                                                      {QStringLiteral("insightface"), QJsonArray{insightFaceId, 0}},
+                                                      {QStringLiteral("weight"), layer.strength},
+                                                      {QStringLiteral("weight_faceidv2"), layer.strength * 2.0},
+                                                      {QStringLiteral("weight_type"), QStringLiteral("linear")},
+                                                      {QStringLiteral("combine_embeds"), QStringLiteral("concat")},
+                                                      {QStringLiteral("start_at"), layer.startPercent},
+                                                      {QStringLiteral("end_at"), layer.endPercent},
+                                                      {QStringLiteral("embeds_scaling"), QStringLiteral("V only")}}}});
+            modelSource = faceApplyId;
+            applied = true;
+        }
+    }
+
+    const QStringList embedModes = {QStringLiteral("reference"), QStringLiteral("style"),
+                                    QStringLiteral("composition")};
+    for (const QString &embedMode : embedModes) {
+        QList<const IpAdapterLayerInput *> group;
+        for (const IpAdapterLayerInput &layer : layers) {
+            if (layer.imageName.isEmpty())
+                continue;
+            if (layer.mode == embedMode)
+                group.append(&layer);
+        }
+        if (group.isEmpty())
+            continue;
+
+        QStringList encoderIds;
+        double rangeLo = 1.0;
+        double rangeHi = 0.0;
+        for (const IpAdapterLayerInput *layer : group) {
+            const QString imageId = QString::number(nextId++);
+            workflow->insert(imageId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoadImage")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("image"), layer->imageName}}}});
+            const QString encoderId = QString::number(nextId++);
+            workflow->insert(encoderId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("IPAdapterEncoder")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("image"), QJsonArray{imageId, 0}},
+                                                      {QStringLiteral("weight"), layer->strength},
+                                                      {QStringLiteral("ipadapter"), QJsonArray{ipAdapterId, 0}},
+                                                      {QStringLiteral("clip_vision"), QJsonArray{clipVisionId, 0}}}}});
+            encoderIds.append(encoderId);
+            rangeLo = qMin(rangeLo, layer->startPercent);
+            rangeHi = qMax(rangeHi, layer->endPercent);
+        }
+
+        QString embedsNode = encoderIds.first();
+        if (encoderIds.size() > 1) {
+            QJsonObject combineInputs;
+            combineInputs.insert(QStringLiteral("method"), QStringLiteral("concat"));
+            for (int i = 0; i < encoderIds.size(); i++)
+                combineInputs.insert(QStringLiteral("embed%1").arg(i + 1), QJsonArray{encoderIds.at(i), 0});
+            embedsNode = QString::number(nextId++);
+            workflow->insert(embedsNode,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("IPAdapterCombineEmbeds")},
+                                         {QStringLiteral("inputs"), combineInputs}});
+        }
+
+        const QString applyId = QString::number(nextId++);
+        workflow->insert(applyId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("IPAdapterEmbeds")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("model"), QJsonArray{modelSource, 0}},
+                                                  {QStringLiteral("ipadapter"), QJsonArray{ipAdapterId, 0}},
+                                                  {QStringLiteral("pos_embed"), QJsonArray{embedsNode, 0}},
+                                                  {QStringLiteral("clip_vision"), QJsonArray{clipVisionId, 0}},
+                                                  {QStringLiteral("weight"), 1.0},
+                                                  {QStringLiteral("weight_type"), ipAdapterWeightType(embedMode)},
+                                                  {QStringLiteral("embeds_scaling"), QStringLiteral("V only")},
+                                                  {QStringLiteral("start_at"), rangeLo},
+                                                  {QStringLiteral("end_at"), rangeHi}}}});
+        modelSource = applyId;
+        applied = true;
+    }
+
+    if (!applied)
+        return false;
+
+    QJsonObject sampler = workflow->value(QStringLiteral("3")).toObject();
+    QJsonObject samplerInputs = sampler.value(QStringLiteral("inputs")).toObject();
+    samplerInputs.insert(QStringLiteral("model"), QJsonArray{modelSource, 0});
+    sampler.insert(QStringLiteral("inputs"), samplerInputs);
+    workflow->insert(QStringLiteral("3"), sampler);
+    return true;
+}
+
 bool applyControlNetLayers(QJsonObject *workflow,
                              const QList<ControlNetLayerInput> &layers,
                              ComfyResources::Arch arch)

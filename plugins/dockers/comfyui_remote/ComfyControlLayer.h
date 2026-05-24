@@ -43,6 +43,9 @@ QList<ComfyControlLayerEntry> fromJsonArray(const QJsonArray &arr);
 
 ComfyControlLayerEntry makeDefaultForLayer(const QString &layerName, const QString &archKey);
 
+/// Layer contributes to generate upload (ControlNet and/or IP-Adapter).
+bool needsGenerateUpload(const ComfyControlLayerEntry &entry);
+
 } // namespace ComfyControlLayer
 
 #endif

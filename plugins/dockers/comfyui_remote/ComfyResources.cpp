@@ -322,4 +322,35 @@ QString defaultControlNetFileName(Arch arch, const QString &mode)
     return QString();
 }
 
+bool supportsIpAdapterWorkflow(Arch arch)
+{
+    return arch == Arch::Sd15 || isSdxlLike(arch);
+}
+
+QString defaultClipVisionFileName(Arch arch)
+{
+    if (supportsIpAdapterWorkflow(arch))
+        return QStringLiteral("clip-vision_vit-h.safetensors");
+    return QString();
+}
+
+QString defaultIpAdapterFileName(Arch arch, const QString &mode)
+{
+    Q_UNUSED(mode);
+    if (arch == Arch::Sd15)
+        return QStringLiteral("ip-adapter_sd15.safetensors");
+    if (isSdxlLike(arch))
+        return QStringLiteral("ip-adapter_sdxl_vit-h.safetensors");
+    return QString();
+}
+
+QString defaultIpAdapterFaceFileName(Arch arch)
+{
+    if (arch == Arch::Sd15)
+        return QStringLiteral("ip-adapter-faceid-plusv2_sd15.bin");
+    if (isSdxlLike(arch))
+        return QStringLiteral("ip-adapter-faceid-plusv2_sdxl.bin");
+    return QString();
+}
+
 } // namespace ComfyResources

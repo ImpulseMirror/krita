@@ -392,11 +392,7 @@ void ComfyUIRemoteDock::slotGenerate()
 
         bool needsControlUpload = false;
         for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
-            if (ce.layerName.isEmpty())
-                continue;
-            if (ComfyResources::ControlMode::isIpAdapter(ce.mode))
-                continue;
-            if (ComfyResources::ControlMode::isStructural(ce.mode)) {
+            if (ComfyControlLayer::needsGenerateUpload(ce)) {
                 needsControlUpload = true;
                 break;
             }
@@ -1410,8 +1406,7 @@ void ComfyUIRemoteDock::uploadNextGenerateControlImage()
     while (m_d->generateControlUploadIndex < m_d->rootControlLayers.size()) {
         const ComfyControlLayerEntry ce = m_d->rootControlLayers.at(m_d->generateControlUploadIndex);
         m_d->generateControlUploadIndex++;
-        if (ce.layerName.isEmpty() || ComfyResources::ControlMode::isIpAdapter(ce.mode)
-            || !ComfyResources::ControlMode::isStructural(ce.mode))
+        if (!ComfyControlLayer::needsGenerateUpload(ce))
             continue;
 
         QImage img = ComfyUIUtils::getLayerProjectionAsQImage(image, ce.layerName);
@@ -1500,23 +1495,35 @@ void ComfyUIRemoteDock::continueGenerateAfterControlUploads()
 {
     m_d->generateAwaitingControlUploads = false;
     QJsonObject workflow = m_d->generatePendingBaseWorkflow;
-    QList<ComfyWorkflowEngine::ControlNetLayerInput> inputs;
+    QList<ComfyWorkflowEngine::IpAdapterLayerInput> ipInputs;
+    QList<ComfyWorkflowEngine::ControlNetLayerInput> cnInputs;
     int uploadIdx = 0;
     for (const ComfyControlLayerEntry &ce : m_d->rootControlLayers) {
-        if (ce.layerName.isEmpty() || ComfyResources::ControlMode::isIpAdapter(ce.mode)
-            || !ComfyResources::ControlMode::isStructural(ce.mode))
+        if (!ComfyControlLayer::needsGenerateUpload(ce))
             continue;
         if (uploadIdx >= m_d->generateControlUploadedNames.size())
             break;
-        ComfyWorkflowEngine::ControlNetLayerInput in;
-        in.mode = ce.mode;
-        in.imageName = m_d->generateControlUploadedNames.at(uploadIdx++);
-        in.strength = ComfyControlLayer::strengthAsFloat(ce.strength);
-        in.startPercent = ce.start;
-        in.endPercent = ce.end;
-        inputs.append(in);
+        const QString imageName = m_d->generateControlUploadedNames.at(uploadIdx++);
+        if (ComfyResources::ControlMode::isIpAdapter(ce.mode)) {
+            ComfyWorkflowEngine::IpAdapterLayerInput in;
+            in.mode = ce.mode;
+            in.imageName = imageName;
+            in.strength = ComfyControlLayer::strengthAsFloat(ce.strength);
+            in.startPercent = ce.start;
+            in.endPercent = ce.end;
+            ipInputs.append(in);
+        } else {
+            ComfyWorkflowEngine::ControlNetLayerInput in;
+            in.mode = ce.mode;
+            in.imageName = imageName;
+            in.strength = ComfyControlLayer::strengthAsFloat(ce.strength);
+            in.startPercent = ce.start;
+            in.endPercent = ce.end;
+            cnInputs.append(in);
+        }
     }
-    ComfyWorkflowEngine::applyControlNetLayers(&workflow, inputs, m_d->generatePendingArch);
+    ComfyWorkflowEngine::applyIpAdapterLayers(&workflow, ipInputs, m_d->generatePendingArch);
+    ComfyWorkflowEngine::applyControlNetLayers(&workflow, cnInputs, m_d->generatePendingArch);
     ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
 
     const int genBatch = m_d->generateStashedBatch;

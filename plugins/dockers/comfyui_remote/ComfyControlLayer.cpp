@@ -166,6 +166,15 @@ QList<ComfyControlLayerEntry> fromJsonArray(const QJsonArray &arr)
     return out;
 }
 
+bool needsGenerateUpload(const ComfyControlLayerEntry &entry)
+{
+    if (entry.layerName.isEmpty())
+        return false;
+    if (ComfyResources::ControlMode::isIpAdapter(entry.mode))
+        return true;
+    return ComfyResources::ControlMode::isStructural(entry.mode);
+}
+
 ComfyControlLayerEntry makeDefaultForLayer(const QString &layerName, const QString &archKey)
 {
     ComfyControlLayerEntry e;
