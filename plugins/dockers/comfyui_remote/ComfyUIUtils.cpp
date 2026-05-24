@@ -4,6 +4,7 @@
  */
 
 #include "ComfyUIUtils.h"
+#include "ComfyResources.h"
 
 #include <cmath>
 #include <algorithm>
@@ -2764,25 +2765,10 @@ bool isSelectionEntireDocument(KisImageSP image, KisViewManager *viewManager)
     return true;
 }
 
-// §13.206: Classify checkpoint filename for arch (use_inpaint_model by arch: sd15 strength>0.5, sdxl>0.8, flux==1.0)
+// §13.206: Classify checkpoint filename for arch (delegates to ComfyResources)
 QString classifyCheckpointArch(const QString &ckptName)
 {
-    const QString lower = ckptName.trimmed().toLower();
-    // Edit models first (flux_k, qwen_e, qwen_e_p, qwen_l)
-    if (lower.contains(QLatin1String("flux_k")) || lower.contains(QLatin1String("flux-k")))
-        return QStringLiteral("flux_k");
-    if (lower.contains(QLatin1String("qwen")))
-        return QStringLiteral("qwen_e");
-    // flux2_4b: for edit_reference + fill/expand → FillMode.green, use_inpaint_model
-    if ((lower.contains(QLatin1String("flux2")) || lower.contains(QLatin1String("4b"))) && lower.contains(QLatin1String("flux")))
-        return QStringLiteral("flux2_4b");
-    if (lower.contains(QLatin1String("flux")) || lower.contains(QLatin1String("zimage")))
-        return QStringLiteral("flux");
-    if (lower.contains(QLatin1String("sdxl")) || lower.contains(QLatin1String("xl")) || lower.contains(QLatin1String("turbo")))
-        return QStringLiteral("sdxl");
-    if (lower.contains(QLatin1String("v1-5")) || lower.contains(QLatin1String("sd1.5")) || lower.contains(QLatin1String("sd15")) || lower.contains(QLatin1String("v1.5")))
-        return QStringLiteral("sd15");
-    return QStringLiteral("unknown");
+    return ComfyResources::archToKey(ComfyResources::archFromCheckpointName(ckptName));
 }
 
 // §13.206: True when arch is an edit model (flux_k, qwen_e, qwen_e_p, qwen_l)

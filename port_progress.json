@@ -12,7 +12,7 @@
       "title": "Bundle plugin data/ + CMake install + Android copy",
       "phase": "P0",
       "status": "complete",
-      "evidence": "plugins/dockers/comfyui_remote/data/, CMakeLists.txt install, pluginInstallDataDir()"
+      "evidence": "plugins/dockers/comfyui_remote/data/, CMakeLists.txt install, pluginInstallDataDir()",
       "depends_on": [],
       "python_refs": ["ai_diffusion/styles/", "ai_diffusion/presets/", "ai_diffusion/tags/", "ai_diffusion/icons/", "ai_diffusion/language/"],
       "cpp_targets": ["plugins/dockers/comfyui_remote/data/", "CMakeLists.txt", "ComfyUIUtils.cpp"]
@@ -21,7 +21,7 @@
       "title": "StyleCollection — load 14 JSON presets",
       "phase": "P0",
       "status": "complete",
-      "evidence": "ComfyStyleCollection.cpp, rebuildPresetComboItems, applyComfyStyleEntry"
+      "evidence": "ComfyStyleCollection.cpp, rebuildPresetComboItems, applyComfyStyleEntry",
       "depends_on": ["P0.1"],
       "python_refs": ["ai_diffusion/style.py", "ai_diffusion/styles/*.json"],
       "cpp_targets": ["ComfyStyleCollection.h", "ComfyStyleCollection.cpp", "ComfyUIRemoteDockPresets.cpp"]
@@ -45,7 +45,8 @@
     "P1.1": {
       "title": "Port resources.py — Arch, ControlMode, ResourceId",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyResources.h/cpp, classifyCheckpointArch delegates to archFromCheckpointName",
       "depends_on": ["P0.2"],
       "python_refs": ["ai_diffusion/resources.py"],
       "cpp_targets": ["ComfyResources.h", "ComfyResources.cpp"]
@@ -53,7 +54,8 @@
     "P1.2": {
       "title": "ComfyWorkflowEngine::build_generate (SD15, SDXL, Flux)",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyWorkflowEngine buildTextToImage/resolveArch, ComfyUIRemoteDockGenerate wired, unit tests",
       "depends_on": ["P1.1", "P0.2"],
       "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/model.py"],
       "cpp_targets": ["ComfyWorkflowEngine.h", "ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp"]

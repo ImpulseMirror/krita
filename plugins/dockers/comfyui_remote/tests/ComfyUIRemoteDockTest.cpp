@@ -16,6 +16,8 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIIntervalSlider.h"
+#include "ComfyResources.h"
+#include "ComfyWorkflowEngine.h"
 #include "ComfyUIUtils.h"
 
 class ComfyUIRemoteDockTest : public QObject
@@ -57,6 +59,10 @@ private Q_SLOTS:
     void testConvertComfyUiWorkflowUiToApiEmptyLatent();
     void testConvertComfyUiWorkflowUiToApiThreeTupleLink();
     void testKritaIconNameForThemeStem();
+    void testComfyResourcesArchFromCheckpoint();
+    void testComfyResourcesControlModeHelpers();
+    void testComfyWorkflowEngineBuildTextToImage();
+    void testComfyWorkflowEngineFluxCfgCap();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -775,6 +781,64 @@ void ComfyUIRemoteDockTest::testKritaIconNameForThemeStem()
     QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("star")), QStringLiteral("rating"));
     QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("not-a-real-theme-stem-xyz")),
              QStringLiteral("applications-graphics"));
+}
+
+void ComfyUIRemoteDockTest::testComfyResourcesArchFromCheckpoint()
+{
+    QCOMPARE(ComfyResources::archToKey(ComfyResources::archFromCheckpointName(QStringLiteral("sd_xl_base.safetensors"))),
+             QStringLiteral("sdxl"));
+    QCOMPARE(ComfyResources::archToKey(ComfyResources::archFromCheckpointName(QStringLiteral("flux1-dev.safetensors"))),
+             QStringLiteral("flux"));
+    QCOMPARE(ComfyResources::archToKey(ComfyResources::archFromCheckpointName(QStringLiteral("flux_kontext.safetensors"))),
+             QStringLiteral("flux_k"));
+    QCOMPARE(ComfyUIUtils::classifyCheckpointArch(QStringLiteral("v1-5-pruned-emaonly.safetensors")),
+             QStringLiteral("sd15"));
+    QCOMPARE(ComfyWorkflowEngine::resolveArch(QStringLiteral("unknown.ckpt"), QStringLiteral("sdxl")),
+             ComfyResources::Arch::Sdxl);
+}
+
+void ComfyUIRemoteDockTest::testComfyResourcesControlModeHelpers()
+{
+    QVERIFY(ComfyResources::ControlMode::isIpAdapter(QStringLiteral("reference")));
+    QVERIFY(ComfyResources::ControlMode::isLines(QStringLiteral("canny_edge")));
+    QVERIFY(!ComfyResources::ControlMode::isStructural(QStringLiteral("reference")));
+    QVERIFY(ComfyResources::ControlMode::isStructural(QStringLiteral("depth")));
+    QVERIFY(ComfyResources::supportsRegions(ComfyResources::Arch::Sdxl));
+    QVERIFY(!ComfyResources::supportsRegions(ComfyResources::Arch::Flux));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildTextToImage()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.checkpoint = QStringLiteral("sd_xl_base.safetensors");
+    p.arch = ComfyResources::Arch::Sdxl;
+    p.width = 768;
+    p.height = 512;
+    p.seed = 42;
+    p.steps = 30;
+    p.cfg = 6.5;
+    p.positivePrompt = QStringLiteral("mountain lake");
+    p.negativePrompt = QStringLiteral("blurry");
+    const QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    QVERIFY(!wf.isEmpty());
+    const QJsonObject i3 = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i3.value(QStringLiteral("steps")).toInt(), 30);
+    QCOMPARE(static_cast<qint64>(i3.value(QStringLiteral("seed")).toDouble()), 42);
+    const QJsonObject i5 = wf.value(QStringLiteral("5")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i5.value(QStringLiteral("width")).toInt(), 768);
+    QCOMPARE(i5.value(QStringLiteral("height")).toInt(), 512);
+    const QJsonObject i6 = wf.value(QStringLiteral("6")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i6.value(QStringLiteral("text")).toString(), QStringLiteral("mountain lake"));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineFluxCfgCap()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.arch = ComfyResources::Arch::Flux;
+    p.cfg = 8.0;
+    const QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    const double cfg = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("cfg")).toDouble();
+    QCOMPARE(cfg, 3.5);
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

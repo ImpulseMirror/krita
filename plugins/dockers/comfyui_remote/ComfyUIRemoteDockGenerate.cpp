@@ -5,6 +5,9 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyStyleCollection.h"
+#include "ComfyResources.h"
+#include "ComfyWorkflowEngine.h"
 #include "ComfyUIUtils.h"
 #include "ComfyUIWorkflows.h"
 
@@ -325,13 +328,6 @@ void ComfyUIRemoteDock::slotGenerate()
         }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
     } else {
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(defaultWorkflow), &err);
-        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
-            setStatusMessage(i18n("Workflow JSON error."), true);
-            return;
-        }
-        workflow = doc.object();
         qint64 seed = m_d->checkFixedSeed->isChecked()
             ? static_cast<qint64>(m_d->spinSeed->value())
             : static_cast<qint64>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
@@ -346,63 +342,50 @@ void ComfyUIRemoteDock::slotGenerate()
             (m_d->spinStrength ? m_d->spinStrength->value() : 100) / 100.0,
             m_d->comboSampler->currentText().trimmed(),
             m_d->ksamplerScheduler);
-        {
-            QJsonObject n3 = workflow["3"].toObject();
-            QJsonObject i3 = n3["inputs"].toObject();
-            i3["seed"] = static_cast<double>(seed);
-            i3["steps"] = link.steps;
-            i3["cfg"] = link.cfg;
-            i3["denoise"] = link.denoise;
-            // §13.26: SamplerPreset — sampler and scheduler both sent to KSampler
-            i3["sampler_name"] = link.sampler;
-            i3["scheduler"] = link.scheduler;
-            n3["inputs"] = i3;
-            workflow["3"] = n3;
+
+        QString styleArch;
+        if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                styleArch = st->architecture;
         }
-        {
-            QJsonObject n4 = workflow["4"].toObject();
-            QJsonObject i4 = n4["inputs"].toObject();
-            i4["ckpt_name"] = link.checkpoint.isEmpty() ? QString("v1-5-pruned-emaonly.safetensors") : link.checkpoint;
-            n4["inputs"] = i4;
-            workflow["4"] = n4;
-        }
-        {
-            QJsonObject n5 = workflow["5"].toObject();
-            QJsonObject i5 = n5["inputs"].toObject();
-            int w = m_d->spinWidth->value();
-            int h = m_d->spinHeight->value();
-            double mul = genMul;
-            w = static_cast<int>(w * mul);
-            h = static_cast<int>(h * mul);
-            w = qBound(64, w, 8192);
-            h = qBound(64, h, 8192);
-            ComfyUIUtils::clampExtentToMaxMegapixels(&w, &h);
-            i5["width"] = w;
-            i5["height"] = h;
-            n5["inputs"] = i5;
-            workflow["5"] = n5;
-        }
-        {
-            QJsonObject n6 = workflow["6"].toObject();
-            QJsonObject i6 = n6["inputs"].toObject();
-            QString userPos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
-            QString promptText = link.active
-                ? ComfyUIUtils::mergeStylePromptWithInstruction(link.stylePositiveTemplate, userPos).trimmed()
-                : userPos;
-            promptText = ComfyUIUtils::evalWildcards(promptText, static_cast<quint32>(seed & 0xFFFFFFFFu));
-            ComfyUIUtils::extractLayerPlaceholders(promptText);  // §13.35: <layer:name> → "Picture {n}"
-            promptText = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(promptText);
-            i6["text"] = promptText.isEmpty() ? QString("a beautiful painting") : promptText;
-            n6["inputs"] = i6;
-            workflow["6"] = n6;
-        }
-        {
-            QJsonObject n7 = workflow["7"].toObject();
-            QJsonObject i7 = n7["inputs"].toObject();
-            const QString negSrc = link.active ? link.styleNegative : ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed();
-            i7["text"] = ComfyUIUtils::evalWildcards(negSrc, static_cast<quint32>(seed & 0xFFFFFFFFu));
-            n7["inputs"] = i7;
-            workflow["7"] = n7;
+
+        ComfyWorkflowEngine::TextToImageParams genParams;
+        genParams.checkpoint = link.checkpoint;
+        genParams.arch =
+            ComfyWorkflowEngine::resolveArch(link.checkpoint, styleArch);
+        genParams.seed = seed;
+        genParams.steps = link.steps;
+        genParams.cfg = link.cfg;
+        genParams.denoise = link.denoise;
+        genParams.sampler = link.sampler;
+        genParams.scheduler = link.scheduler;
+        int w = m_d->spinWidth->value();
+        int h = m_d->spinHeight->value();
+        w = static_cast<int>(w * genMul);
+        h = static_cast<int>(h * genMul);
+        w = qBound(64, w, 8192);
+        h = qBound(64, h, 8192);
+        ComfyUIUtils::clampExtentToMaxMegapixels(&w, &h);
+        genParams.width = w;
+        genParams.height = h;
+        genParams.batchSize = 1;
+
+        QString userPos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
+        QString promptText = link.active
+            ? ComfyUIUtils::mergeStylePromptWithInstruction(link.stylePositiveTemplate, userPos).trimmed()
+            : userPos;
+        promptText = ComfyUIUtils::evalWildcards(promptText, static_cast<quint32>(seed & 0xFFFFFFFFu));
+        ComfyUIUtils::extractLayerPlaceholders(promptText);
+        genParams.positivePrompt = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(promptText);
+        const QString negSrc =
+            link.active ? link.styleNegative : ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed();
+        genParams.negativePrompt = ComfyUIUtils::evalWildcards(negSrc, static_cast<quint32>(seed & 0xFFFFFFFFu));
+
+        workflow = ComfyWorkflowEngine::buildTextToImage(genParams);
+        if (workflow.isEmpty()) {
+            setStatusMessage(i18n("Workflow JSON error."), true);
+            return;
         }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
     }
