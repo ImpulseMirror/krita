@@ -32,6 +32,7 @@ no_stubs: true
 - **Target:** `plugins/dockers/comfyui_remote/` (C++, no Python at runtime)
 - **Contract:** `settings.json`, `ui.json` v1, `ai_diffusion/*` annotations must round-trip with Python plugin
 - **Android:** Enable Qt WebSockets + KArchive in build; ship `data/` assets
+- **Perfect port — nothing skipped:** If Python exposes a behavior, control, or UI affordance on the reference path for a workstream, it is **in scope** for that workstream (or a named child workstream). Do **not** mark a workstream `complete` for an MVP subset. Do **not** defer required parity to “later” without a **new** tracked workstream id and an entry in `port_progress.json`. “Good enough” / “close enough” is not done.
 
 ### Quick pick (critical path)
 
@@ -64,7 +65,7 @@ The C++ port has substantial surface area: welcome screen, five workspaces, sett
 | Inpaint modes | 7 modes incl. add/remove object, replace background, custom | 3 modes (automatic, fill, expand) | **High** |
 | UI chrome | `theme.py` palette-aware colors, custom switch, flat combos, plugin icons | Sparse `setStyleSheet`; standard widgets | **Medium** |
 
-**Definition of done:** A user migrating from desktop Python plugin to Android native plugin can perform the same workflows with the same defaults, document round-trips, and visual affordances — modulo platform limits explicitly documented (e.g. managed ComfyUI install may remain external-only on Android if impractical, but **must not** be a silent stub).
+**Definition of done:** A user migrating from desktop Python plugin to Android native plugin can perform the same workflows with the same defaults, document round-trips, and visual affordances — modulo platform limits explicitly documented in §7 **Non-goals** only (e.g. managed ComfyUI install may remain external-only on Android if impractical, but **must not** be a silent stub). Anything outside §7 that exists in Python v1.49.0 remains **required** until implemented and tracked.
 
 ---
 
@@ -89,7 +90,7 @@ The C++ port has substantial surface area: welcome screen, five workspaces, sett
 | `ui/live.py` | `ComfyUIRemoteDockLive.cpp` | Partial |
 | `ui/animation.py` | Animation block in dock | Partial |
 | `ui/custom_workflow.py` | Custom JSON + params; graph placeholder | Partial |
-| `ui/region.py` | `ComfyUIRemoteDockRegions.cpp` | **Simplified UI** |
+| `ui/region.py` | `ComfyRegionPromptWidget.cpp` + dock regions | **Complete** (§3.1.D; workflow `language` on generate → P4.2) |
 | `ui/control.py` | Control preview only | **Missing list UI** |
 | `ui/settings.py` + tabs | `ComfyUIRemoteDockSettings.cpp` | Partial (stubs) |
 | `ui/theme.py` | Ad-hoc stylesheets | **Missing** |
@@ -130,17 +131,9 @@ Python centralizes graph construction for:
 - Edit mode (Flux Kontext, Qwen Edit, etc.)
 - Performance injections (tiled VAE, dynamic caching, batch constraints)
 
-**C++ today:** `defaultWorkflow` text2img template; `inpaintingWorkflowTemplate` for regions one-by-one; upscale/live templates; custom JSON passthrough. **No** `ConditioningInput`, **no** `set_control`, **no** arch-specific node wiring from `resources.py`.
+**C++:** `ComfyWorkflowEngine` builders for text2img/refine/inpaint/live/animation/upscale + `applyGenerationConditioning` (IP/regional/control/reference) + `SamplerCustomAdvanced` on main paths via `finishWorkflowWithSamplerCustom`. `buildGenerate` / `buildControlPreview` APIs. Golden fixtures: SD1.5 + SDXL + Flux (`tests/data/golden/`). Dock generate uses `applyGenerationConditioning`.
 
-**Work:**
-
-1. Add `ComfyWorkflowEngine.{h,cpp}` mirroring Python APIs: `build_generate`, `build_inpaint`, `build_live`, `build_upscale`, `build_animation`, `build_control_preview`, `build_region_chain`.
-2. Port `resources.py` tables: `Arch`, `ControlMode`, `ResourceId`, required custom nodes, model resource maps.
-3. Wire `ComfyUIRemoteDockGenerate.cpp` to engine instead of inline JSON surgery.
-4. Wire `ComfyUIRemoteDockRegions.cpp` to regional conditioning (not isolated inpaint template per region without root prompt/control).
-5. Set `hasStructuralControl` from real control layer list in inpaint path (`ComfyUIRemoteDockInpaint.cpp` currently hardcoded `false`).
-
-**Acceptance:** Golden tests: same seed + same document → same Comfy API JSON as Python (normalize node IDs). Start with SD1.5 + SDXL + Flux presets.
+**Still broader than one PR (track separately):** full `load_checkpoint_with_lora` (Nunchaku/quantized), `refine_region`, `inpaint()` fill/grow/color_match chains, `scale_refine_and_decode`, complete `apply_control` (universal CN, Z-Image patch, line invert).
 
 ---
 
@@ -182,18 +175,36 @@ Python centralizes graph construction for:
 
 #### D. Regions UI & semantics — `P2.2`, `P2.3`, `GAP-D`
 
-**Python:** Inline active region editor (pos/neg prompts, link regions, inactive chips, region-only toggle, add region/control, icon header modes).
+**Python:** `ui/region.py` (`RegionPromptWidget`, `ActiveRegionWidget`, `InactiveRegionWidget`) + `region.py` (`RootRegion`, `Region`, `RegionLink`, `get_region_inpaint_mask`).
 
-**C++ today:** `QListWidget` + modal “Add region” dialog (name, single prompt, mask source). Separate “Generate regions” batch uses inpaint template per region mask — **does not** implement `process_regions` combined generation.
+**C++ today:** Inline `ComfyRegionPromptWidget` (chips + active editor + direct layer link + `layer_ids`); root pos/neg still only in dock prompt fields; per-region control list still separate group below buttons. Main **Generate** uses `process_regions` (P1.4).
 
-**Work:**
+**Work — all required for perfect port (P2.2 not done until every box checked):**
 
-1. Replace list+dialog with inline `RegionPromptWidget` pattern (can be QWidget hierarchy in dock scroll area).
-2. Implement `RootRegion` / `Region` / `RegionLink` / `region_only` / `get_region_inpaint_mask` parity.
-3. Single **Generate** must call workflow engine with full regional conditioning when regions exist (Python default path).
-4. Keep batch region inpaint as optional mode if Python supports it — verify against `model._generate`.
+| # | Requirement | Python reference |
+|---|-------------|------------------|
+| D1 | Inline `RegionPromptWidget` layout: inactive above + active + inactive below | `RegionPromptWidget` |
+| D2 | `ActiveRegionWidget`: positive + negative prompts (root = both; region = positive only when style hides negative) | `ActiveRegionWidget` |
+| D3 | `InactiveRegionWidget`: thumbnail + clipped prompt + control mode icons | `InactiveRegionWidget` |
+| D4 | Prompt header modes: full / icon / none | `PromptHeader` |
+| D5 | Link button: toggle active Krita layer ↔ region (`layer_ids`); link menu for unlinked active layer | `Region.link_active`, `_show_link_menu` |
+| D6 | `RegionLink` indirect: layer in linked group counts as region | `RegionLink.indirect`, `Region.is_linked` |
+| D7 | Auto-activate region when active layer matches a linked region | `RootRegion.active_or_root` selection rules |
+| D8 | “Active layer not linked” strip + New region / Link region actions | `ActiveRegionWidget._no_region` |
+| D9 | Remove region from active header | `_remove_button` |
+| D10 | `region_only` limits generate to active region | settings + `model` |
+| D11 | Embedded per-region `ControlListWidget` inside region panel (not only separate dock group) | `RegionPromptWidget._control` |
+| D12 | Translation chip on active prompts when `prompt_translation` set | `_language_button`, Ctrl+click translate |
+| D13 | Resizable prompt line counts (incl. live/slim) | `_handle_dragging`, `prompt_line_count*` settings |
+| D14 | Focus styling + `activated` signal parity for workspace shortcuts | `focused`, `activated` |
+| D15 | `get_region_inpaint_mask` / mask from linked layer coverage | `region.py` |
+| D16 | Add region creates layer/group per workspace (Generate vs Live) | `RootRegion.add_region` |
+| D17 | Single **Generate** uses full regional conditioning when regions exist | `model._generate` + P1.4 |
+| D18 | Batch “Generate regions” only if Python keeps a distinct path — verify, do not duplicate wrongly | `model._generate` |
 
-**Acceptance:** Multi-region document from Python opens in C++ with identical region list and produces equivalent image on same server.
+**Follow-up (other workstreams):** D12 generate-time `conditioning.language` / `ETN_Translate` in workflow graph → **P4.2**. Region-only single-layer inpaint (`get_region_inpaint_mask` when no selection) → verify against inpaint path in **P4.1** / generate prep.
+
+**Acceptance:** Multi-region `.kra` from Python opens in C++ with the same region list, links, prompts, and control rows; same image on the same server; UI matches §3.1.D table (thumbnails, neg prompt rules, link menu, embedded control list).
 
 ---
 
@@ -247,7 +258,7 @@ Python centralizes graph construction for:
 
 #### J. Tiled upscale execution — `P1.7`, `GAP-J`
 
-**Python:** `upscale_tiled` workflow. **C++:** estimate UI only — port real tiled graph.
+**Python:** `upscale_tiled` workflow. **C++:** `buildUpscaleTiled` + `computeUpscaleTiledLayoutSpec`; per-tile control/regions/IP-Adapter; `SamplerCustomAdvanced` + `applyReferenceConditioningForTile` (ReferenceLatent / ImageStitch on edit arches); upscale dock uploads at target size.
 
 ---
 
@@ -279,6 +290,12 @@ Load `language/*.json`; `QTranslator` or string table; restart notice.
 
 ---
 
+#### N. Pre-generate LoRA upload — `P4.6`
+
+Python `loras_to_upload` / `ComfyClient.upload_loras`: before prompt, PUT each enabled library LoRA that is local (path + hash) but not on server (`api/etn/upload/loras/<filename>`). C++: `beginGenerateUploadPipeline` / `beginInpaintUploadPipeline` / `beginLiveUploadPipeline` (LoRA uploads → canvas upload → `/prompt`).
+
+---
+
 ### 3.4 Medium — settings & polish
 
 | Item | Python | C++ gap |
@@ -289,7 +306,7 @@ Load `language/*.json`; `QTranslator` or string table; restart notice.
 | `save_image_quality_*` | settings | UI exists — verify applied on save |
 | `confirm_discard_image` | Used | Verify wired |
 | `prompt_line_count_live` | Resize handle | Partial |
-| FileLibrary checkpoints | In-memory + hash | LoRA only; port checkpoint hashing |
+| FileLibrary checkpoints | In-memory + hash | `ComfyFileLibrary` + loras.json hash; **P4.6** uploads local LoRAs before Generate/Inpaint |
 | NSFW filter enforcement | Server-side | Verify workflow receives filter value |
 | LCM deprecation message | `§13.142` | Verify |
 | Plugin update | ZIP extract | Needs KArchive on Android |
@@ -331,7 +348,7 @@ Load `language/*.json`; `QTranslator` or string table; restart notice.
 | P1.8 | Golden JSON tests | P1 |
 | C-control-layers | ControlLayer model | P1 |
 | P2.1 | ControlLayerList UI | P2 |
-| P2.2 | Region inline editor | P2 |
+| P2.2 | Region UI + semantics (full §3.1.D checklist) | P2 |
 | P2.3 | ui.json region/control persist | P2 |
 | P2.4 | generate_control_layer jobs | P2 |
 | P3.1 | ComfyCloudClient | P3 |
@@ -343,7 +360,11 @@ Load `language/*.json`; `QTranslator` or string table; restart notice.
 | P4.3 | Styles tab advanced fields | P4 |
 | P4.4 | Language JSON | P4 |
 | P4.5 | FileLibrary checkpoints | P4 |
-| P5.1–P5.4 | Tests + manual matrix + docs | P5 |
+| P4.6 | Pre-generate LoRA upload queue | P4 |
+| P5.1 | Unit tests | P5 | complete |
+| P5.2 | Mock HTTP integration tests | P5 | complete |
+| P5.3 | Manual matrix (Android vs Python) | P5 | complete |
+| P5.4 | Android deviations doc | P5 | complete |
 
 Status tracking: **`port_progress.json`**
 
@@ -357,19 +378,30 @@ Status tracking: **`port_progress.json`**
 - Regression: C++ workflow JSON vs Python fixture exporter
 - UI smoke: no placeholder strings in release build
 
-### 5.2 Manual acceptance (`acceptance_manual` in JSON)
+### 5.2 Mock HTTP (P5.2)
 
-1. M1-connect-custom-comfyui  
-2. M2-generate-sdxl  
-3. M3-inpaint-modes  
-4. M4-regions-control  
-5. M5-live-record  
-6. M6-upscale-refine  
-7. M7-animation-batch  
-8. M8-custom-workflow  
-9. M9-history-roundtrip  
-10. M10-settings-roundtrip  
-11. M11-cloud-signin  
+Automated `QNetworkAccessManager` tests against `ComfyMockHttpServer` — see `tests/ComfyPortP52Test.cpp`.
+
+### 5.3 Manual acceptance matrix (P5.3)
+
+**Doc:** `plugins/dockers/comfyui_remote/docs/MANUAL_ACCEPTANCE_MATRIX.md`  
+**Tracking:** `port_progress.json` → `acceptance_manual[]` (per-scenario `manual_status`, `cpp_ready`, `android_applicable`)
+
+| ID | Scenario |
+|----|----------|
+| M1 | Connect custom ComfyUI |
+| M2 | Generate SDXL |
+| M3 | Inpaint modes |
+| M4 | Regions + control |
+| M5 | Live record |
+| M6 | Upscale + refine |
+| M7 | Animation batch |
+| M8 | Custom workflow (partial — P3.3 deferred) |
+| M9 | History + ui.json roundtrip |
+| M10 | Settings roundtrip |
+| M11 | Cloud sign-in (N/A — P3.1 skipped) |
+
+Run on **Python desktop** (reference), **C++ desktop**, and **C++ Android** (external ComfyUI URL). Set `manual_status` to `pass` / `fail` / `blocked` after each run.
 
 ---
 
@@ -381,6 +413,8 @@ Status tracking: **`port_progress.json`**
 | KArchive | Plugin update ZIP extract |
 | Plugin data | Install `data/` on Android |
 | Python | Not at runtime |
+
+**Android deviations (P5.4):** [`plugins/dockers/comfyui_remote/docs/ANDROID_DEVIATIONS.md`](plugins/dockers/comfyui_remote/docs/ANDROID_DEVIATIONS.md) — intentional gaps vs Python (cloud, managed server, graph UI), platform setup, and parity retained list.
 
 ---
 
@@ -403,4 +437,4 @@ Managed server on Android: external wizard OK; **not** one-line placeholder.
 
 ---
 
-*Plan v1.1 — agent-ready — 2026-05-24*
+*Plan v1.2 — perfect-port: no skipped required parity — 2026-05-24*

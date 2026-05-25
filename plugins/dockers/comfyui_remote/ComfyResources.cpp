@@ -229,9 +229,29 @@ bool isQwenLike(Arch arch)
     return arch == Arch::Qwen || arch == Arch::QwenE || arch == Arch::QwenEP || arch == Arch::QwenL;
 }
 
+bool supportsEditInstructions(Arch arch)
+{
+    return isEditArch(arch) || arch == Arch::Flux2_4b || arch == Arch::Flux2_9b;
+}
+
+bool hasControlnetInpaint(Arch arch)
+{
+    return !defaultControlNetFileName(arch, ControlMode::inpaint).isEmpty();
+}
+
 bool supportsRegions(Arch arch)
 {
     return arch == Arch::Sd15 || arch == Arch::Sdxl || arch == Arch::Illu || arch == Arch::IlluV;
+}
+
+bool supportsClipSkip(Arch arch)
+{
+    return arch == Arch::Sd15 || arch == Arch::Sdxl || arch == Arch::Illu || arch == Arch::IlluV;
+}
+
+bool supportsAttentionGuidance(Arch arch)
+{
+    return supportsClipSkip(arch);
 }
 
 int latentCompressionFactor(Arch arch)

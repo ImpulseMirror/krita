@@ -4,6 +4,7 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
@@ -68,7 +69,7 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
 
 void ComfyUIRemoteDock::slotSaveAsPreset()
 {
-    QString name = QInputDialog::getText(this, i18n("Save preset"), i18n("Preset name:"), QLineEdit::Normal, QString());
+    QString name = QInputDialog::getText(this, ComfyTr::tr("Save preset"), ComfyTr::tr("Preset name:"), QLineEdit::Normal, QString());
     if (name.trimmed().isEmpty()) return;
     name = name.trimmed();
     KConfigGroup mainCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -92,7 +93,7 @@ void ComfyUIRemoteDock::slotSaveAsPreset()
     if (m_d->comboPreset->findText(name) < 0)
         m_d->comboPreset->addItem(name);
     m_d->comboPreset->setCurrentText(name);
-    m_d->labelStatus->setText(i18n("Saved preset \"%1\".", name));
+    m_d->labelStatus->setText(ComfyTr::tr("Saved preset \"%1\".", name));
 }
 
 void ComfyUIRemoteDock::slotSaveCurrentPreset()
@@ -103,8 +104,8 @@ void ComfyUIRemoteDock::slotSaveCurrentPreset()
     if (idx < firstCustomPresetIndex()) {
         QMessageBox::information(
             this,
-            i18n("Save preset"),
-            i18n("Built-in styles cannot be modified. Use the add (+) button to save as a new custom preset, or select a custom preset first."));
+            ComfyTr::tr("Save preset"),
+            ComfyTr::tr("Built-in styles cannot be modified. Use the add (+) button to save as a new custom preset, or select a custom preset first."));
         return;
     }
     const QString name = m_d->comboPreset->currentText();
@@ -122,7 +123,7 @@ void ComfyUIRemoteDock::slotSaveCurrentPreset()
     presetCfg.writeEntry("Checkpoint", m_d->comboCheckpoint->currentText());
     presetCfg.writeEntry("UsesNegativePrompt", true);
     presetCfg.config()->sync();
-    m_d->labelStatus->setText(i18n("Saved preset \"%1\".", name));
+    m_d->labelStatus->setText(ComfyTr::tr("Saved preset \"%1\".", name));
 }
 
 void ComfyUIRemoteDock::slotDeletePreset()
@@ -138,13 +139,13 @@ void ComfyUIRemoteDock::slotDeletePreset()
     mainCfg.config()->sync();
     m_d->comboPreset->removeItem(idx);
     m_d->comboPreset->setCurrentIndex(0);
-    m_d->labelStatus->setText(i18n("Deleted preset \"%1\".", name));
+    m_d->labelStatus->setText(ComfyTr::tr("Deleted preset \"%1\".", name));
 }
 
 void ComfyUIRemoteDock::applyImportedWorkflowBytes(const QByteArray &raw, const QString &openError)
 {
     if (!openError.isEmpty()) {
-        QMessageBox::warning(this, i18n("Import Workflow"), i18n("Could not open file: %1", openError));
+        QMessageBox::warning(this, ComfyTr::tr("Import Workflow"), ComfyTr::tr("Could not open file: %1", openError));
         return;
     }
     if (!m_d->editCustomWorkflow)
@@ -157,9 +158,9 @@ void ComfyUIRemoteDock::applyImportedWorkflowBytes(const QByteArray &raw, const 
         if (!validation.first)
             setStatusMessage(validation.second, true);  // §13.103: show in Graph view so user cannot run
         else
-            setStatusMessage(i18n("Loaded workflow from file."));
+            setStatusMessage(ComfyTr::tr("Loaded workflow from file."));
     } else {
-        setStatusMessage(i18n("Loaded workflow from file."));
+        setStatusMessage(ComfyTr::tr("Loaded workflow from file."));
     }
     persistOpenCustomWorkflowToDocument();
 }
@@ -167,7 +168,7 @@ void ComfyUIRemoteDock::applyImportedWorkflowBytes(const QByteArray &raw, const 
 void ComfyUIRemoteDock::slotLoadWorkflowFromFile()
 {
     // §13.167 / §13.202: Title "Import Workflow", filter Workflow Files (*.json);;All Files (*), initial dir user's home
-    QString path = QFileDialog::getOpenFileName(this, i18n("Import Workflow"), QDir::homePath(), i18n("Workflow Files (*.json);;All Files (*)"));
+    QString path = QFileDialog::getOpenFileName(this, ComfyTr::tr("Import Workflow"), QDir::homePath(), ComfyTr::tr("Workflow Files (*.json);;All Files (*)"));
     if (path.isEmpty()) return;
     // §4.8: When multi-threading is on, read and strip comments off the GUI thread; validate on main thread.
     if (ComfyUIUtils::multiThreadingEnabled()) {
@@ -191,7 +192,7 @@ void ComfyUIRemoteDock::slotLoadWorkflowFromFile()
     }
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, i18n("Import Workflow"), i18n("Could not open file: %1", f.errorString()));
+        QMessageBox::warning(this, ComfyTr::tr("Import Workflow"), ComfyTr::tr("Could not open file: %1", f.errorString()));
         return;
     }
     // §13.135: Strip // line comments before parsing so JSON with comments loads

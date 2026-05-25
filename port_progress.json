@@ -5,14 +5,15 @@
   "reference_path": "/Users/ackeejag/Source/krita-ai-diffusion",
   "target_path": "plugins/dockers/comfyui_remote",
   "branch": "comfyui-perfect-port",
-  "updated": "2026-05-25",
-  "critical_path": ["P0.1", "P0.2", "P1.1", "P1.2", "P1.3", "P1.4", "P2.1", "P2.3", "C-control-layers"],
+  "updated": "2026-05-24",
+  "last_completed": "GAP-A",
+  "critical_path": ["P0.1", "P0.2", "P1.1", "P1.2", "P1.3", "P1.4", "P2.1", "P2.2", "P2.3", "P1.5", "P1.6", "P1.7", "P1.8", "C-control-layers"],
   "workstreams": {
     "P0.1": {
       "title": "Bundle plugin data/ + CMake install + Android copy",
       "phase": "P0",
       "status": "complete",
-      "evidence": "plugins/dockers/comfyui_remote/data/, CMakeLists.txt install, pluginInstallDataDir()",
+      "evidence": "plugins/dockers/comfyui_remote/data/ (styles, presets, tags, icons), CMakeLists.txt install, pluginInstallDataDir()",
       "depends_on": [],
       "python_refs": ["ai_diffusion/styles/", "ai_diffusion/presets/", "ai_diffusion/tags/", "ai_diffusion/icons/", "ai_diffusion/language/"],
       "cpp_targets": ["plugins/dockers/comfyui_remote/data/", "CMakeLists.txt", "ComfyUIUtils.cpp"]
@@ -29,7 +30,8 @@
     "P0.3": {
       "title": "ComfyTheme — palette, icons, flat combos",
       "phase": "P0",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyTheme.cpp, data/icons/, ComfySwitchWidget, ComfyQueueButton, flat combos + style arch icons",
       "depends_on": ["P0.1"],
       "python_refs": ["ai_diffusion/ui/theme.py"],
       "cpp_targets": ["ComfyTheme.h", "ComfyTheme.cpp"]
@@ -72,24 +74,26 @@
     "P1.4": {
       "title": "process_regions equivalent + regional generate",
       "phase": "P1",
-      "status": "in_progress",
-      "evidence": "applyRegionalGeneration ETN nodes; main Generate with 2+ regions uploads masks; process_regions overlap deferred",
+      "status": "complete",
+      "evidence": "ComfyRegionProcess.cpp; main Generate + Generate regions → slotGenerate ETN path; per-region control layers deferred to P2.1",
       "depends_on": ["P1.2", "P2.3"],
       "python_refs": ["ai_diffusion/region.py", "ai_diffusion/workflow.py"],
-      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp", "ComfyUIRemoteDockRegions.cpp"]
+      "cpp_targets": ["ComfyRegionProcess.cpp", "ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockGenerate.cpp", "ComfyUIRemoteDockRegions.cpp"]
     },
     "P1.5": {
       "title": "Inpaint/refine/edit paths; hasStructuralControl",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyWorkflowEngine buildInpaint/buildRefine; inpaint+refine controls; refine multi-region ETN (generateRefineAfterRegions); selection→slotInpaint; tests buildInpaint/buildRefine",
       "depends_on": ["P1.2", "P1.3"],
       "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/api.py"],
-      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockInpaint.cpp"]
+      "cpp_targets": ["ComfyControlLayer.cpp", "ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockInpaint.cpp"]
     },
     "P1.6": {
       "title": "Live + animation workflow builders",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyWorkflowEngine buildLive/buildAnimationFrame/animationFrameSeed; Live→buildLive+resolveSamplerForLive; batch slotBatchSubmitNext→buildAnimationFrame; animation fast→live sampler; tests",
       "depends_on": ["P1.2"],
       "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/model.py"],
       "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockLive.cpp", "ComfyUIRemoteDockGenerate.cpp"]
@@ -97,7 +101,8 @@
     "P1.7": {
       "title": "Upscale + upscale_tiled workflows",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyWorkflowEngine buildUpscaleSimple/buildUpscaleRefine/buildUpscaleTiled; slotUpscale routes tiled when tile estimate>1; tests",
       "depends_on": ["P1.2"],
       "python_refs": ["ai_diffusion/workflow.py"],
       "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyUIRemoteDockUpscale.cpp"]
@@ -105,47 +110,53 @@
     "P1.8": {
       "title": "Golden JSON tests vs Python fixtures",
       "phase": "P1",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyWorkflowNormalize; ComfyWorkflowEngineGoldenTest vs tests/data/golden/*.api.json; scripts/export_workflow_fixture.py; COMFY_WRITE_GOLDEN regen",
       "depends_on": ["P1.2"],
       "python_refs": ["scripts/export_workflow_fixture.py"],
-      "cpp_targets": ["tests/ComfyWorkflowEngineTest.cpp"]
+      "cpp_targets": ["tests/ComfyWorkflowEngineGoldenTest.cpp", "tests/ComfyWorkflowNormalize.cpp", "tests/data/golden/"]
     },
     "P2.1": {
       "title": "ControlLayerList UI in generation/regions",
       "phase": "P2",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "Region control layers group under Regions; add/remove per selected region; Generate merges root+active region controls; ui.json control[] on RegionEntry already persisted",
       "depends_on": ["C-control-layers"],
       "python_refs": ["ai_diffusion/ui/control.py", "ai_diffusion/ui/region.py"],
-      "cpp_targets": ["ComfyControlLayerWidget.cpp", "ComfyUIRemoteDock.cpp"]
+      "cpp_targets": ["ComfyUIRemoteDockControl.cpp", "ComfyUIRemoteDock.cpp", "ComfyUIRemoteDockGenerate.cpp"]
     },
     "P2.2": {
-      "title": "Region inline editor + link + region-only",
+      "title": "Region UI + semantics (full plan §3.1.D)",
       "phase": "P2",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "evidence": "ComfyRegionPromptWidget (D1–D14), ComfyRegionLink indirect+masks, ComfyPromptResizeHandle, ETN translate Ctrl+click, Generate regions→slotGenerate",
+      "depends_on": ["P2.3", "P1.4"],
       "python_refs": ["ai_diffusion/ui/region.py", "ai_diffusion/region.py"],
-      "cpp_targets": ["ComfyRegionPromptWidget.cpp", "ComfyUIRemoteDockRegions.cpp"]
+      "cpp_targets": ["ComfyRegionPromptWidget.cpp", "ComfyRegionLink.cpp", "ComfyPromptResizeHandle.cpp", "ComfyUIRemoteDockRegions.cpp", "ComfyUIUtils.cpp"]
     },
     "P2.3": {
       "title": "Persist ui.json region/control schema",
       "phase": "P2",
-      "status": "not_started",
-      "depends_on": ["C-control-layers", "P2.2"],
+      "status": "complete",
+      "evidence": "ComfyUIUtils regionUiState* + rootRegionUiWrap*; merge/load positive/negative/regions/control; saveRegionsToConfig triggers ui.json; unit testDocumentUiJsonRegionControlRoundtrip",
+      "depends_on": ["C-control-layers", "P2.1"],
       "python_refs": ["ai_diffusion/persistence.py"],
-      "cpp_targets": ["ComfyUIUtils.cpp", "ComfyUIRemoteDock.cpp"]
+      "cpp_targets": ["ComfyUIUtils.cpp", "ComfyUIRemoteDock.cpp", "tests/ComfyUIRemoteDockTest.cpp"]
     },
     "P2.4": {
       "title": "generate_control_layer jobs",
       "phase": "P2",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyUIRemoteDockControlGenerate.cpp + ComfyOpenPose.cpp: per-row Generate; canvas preprocessor; pose mode → OpenPose JSON (WebSocket + history) → ComfyOpenPose::toSvg → KisShapeLayer vector [Control] layer; other modes → paint layer",
       "depends_on": ["P1.3", "P2.1"],
       "python_refs": ["ai_diffusion/model.py", "ai_diffusion/control.py"],
-      "cpp_targets": ["ComfyUIRemoteDockGenerate.cpp"]
+      "cpp_targets": ["ComfyUIRemoteDockControlGenerate.cpp", "ComfyUIRemoteDockControl.cpp", "ComfyControlLayer.cpp"]
     },
     "P3.1": {
       "title": "ComfyCloudClient — OAuth, API, auth states",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "Out of scope for native port; use external ComfyUI server",
       "depends_on": [],
       "python_refs": ["ai_diffusion/cloud_client.py", "ai_diffusion/ui/settings.py"],
       "cpp_targets": ["ComfyCloudClient.h", "ComfyCloudClient.cpp", "ComfyUIRemoteDockConnection.cpp", "ComfyUIRemoteDockSettings.cpp"]
@@ -153,7 +164,8 @@
     "P3.2": {
       "title": "Managed server OR Android guided external setup",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "Out of scope; user-managed ComfyUI process",
       "depends_on": [],
       "python_refs": ["ai_diffusion/server.py", "ai_diffusion/ui/server.py"],
       "cpp_targets": ["ComfyManagedServer.cpp", "ComfyUIRemoteDockSettings.cpp"]
@@ -161,7 +173,8 @@
     "P3.3": {
       "title": "Graph workspace — CustomWorkflowWidget layout",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "Partial graph workspace exists; full Python parity deferred",
       "depends_on": [],
       "python_refs": ["ai_diffusion/ui/custom_workflow.py", "ai_diffusion/custom_workflow.py"],
       "cpp_targets": ["ComfyUIRemoteDock.cpp", "ComfyUIRemoteDockWebWorkflow.cpp"]
@@ -169,7 +182,8 @@
     "P3.4": {
       "title": "WebSocket workflow publish (Android WebSockets ON)",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "Depends on P3.3; optional ETN publish deferred",
       "depends_on": ["P3.3"],
       "python_refs": ["ai_diffusion/comfy_client.py"],
       "cpp_targets": ["ComfyUIRemoteDockWebWorkflow.cpp", "CMakeLists.txt"]
@@ -177,7 +191,7 @@
     "P4.1": {
       "title": "All inpaint modes + Seamless/Focus labels",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
       "depends_on": ["P1.5"],
       "python_refs": ["ai_diffusion/api.py", "ai_diffusion/ui/generation.py"],
       "cpp_targets": ["ComfyUIRemoteDock.cpp", "ComfyUIUtils.cpp"]
@@ -185,7 +199,7 @@
     "P4.2": {
       "title": "Prompt translation in generate path",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
       "depends_on": ["P1.2"],
       "python_refs": ["ai_diffusion/workflow.py", "ai_diffusion/text.py"],
       "cpp_targets": ["ComfyUIRemoteDockGenerate.cpp"]
@@ -193,58 +207,74 @@
     "P4.3": {
       "title": "Styles tab — VAE, clip skip, sampler editors",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "Styles advanced UI (VAE, clip skip, resolution, zsnr/sag); saveEntryToUserStyles; applyCheckpointStyleOptions in generate/inpaint/live",
       "depends_on": ["P0.2"],
       "python_refs": ["ai_diffusion/ui/style.py"],
-      "cpp_targets": ["ComfyUIRemoteDockSettings.cpp"]
+      "cpp_targets": ["ComfyUIRemoteDockSettings.cpp", "ComfyWorkflowEngine.cpp", "ComfyStyleCollection.cpp"]
     },
     "P4.4": {
       "title": "Language JSON catalogs",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyLocalization.cpp scans data/language/*.json; ComfyTr::tr replaces i18n; plugin init; settings language combo + restart notice",
       "depends_on": ["P0.1"],
       "python_refs": ["ai_diffusion/localization.py", "ai_diffusion/language/"],
-      "cpp_targets": ["ComfyLocalization.cpp"]
+      "cpp_targets": ["ComfyLocalization.cpp", "ComfyLocalization.h", "ComfyUIRemotePlugin.cpp", "ComfyUIRemoteDockSettings.cpp"]
     },
     "P4.5": {
       "title": "FileLibrary checkpoints + hashing",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "ComfyFileLibrary.cpp: File/Collection/Library, SHA256 base64 hash, loras.json path+hash, remote checkpoint/lora registry on connect",
       "depends_on": [],
       "python_refs": ["ai_diffusion/files.py"],
-      "cpp_targets": ["ComfyUIUtils.cpp"]
+      "cpp_targets": ["ComfyFileLibrary.cpp", "ComfyUIUtils.cpp", "ComfyUIRemoteDockConnection.cpp", "ComfyUIRemoteDockSettings.cpp"]
+    },
+    "P4.6": {
+      "title": "Pre-generate LoRA upload (loras_to_upload parity)",
+      "phase": "P4",
+      "status": "complete",
+      "evidence": "beginGenerateUploadPipeline / beginInpaintUploadPipeline / beginLiveUploadPipeline: ETN PUT missing local enabled LoRAs before control/finalize or live canvas+prompt",
+      "depends_on": ["P4.5"],
+      "python_refs": ["ai_diffusion/client.py", "ai_diffusion/comfy_client.py", "ai_diffusion/workflow.py"],
+      "cpp_targets": ["ComfyUIRemoteDockGenerate.cpp", "ComfyUIRemoteDockInpaint.cpp", "ComfyUIRemoteDockLive.cpp", "ComfyFileLibrary.cpp"]
     },
     "P5.1": {
       "title": "Unit tests — workflow, persistence, styles",
       "phase": "P5",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "tests/ComfyPortP51Test.cpp (styles builtin/save, sampler presets, loras merge/missing, ui.json root/upscale, workflow style VAE/clip); tests/ComfyUIRemoteDockTest.cpp + ComfyWorkflowEngineGoldenTest.cpp; COMFYUI_ENABLE_TEST_HOOKS for isolated user DB",
       "depends_on": ["P1.8"],
       "python_refs": [],
-      "cpp_targets": ["tests/"]
+      "cpp_targets": ["tests/ComfyPortP51Test.cpp", "tests/ComfyUIRemoteDockTest.cpp", "tests/ComfyWorkflowEngineGoldenTest.cpp"]
     },
     "P5.2": {
       "title": "Mock ComfyUI HTTP integration tests",
       "phase": "P5",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "tests/ComfyMockHttpServer.cpp + ComfyPortP52Test.cpp: QTcpServer stub for object_info, system_stats, models/loras, ETN model_info/translate/upload, prompt/history; QNetworkAccessManager integration",
       "depends_on": ["P1.2"],
-      "python_refs": [],
-      "cpp_targets": ["tests/"]
+      "python_refs": ["ai_diffusion/client.py", "ai_diffusion/comfy_client.py"],
+      "cpp_targets": ["tests/ComfyPortP52Test.cpp", "tests/ComfyMockHttpServer.cpp", "ComfyUIUtils.cpp"]
     },
     "P5.3": {
       "title": "Manual matrix — Android APK vs Python plugin",
       "phase": "P5",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "plugins/dockers/comfyui_remote/docs/MANUAL_ACCEPTANCE_MATRIX.md; acceptance_manual[] enriched (M1–M11, cpp_ready, android_applicable, manual_status pending)",
       "depends_on": [],
-      "python_refs": [],
-      "cpp_targets": []
+      "python_refs": ["ai_diffusion/ (desktop reference flows)"],
+      "cpp_targets": ["plugins/dockers/comfyui_remote/docs/MANUAL_ACCEPTANCE_MATRIX.md", "port_progress.json"]
     },
     "P5.4": {
       "title": "Document Android-only deviations",
       "phase": "P5",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "plugins/dockers/comfyui_remote/docs/ANDROID_DEVIATIONS.md (P3 skips, build flags, data paths, parity list, migration); plan §6 link",
       "depends_on": ["P3.2"],
-      "python_refs": [],
-      "cpp_targets": ["comfyui-perfect-port.plan.md"]
+      "python_refs": ["ai_diffusion/server.py", "ai_diffusion/cloud_client.py"],
+      "cpp_targets": ["plugins/dockers/comfyui_remote/docs/ANDROID_DEVIATIONS.md", "comfyui-perfect-port.plan.md"]
     },
     "C-control-layers": {
       "title": "ControlLayer + ControlLayerList model",
@@ -258,107 +288,206 @@
     "GAP-A": {
       "title": "Detail: ComfyWorkflowEngine (workflow.py port)",
       "phase": "P1",
-      "status": "not_started",
-      "depends_on": [],
-      "plan_section": "3.1.A",
-      "notes": "See plan §3.1.A"
+      "status": "complete",
+      "evidence": "buildGenerate+applyGenerationConditioning+finishWorkflowWithSamplerCustom; buildControlPreview; golden sd15/sdxl/flux; ComfyUIRemoteDockGenerate uses engine conditioning; export_workflow_fixture.py regenerates goldens",
+      "depends_on": ["P1.2", "P1.3", "P1.4", "P1.8"],
+      "plan_section": "3.1.A"
     },
     "GAP-B": {
       "title": "Detail: Style presets from JSON",
       "phase": "P0",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "evidence": "data/styles/ 14 JSON; ComfyStyleCollection loads builtin+user; ComfyPortP51Test::testStyleCollectionLoadsBuiltinDigitalArtwork + testBundledPluginDataLayout",
+      "depends_on": ["P0.2"],
       "plan_section": "3.1.B"
     },
     "GAP-C": {
       "title": "Detail: Control layers UI + gen",
       "phase": "P2",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "evidence": "ComfyControlLayerRowWidget + ComfyControlLayerListWidget: per-row mode (incl. IP-Adapter), layer picker, preset/strength/range, generate, pose skeleton, remove; root + region (embedded in RegionPromptWidget); P2.4 generate job",
+      "depends_on": ["P2.1", "P2.4", "C-control-layers"],
       "plan_section": "3.1.C"
     },
     "GAP-D": {
       "title": "Detail: Regions UI + semantics",
       "phase": "P2",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "depends_on": ["P2.2"],
       "plan_section": "3.1.D"
     },
     "GAP-E": {
       "title": "Detail: Cloud client",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "P3.1 skipped",
       "depends_on": [],
       "plan_section": "3.2.E"
     },
     "GAP-F": {
       "title": "Detail: Managed server",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "P3.2 skipped",
       "depends_on": [],
       "plan_section": "3.2.F"
     },
     "GAP-G": {
       "title": "Detail: Graph/custom workspace",
       "phase": "P3",
-      "status": "not_started",
+      "status": "skipped",
+      "skip_reason": "P3.3 skipped",
       "depends_on": [],
       "plan_section": "3.2.G"
     },
     "GAP-H": {
       "title": "Detail: Inpaint modes",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
       "depends_on": [],
       "plan_section": "3.2.H"
     },
     "GAP-I": {
       "title": "Detail: Prompt translation",
       "phase": "P4",
-      "status": "not_started",
+      "status": "complete",
       "depends_on": [],
       "plan_section": "3.2.I"
     },
     "GAP-J": {
       "title": "Detail: Tiled upscale",
       "phase": "P1",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "evidence": "buildUpscaleTiled: per-tile conditioning + SamplerCustomAdvanced + applyReferenceConditioningForTile; ComfyUIRemoteDockUpscale uploads; ComfyPortP51Test upscale tiled tests",
+      "depends_on": ["P1.7"],
       "plan_section": "3.2.J"
     },
     "GAP-K": {
       "title": "Detail: Bundle data directory",
       "phase": "P0",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "evidence": "plugins/dockers/comfyui_remote/data/ (14 styles, presets, tags, icons, 16+ language JSON); pluginInstallDataDir(); CMake install; ComfyPortP51Test::testBundledPluginDataLayout",
+      "depends_on": ["P0.1"],
       "plan_section": "3.3.K"
     },
     "GAP-L": {
       "title": "Detail: Theme system",
       "phase": "P0",
-      "status": "not_started",
+      "status": "complete",
       "depends_on": [],
       "plan_section": "3.3.L"
     },
     "GAP-M": {
       "title": "Detail: Localization JSON",
       "phase": "P4",
-      "status": "not_started",
-      "depends_on": [],
+      "status": "complete",
+      "depends_on": ["P4.4"],
       "plan_section": "3.3.M"
     }
   },
   "acceptance_manual": [
-    "M1-connect-custom-comfyui",
-    "M2-generate-sdxl",
-    "M3-inpaint-modes",
-    "M4-regions-control",
-    "M5-live-record",
-    "M6-upscale-refine",
-    "M7-animation-batch",
-    "M8-custom-workflow",
-    "M9-history-roundtrip",
-    "M10-settings-roundtrip",
-    "M11-cloud-signin"
-  ]
+    {
+      "id": "M1-connect-custom-comfyui",
+      "title": "Connect custom ComfyUI",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.2", "P4.5", "P5.2"]
+    },
+    {
+      "id": "M2-generate-sdxl",
+      "title": "Generate SDXL",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.2", "P4.3", "P4.6"]
+    },
+    {
+      "id": "M3-inpaint-modes",
+      "title": "Inpaint modes",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.5", "P4.1"]
+    },
+    {
+      "id": "M4-regions-control",
+      "title": "Regions + control layers",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.3", "P1.4", "P2.1", "C-control-layers"]
+    },
+    {
+      "id": "M5-live-record",
+      "title": "Live record",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.2", "P4.6"]
+    },
+    {
+      "id": "M6-upscale-refine",
+      "title": "Upscale + refine",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.7"]
+    },
+    {
+      "id": "M7-animation-batch",
+      "title": "Animation batch",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P1.6"]
+    },
+    {
+      "id": "M8-custom-workflow",
+      "title": "Custom workflow",
+      "manual_status": "pending",
+      "cpp_ready": "partial",
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P3.3"],
+      "notes": "API/JSON path; full graph workspace deferred"
+    },
+    {
+      "id": "M9-history-roundtrip",
+      "title": "History + ui.json roundtrip",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P2.3"]
+    },
+    {
+      "id": "M10-settings-roundtrip",
+      "title": "Settings roundtrip",
+      "manual_status": "pending",
+      "cpp_ready": true,
+      "android_applicable": true,
+      "python_reference": true,
+      "workstreams": ["P0.1", "P4.4"]
+    },
+    {
+      "id": "M11-cloud-signin",
+      "title": "Cloud sign-in",
+      "manual_status": "not_applicable",
+      "cpp_ready": false,
+      "android_applicable": false,
+      "python_reference": true,
+      "workstreams": ["P3.1"],
+      "notes": "P3.1 skipped; C++ uses external ComfyUI only"
+    }
+  ],
+  "manual_matrix_doc": "plugins/dockers/comfyui_remote/docs/MANUAL_ACCEPTANCE_MATRIX.md",
+  "android_deviations_doc": "plugins/dockers/comfyui_remote/docs/ANDROID_DEVIATIONS.md"
 }

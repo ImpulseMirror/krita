@@ -9,6 +9,7 @@
 #include <QString>
 #include <QStringList>
 #include <QPair>
+#include <functional>
 #include <QRect>
 #include <QPoint>
 #include <QSize>
@@ -22,6 +23,10 @@
 #include <QByteArray>
 #include <QUrl>
 #include <QtGlobal>  // qBound
+
+#include "ComfyResources.h"
+
+#include "ComfyControlLayer.h"
 
 #include <KSharedConfig>
 
@@ -45,6 +50,12 @@ QString historyCacheDir();
 QString pluginInstallDataDir();
 void ensureBundledPluginDataInstalled();
 QString pluginUserDataDir();
+#ifdef COMFYUI_ENABLE_TEST_HOOKS
+namespace ComfyUITestHooks {
+void setPluginUserDataDirOverride(const QString &path);
+void clearPluginUserDataDirOverride();
+} // namespace ComfyUITestHooks
+#endif
 QString pluginLogDir();
 // §13.148: FileLibrary storage — database_dir = user_data_dir/database; LoRAs persist in database/loras.json, checkpoints in-memory from server
 QString pluginDatabaseDir();
@@ -135,6 +146,24 @@ private:
 int estimateUniformTileGridCount2D(int width, int height, int tileExtent, int overlapPx);
 // §13.24: tile_extent for Upscale target label tile-count estimate (settings.json upscale_tile_estimate_extent, default 512).
 int diffusionUpscaleTileEstimateExtentPx(const QJsonObject &settingsRoot);
+
+/// §13.24 / GAP-J: Python TileLayout + prepare upscale_tiled tile_size (resolution.py, workflow.py).
+struct UpscaleTiledLayoutSpec {
+    int minTileSize = 512;
+    int padding = 0;
+    int blending = 0;
+    int totalTiles = 1;
+};
+int computeUpscaleTiledMinTileSizePx(int targetWidth,
+                                     int targetHeight,
+                                     ComfyResources::Arch arch,
+                                     int stylePreferredResolution = 0);
+UpscaleTiledLayoutSpec computeUpscaleTiledLayoutSpec(int imageWidth,
+                                                     int imageHeight,
+                                                     ComfyResources::Arch arch,
+                                                     int stylePreferredResolution,
+                                                     double denoiseStrength0to1,
+                                                     int customOverlapPx);
 
 // §13.204: Single source of truth for plugin version (footer, Plugin tab, diagnostics)
 QString pluginVersion();
@@ -238,6 +267,8 @@ void applyUpscaleRefineVaedecodeTiling(QJsonObject &workflow,
                                       int customOverlapPx,
                                       const QJsonObject &settingsRoot);
 
+// §13.123: CheckpointLoaderSimple ckpt_name list from GET /object_info.
+QStringList parseCheckpointNamesFromObjectInfoRoot(const QJsonObject &objectInfoRoot);
 // §4.5 / §13.148: Parse LoRA filenames from GET /object_info (LoraLoader*, lora_name / model_name lists).
 void extractLoraFilenamesFromObjectInfo(const QJsonObject &objectInfoRoot, QStringList *outSortedUnique);
 // True if library basename matches a server object_info entry (exact, basename, or subpath suffix).
@@ -322,6 +353,30 @@ bool tryResolveCustomWorkflowJsonToApi(QJsonObject *inOut, const QJsonObject &ob
 // §13.150: Persistence format version for ui.json; increment on breaking changes
 constexpr int persistenceFormatVersion = 1;
 
+/// One region row in ui.json `regions[]` / `root.regions[]` (Python positive + layer_ids + control[]).
+struct ComfyRegionUiStateEntry {
+    QString name;
+    QString positive;
+    QString maskSource = QStringLiteral("selection");
+    QString layerIds;
+    QList<ComfyControlLayerEntry> controlLayers;
+};
+
+QJsonObject regionUiStateEntryToJson(const ComfyRegionUiStateEntry &entry);
+ComfyRegionUiStateEntry regionUiStateEntryFromJson(const QJsonObject &o);
+QJsonArray regionUiStateEntriesToJsonArray(const QList<ComfyRegionUiStateEntry> &entries);
+QList<ComfyRegionUiStateEntry> regionUiStateEntriesFromJsonArray(const QJsonArray &arr);
+/// Python `root` / `edit` wrapper: positive, negative, nested regions[].
+QJsonObject rootRegionUiWrapToJson(const QString &positive,
+                                   const QString &negative,
+                                   const QList<ComfyRegionUiStateEntry> &regions);
+bool rootRegionUiWrapFromJson(const QJsonObject &wrap,
+                              QString *positive,
+                              QString *negative,
+                              QList<ComfyRegionUiStateEntry> *regions);
+/// Top-level `regions` array (legacy/alternate) + `control` root list helpers.
+QJsonArray readRegionUiArrayFromDocumentUi(const QJsonObject &ui, bool *foundInDocument = nullptr);
+
 // §13.45 / §13.193: Frame output paths for Live and Animation. documentPath = full path to .kra file.
 QString liveFramesDirectory(const QString &documentPath);       // {document_directory}/{document_stem}.live-frames
 QString animationFramesDirectory(const QString &documentPath);  // {document_directory}/{document_stem}.animation
@@ -335,6 +390,13 @@ QString kritaIconNameForThemeStem(const QString &stem);
 
 // §13.141: Avoid ngrok browser warning when connecting to arbitrary ComfyUI URLs
 void setComfyUIRequestHeaders(QNetworkRequest &req);
+/// GET api/etn/translate/{lang}/{text} (Python ComfyClient.translate). \p onDone(ok, translatedText).
+void requestEtnPromptTranslation(QNetworkAccessManager *nam,
+                                 const QString &baseUrlTrimmed,
+                                 const QString &langCode,
+                                 const QString &text,
+                                 QObject *context,
+                                 std::function<void(bool ok, const QString &translated)> onDone);
 // §13.113: ComfyClient uploads LoRAs via HTTP PUT api/etn/upload/loras/<file_id> (streaming body). Returns nullptr if the file cannot be opened.
 QNetworkReply *tryUploadLoraFileViaEtnApi(QNetworkAccessManager *nam,
                                           const QString &baseUrlTrimmed,
@@ -346,6 +408,12 @@ QString formatServerErrorMessage(const QString &serverError);
 
 // §8.5/13.35: Wildcards {option1|option2|option3} — pick one option per occurrence using deterministic RNG(seed)
 QString evalWildcards(QString text, quint32 seed);
+
+/// P4.2 / Python settings.prompt_translation when translation_enabled is true in settings.json.
+QString activePromptTranslationLanguage(const QJsonObject &settingsRoot = QJsonObject());
+
+/// Python text.merge_prompt: wrap non-empty prompt with lang:xx … lang:en for ETN_Translate nodes.
+QString wrapPromptWithTranslationLanguage(const QString &prompt, const QString &languageCode);
 
 // §13.35: Layer placeholders <layer:name> → "Picture {n}"; returns (modifiedPrompt, ordered layer names for workflow binding)
 QStringList extractLayerPlaceholders(QString &prompt);
@@ -401,6 +469,8 @@ QImage compositeControlImageOntoExtent(const QImage &processedCrop,
 // §13.58: class_type strings listed in Technical_Specification.md (ETN tooling, INPAINT, preprocessors, GrowMask/ImageUpscaleWithModel, common core nodes this port emits).
 const QStringList &comfyUiSpecSection58NodeClassTypes();
 // §13.58: Subset of the above that appear as keys in GET /object_info (ComfyObjectInfo node registry).
+/// VAELoader vae_name options from GET /object_info (empty if not connected).
+QStringList vaeNamesFromObjectInfo(const QJsonObject &objectInfoRoot);
 QStringList specSection58NodesPresentInObjectInfo(const QJsonObject &objectInfoRoot);
 
 // §13.154: True when selection covers (0,0) to (width, height) and all pixels are fully selected (0xff)
@@ -439,6 +509,13 @@ struct InpaintParams {
 };
 InpaintParams detectInpaintParams(const QString &mode, const QString &arch, double strength0to1,
                                   bool positiveEmpty, bool hasStructuralControl, bool editReference = false);
+
+/// Python workflow.build_instructions — prepend mode-specific edit instructions when arch supports edit.
+QString buildInpaintPromptInstructions(const QString &mode, const QString &archKey);
+QString prependInpaintPromptInstructions(const QString &prompt, const QString &mode, const QString &archKey);
+
+/// Default fill kind for an explicit inpaint mode (for syncing fill combo UI).
+QString defaultFillKindForInpaintMode(const QString &mode);
 
 // §13.43: calc_selection_pre_process grow (pixels). Uses extent/area diagonal, strength, and modifier defaults. Returns grow clamped to 0–499 for grow_mask_by.
 int calcSelectionPreProcessGrow(int extentWidth, int extentHeight, int areaWidth, int areaHeight, double strength0to1,

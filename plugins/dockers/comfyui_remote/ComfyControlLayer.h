@@ -33,6 +33,9 @@ constexpr int maxPresetValue = 4;
 constexpr int strengthMultiplier = 50;
 
 QStringList allModeKeys();
+/// Modes shown in control-layer UI (excludes inpaint, universal — Python ControlMode.is_internal).
+QStringList uiModeKeys();
+bool modeHasRange(const QString &mode);
 QString modeLabel(const QString &mode);
 bool modeHasPreprocessor(const QString &mode);
 void applyPresetDefaults(ComfyControlLayerEntry *entry, const QString &archKey);
@@ -45,6 +48,12 @@ ComfyControlLayerEntry makeDefaultForLayer(const QString &layerName, const QStri
 
 /// Layer contributes to generate upload (ControlNet and/or IP-Adapter).
 bool needsGenerateUpload(const ComfyControlLayerEntry &entry);
+
+/// Python ControlLayer.can_generate — preprocessor modes with a named target layer.
+bool canGenerateJob(const ComfyControlLayerEntry &entry);
+
+bool hasStructuralControlAmong(const QList<ComfyControlLayerEntry> &layers);
+bool anyNeedsGenerateUpload(const QList<ComfyControlLayerEntry> &layers);
 
 } // namespace ComfyControlLayer
 

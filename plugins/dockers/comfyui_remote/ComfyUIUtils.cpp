@@ -4,7 +4,10 @@
  */
 
 #include "ComfyUIUtils.h"
+#include "ComfyLocalization.h"
+#include "ComfyFileLibrary.h"
 #include "ComfyResources.h"
+#include "ComfyTheme.h"
 
 #include <cmath>
 #include <algorithm>
@@ -154,6 +157,110 @@ DocumentUiJsonLoadOutcome loadDocumentUiJsonWithMeta(KisImageSP image)
 QJsonObject loadDocumentUiJsonObject(KisImageSP image)
 {
     return loadDocumentUiJsonWithMeta(image).object;
+}
+
+QJsonObject regionUiStateEntryToJson(const ComfyRegionUiStateEntry &entry)
+{
+    QJsonObject o;
+    if (!entry.name.isEmpty())
+        o.insert(QStringLiteral("name"), entry.name);
+    if (!entry.positive.isEmpty()) {
+        o.insert(QStringLiteral("positive"), entry.positive);
+        o.insert(QStringLiteral("prompt"), entry.positive);
+    }
+    if (!entry.layerIds.isEmpty())
+        o.insert(QStringLiteral("layer_ids"), entry.layerIds);
+    if (!entry.maskSource.isEmpty())
+        o.insert(QStringLiteral("mask_source"), entry.maskSource);
+    const QJsonArray ctrl = ComfyControlLayer::toJsonArray(entry.controlLayers);
+    if (!ctrl.isEmpty())
+        o.insert(QStringLiteral("control"), ctrl);
+    return o;
+}
+
+ComfyRegionUiStateEntry regionUiStateEntryFromJson(const QJsonObject &o)
+{
+    ComfyRegionUiStateEntry e;
+    e.name = o.value(QStringLiteral("name")).toString();
+    e.positive = o.value(QStringLiteral("positive")).toString();
+    if (e.positive.isEmpty())
+        e.positive = o.value(QStringLiteral("prompt")).toString();
+    e.layerIds = o.value(QStringLiteral("layer_ids")).toString();
+    QString ms = o.value(QStringLiteral("mask_source")).toString();
+    if (ms.isEmpty())
+        ms = o.value(QStringLiteral("maskSource")).toString();
+    e.maskSource = ms.isEmpty() ? QStringLiteral("selection") : ms;
+    e.controlLayers = ComfyControlLayer::fromJsonArray(o.value(QStringLiteral("control")).toArray());
+    if (e.name.isEmpty() && !e.positive.isEmpty())
+        e.name = e.positive.left(40);
+    return e;
+}
+
+QJsonArray regionUiStateEntriesToJsonArray(const QList<ComfyRegionUiStateEntry> &entries)
+{
+    QJsonArray arr;
+    for (const ComfyRegionUiStateEntry &e : entries)
+        arr.append(regionUiStateEntryToJson(e));
+    return arr;
+}
+
+QList<ComfyRegionUiStateEntry> regionUiStateEntriesFromJsonArray(const QJsonArray &arr)
+{
+    QList<ComfyRegionUiStateEntry> out;
+    for (const QJsonValue &v : arr) {
+        if (!v.isObject())
+            continue;
+        const ComfyRegionUiStateEntry e = regionUiStateEntryFromJson(v.toObject());
+        if (!e.name.isEmpty() || !e.positive.isEmpty())
+            out.append(e);
+    }
+    return out;
+}
+
+QJsonObject rootRegionUiWrapToJson(const QString &positive,
+                                   const QString &negative,
+                                   const QList<ComfyRegionUiStateEntry> &regions)
+{
+    QJsonObject wrap;
+    wrap.insert(QStringLiteral("positive"), positive);
+    wrap.insert(QStringLiteral("negative"), negative);
+    wrap.insert(QStringLiteral("regions"), regionUiStateEntriesToJsonArray(regions));
+    return wrap;
+}
+
+bool rootRegionUiWrapFromJson(const QJsonObject &wrap,
+                              QString *positive,
+                              QString *negative,
+                              QList<ComfyRegionUiStateEntry> *regions)
+{
+    if (!wrap.isEmpty()) {
+        if (positive)
+            *positive = wrap.value(QStringLiteral("positive")).toString();
+        if (negative)
+            *negative = wrap.value(QStringLiteral("negative")).toString();
+        if (regions)
+            *regions = regionUiStateEntriesFromJsonArray(wrap.value(QStringLiteral("regions")).toArray());
+        return true;
+    }
+    return false;
+}
+
+QJsonArray readRegionUiArrayFromDocumentUi(const QJsonObject &ui, bool *foundInDocument)
+{
+    if (foundInDocument)
+        *foundInDocument = false;
+    const QJsonObject rootObj = ui.value(QStringLiteral("root")).toObject();
+    if (rootObj.contains(QStringLiteral("regions"))) {
+        if (foundInDocument)
+            *foundInDocument = true;
+        return rootObj.value(QStringLiteral("regions")).toArray();
+    }
+    if (ui.contains(QStringLiteral("regions"))) {
+        if (foundInDocument)
+            *foundInDocument = true;
+        return ui.value(QStringLiteral("regions")).toArray();
+    }
+    return QJsonArray();
 }
 
 bool documentHasStoredUiJsonPayload(KisImageSP image)
@@ -492,6 +599,23 @@ void applyUpscaleRefineVaedecodeTiling(QJsonObject &workflow,
     inputs.insert(QStringLiteral("temporal_overlap"), 8);
     node.insert(QStringLiteral("inputs"), inputs);
     workflow.insert(decodeNodeId, node);
+}
+
+QStringList parseCheckpointNamesFromObjectInfoRoot(const QJsonObject &root)
+{
+    const QJsonObject nodeInfo = root.value(QStringLiteral("CheckpointLoaderSimple")).toObject();
+    const QJsonObject input = nodeInfo.value(QStringLiteral("input")).toObject();
+    const QJsonObject required = input.value(QStringLiteral("required")).toObject();
+    const QJsonValue ckptVal = required.value(QStringLiteral("ckpt_name"));
+    QStringList names;
+    if (ckptVal.isArray()) {
+        const QJsonArray arr = ckptVal.toArray();
+        if (!arr.isEmpty() && arr.at(0).isArray()) {
+            for (const QJsonValue &v : arr.at(0).toArray())
+                names << v.toString();
+        }
+    }
+    return names;
 }
 
 void extractLoraFilenamesFromObjectInfo(const QJsonObject &root, QStringList *out)
@@ -883,11 +1007,11 @@ std::pair<bool, QString> checkColorMode(KisImageSP image)
     const KoColorSpace *cs = image->colorSpace();
     if (cs->colorModelId() != RGBAColorModelID) {
         return {false,
-                i18n("Incompatible document: Color model must be RGB/Alpha (current model: %1)", cs->colorModelId().name())};
+                ComfyTr::tr("Incompatible document: Color model must be RGB/Alpha (current model: %1)", cs->colorModelId().name())};
     }
     if (cs->colorDepthId() != Integer8BitsColorDepthID) {
         return {false,
-                i18n("Incompatible document: Color depth must be 8-bit integer (current depth: %1)", cs->colorDepthId().name())};
+                ComfyTr::tr("Incompatible document: Color depth must be 8-bit integer (current depth: %1)", cs->colorDepthId().name())};
     }
     return {true, QString()};
 }
@@ -901,9 +1025,11 @@ QString historyCacheDir()
     return path;
 }
 
-// §13.66: user_data_dir — AppDataLocation + "ai_diffusion" when path contains "krita"; else GenericDataLocation + "krita-ai-diffusion".
-// Migrates legacy C++ path …/krita/comfyui_remote → resolved dir when only legacy has settings.json.
-QString pluginUserDataDir()
+namespace {
+
+QString g_pluginUserDataDirTestOverride;
+
+QString resolvePluginUserDataDir()
 {
     const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     const QString legacyBase = appData.isEmpty() ? QDir::tempPath() : appData;
@@ -938,6 +1064,37 @@ QString pluginUserDataDir()
 
     QDir().mkpath(resolved);
     return resolved;
+}
+
+} // namespace
+
+#ifdef COMFYUI_ENABLE_TEST_HOOKS
+namespace ComfyUITestHooks {
+
+void setPluginUserDataDirOverride(const QString &path)
+{
+    g_pluginUserDataDirTestOverride = path;
+}
+
+void clearPluginUserDataDirOverride()
+{
+    g_pluginUserDataDirTestOverride.clear();
+}
+
+} // namespace ComfyUITestHooks
+#endif
+
+// §13.66: user_data_dir — AppDataLocation + "ai_diffusion" when path contains "krita"; else GenericDataLocation + "krita-ai-diffusion".
+// Migrates legacy C++ path …/krita/comfyui_remote → resolved dir when only legacy has settings.json.
+QString pluginUserDataDir()
+{
+#ifdef COMFYUI_ENABLE_TEST_HOOKS
+    if (!g_pluginUserDataDirTestOverride.isEmpty()) {
+        QDir().mkpath(g_pluginUserDataDirTestOverride);
+        return g_pluginUserDataDirTestOverride;
+    }
+#endif
+    return resolvePluginUserDataDir();
 }
 
 namespace {
@@ -1151,49 +1308,37 @@ QString lorasJsonPath()
 
 QJsonArray loadLorasJsonArray()
 {
-    QFile f(lorasJsonPath());
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return {};
-    const QByteArray data = stripJsonLineComments(f.readAll());
-    f.close();
-    QJsonParseError err;
-    const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-    if (err.error != QJsonParseError::NoError)
-        return {};
-    if (doc.isArray())
-        return doc.array();
-    if (doc.isObject()) {
-        const QJsonArray nested = doc.object().value(QStringLiteral("loras")).toArray();
-        if (!nested.isEmpty())
-            return nested;
-    }
-    return {};
+    ComfyFileLibrary::instance().init();
+    QJsonArray arr;
+    for (const ComfyFileRecord &f : ComfyFileLibrary::instance().loras().files())
+        arr.append(f.toJson());
+    return arr;
 }
 
 bool saveLorasJsonArray(const QJsonArray &arr)
 {
-    QSaveFile f(lorasJsonPath());
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
-        return false;
-    f.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
-    return f.commit();
+    ComfyFileLibrary::instance().init();
+    QList<ComfyFileRecord> parsed;
+    parsed.reserve(arr.size());
+    for (const QJsonValue &v : arr) {
+        if (v.isObject())
+            parsed.append(ComfyFileRecord::fromJson(v.toObject()));
+    }
+    ComfyFileLibrary::instance().loras().replaceAll(parsed);
+    return true;
 }
 
 QString mergeLibraryLoraTagsIntoPositivePrompt(const QString &positivePrompt)
 {
-    const QJsonArray arr = loadLorasJsonArray();
+    ComfyFileLibrary::instance().init();
     QStringList tags;
-    tags.reserve(arr.size());
-    for (const QJsonValue &v : arr) {
-        const QJsonObject o = v.toObject();
-        if (!o.value(QStringLiteral("enabled")).toBool(true))
+    for (const ComfyFileRecord &f : ComfyFileLibrary::instance().loras().files()) {
+        if (!f.meta(QStringLiteral("enabled")).toBool(true))
             continue;
-        QString fn = o.value(QStringLiteral("filename")).toString().trimmed();
-        if (fn.isEmpty())
-            fn = o.value(QStringLiteral("name")).toString().trimmed();
+        const QString fn = f.id.trimmed();
         if (fn.isEmpty())
             continue;
-        const int pct = o.value(QStringLiteral("strength_percent")).toInt(100);
+        const int pct = f.meta(QStringLiteral("strength_percent")).toInt(100);
         if (pct <= 0)
             continue;
         const double w = qBound(0.01, pct / 100.0, 4.0);
@@ -1334,7 +1479,7 @@ QString formatComfySystemStatsDeviceLine(const QJsonObject &root)
 {
     const QJsonArray devs = root.value(QStringLiteral("devices")).toArray();
     if (devs.isEmpty())
-        return i18n("Device: (no GPU info in server response)");
+        return ComfyTr::tr("Device: (no GPU info in server response)");
 
     QStringList parts;
     for (const QJsonValue &v : devs) {
@@ -1354,8 +1499,8 @@ QString formatComfySystemStatsDeviceLine(const QJsonObject &root)
             parts.append(QStringLiteral("%1 %2").arg(t, name));
     }
     if (parts.isEmpty())
-        return i18n("Device: (unparsed system_stats)");
-    return i18n("Device: %1", parts.join(QLatin1String(" · ")));
+        return ComfyTr::tr("Device: (unparsed system_stats)");
+    return ComfyTr::tr("Device: %1", parts.join(QLatin1String(" · ")));
 }
 
 QString inferAutoPerformancePresetKey(const QJsonObject &root)
@@ -1579,6 +1724,53 @@ int diffusionUpscaleTileEstimateExtentPx(const QJsonObject &settingsRoot)
     return qBound(256, v, 2048);
 }
 
+namespace {
+
+int multipleOfInt(int value, int multiple)
+{
+    if (multiple <= 1)
+        return value;
+    return ((value + multiple - 1) / multiple) * multiple;
+}
+
+} // namespace
+
+int computeUpscaleTiledMinTileSizePx(int targetWidth, int targetHeight, ComfyResources::Arch arch,
+                                     int stylePreferredResolution)
+{
+    int base = stylePreferredResolution > 0 ? stylePreferredResolution
+                                            : (arch == ComfyResources::Arch::Sd15 ? 800 : 1024);
+    const int longest = qMax(targetWidth, targetHeight);
+    base = qMax(base, longest / 12);
+    const int multiple = qMax(1, ComfyResources::latentCompressionFactor(arch));
+    base = multipleOfInt(base - 128, multiple);
+    return qMax(multiple, base);
+}
+
+UpscaleTiledLayoutSpec computeUpscaleTiledLayoutSpec(int imageWidth,
+                                                     int imageHeight,
+                                                     ComfyResources::Arch arch,
+                                                     int stylePreferredResolution,
+                                                     double denoiseStrength0to1,
+                                                     int customOverlapPx)
+{
+    UpscaleTiledLayoutSpec spec;
+    const int multiple = qMax(1, ComfyResources::latentCompressionFactor(arch));
+    spec.minTileSize = computeUpscaleTiledMinTileSizePx(imageWidth, imageHeight, arch, stylePreferredResolution);
+    if (customOverlapPx < 0) {
+        const double t = qBound(0.0, denoiseStrength0to1, 1.0);
+        spec.padding = multipleOfInt(qRound(16.0 + 64.0 * t), multiple);
+    } else {
+        spec.padding = multipleOfInt(customOverlapPx, multiple);
+    }
+    spec.blending = spec.padding > 0 ? qMax(1, spec.padding / 16) * 8 : 0;
+    const int divisor = qMax(multiple, spec.minTileSize - 2 * spec.padding);
+    const int tw = qMax(1, imageWidth / divisor);
+    const int th = qMax(1, imageHeight / divisor);
+    spec.totalTiles = tw * th;
+    return spec;
+}
+
 void clampExtentToMaxMegapixels(int *width, int *height)
 {
     if (!width || !height) return;
@@ -1699,114 +1891,7 @@ QString sanitizePrompt(const QString &prompt)
 
 QString kritaIconNameForThemeStem(const QString &stem)
 {
-    static const QHash<QString, QString> map = [] {
-        QHash<QString, QString> h;
-        static const struct {
-            const char *stem;
-            const char *kritaIcon;
-        } rows[] = {
-            {"workspace-generation", "tools-wizard"},
-            {"workspace-upscaling", "view-zoom"},
-            {"workspace-live", "view-refresh"},
-            {"workspace-animation", "video-x-generic"},
-            {"workspace-custom", "project-development-open"},
-            {"apply", "dialog-ok"},
-            {"apply-layer", "document-edit"},
-            {"cancel", "dialog-cancel"},
-            {"generate", "tools-wizard"},
-            {"refine", "transform-scale"},
-            {"refine-region", "transform-crop"},
-            {"random", "random"},
-            {"seed", "random"},
-            {"settings", "configure"},
-            {"save", "document-save"},
-            {"discard", "edit-delete"},
-            {"upload", "upload"},
-            {"import", "document-import"},
-            {"reset", "view-refresh"},
-            {"remove", "list-remove"},
-            {"filter", "view-filter"},
-            {"more", "overflow-menu"},
-            {"queue-active", "run-build"},
-            {"queue-inactive", "dialog-ok"},
-            {"queue-upload", "network-transmit-receive"},
-            {"queue-waiting", "chronometer"},
-            {"play", "media-playback-start"},
-            {"pause", "media-playback-pause"},
-            {"record", "media-record"},
-            {"record-active", "media-record"},
-            {"region-add", "list-add"},
-            {"region-prompt", "insert-text"},
-            {"region-alpha", "draw-freehand"},
-            {"region-alpha-active", "format-stroke-color"},
-            {"root", "folder"},
-            {"context", "edit-paste"},
-            {"context-automatic", "system-run"},
-            {"context-mask", "path-mask-edit"},
-            {"context-layer", "layer-visible-on"},
-            {"context-image", "image-x-generic"},
-            {"fill", "fill-color"},
-            {"fill-empty", "draw-eraser"},
-            {"inpaint-automatic", "tools-wizard"},
-            {"inpaint-fill", "fill-color"},
-            {"inpaint-expand", "transform-scale"},
-            {"inpaint-add_object", "list-add"},
-            {"inpaint-remove_object", "list-remove"},
-            {"inpaint-replace_background", "view-preview"},
-            {"inpaint-custom", "preferences-desktop-color"},
-            {"control-add", "list-add"},
-            {"control-generate", "tools-wizard"},
-            {"add-pose", "edit-image"},
-            {"control-reference", "link"},
-            {"control-style", "color-picker-black"},
-            {"control-composition", "view-grid"},
-            {"control-face", "im-user"},
-            {"control-inpaint", "draw-brush"},
-            {"control-universal", "applications-graphics"},
-            {"control-scribble", "draw-freehand"},
-            {"control-line_art", "draw-line"},
-            {"control-soft_edge", "blur"},
-            {"control-canny_edge", "path-shape"},
-            {"control-depth", "view-media-visualization"},
-            {"control-normal", "map-flat"},
-            {"control-pose", "edit-image"},
-            {"control-segmentation", "select-rectangular"},
-            {"control-hands", "preferences-desktop-peripherals"},
-            {"control-blur", "blur"},
-            {"control-stencil", "draw-brush"},
-            {"link", "link"},
-            {"link-active", "link"},
-            {"link-off", "link-off"},
-            {"link-disabled", "link-off"},
-            {"warning", "dialog-warning"},
-            {"alert", "dialog-warning"},
-            {"interstice", "internet-web-browser"},
-            {"resolution-multiplier", "zoom-original"},
-            {"file-json", "text-x-ldif"},
-            {"file-kra", "application-x-krita"},
-            {"web-connection", "network-connect"},
-            {"comfyui", "applications-graphics"},
-            {"star", "rating"},
-            {"logo-128", "view-preview"},
-            {"sd-version-15", "applications-graphics"},
-            {"sd-version-xl", "applications-graphics"},
-            {"sd-version-3", "applications-graphics"},
-            {"sd-version-flux", "applications-graphics"},
-            {"sd-version-flux-k", "applications-graphics"},
-            {"sd-version-flux-2", "applications-graphics"},
-            {"sd-version-illu", "applications-graphics"},
-            {"sd-version-illu-v", "applications-graphics"},
-            {"sd-version-chroma", "applications-graphics"},
-            {"sd-version-qwen", "applications-graphics"},
-            {"sd-version-z-image", "applications-graphics"},
-        };
-        for (const auto &r : rows) {
-            h.insert(QString::fromLatin1(r.stem), QString::fromLatin1(r.kritaIcon));
-        }
-        return h;
-    }();
-    const QString v = map.value(stem);
-    return v.isEmpty() ? QStringLiteral("applications-graphics") : v;
+    return ComfyTheme::kritaIconNameForThemeStem(stem);
 }
 
 QString formatSaveImageFileName(const QString &templateStr, const QString &documentName, const QString &jobTimestamp,
@@ -2158,12 +2243,12 @@ QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow
     *outApi = QJsonObject();
     if (objectInfoRoot.isEmpty())
         return qMakePair(false,
-                         i18n("UI workflow conversion needs ComfyUI node definitions (connect and refresh object_info)."));
+                         ComfyTr::tr("UI workflow conversion needs ComfyUI node definitions (connect and refresh object_info)."));
 
     const QJsonArray nodesArr = uiWorkflow.value(QStringLiteral("nodes")).toArray();
     const QJsonArray linksArr = uiWorkflow.value(QStringLiteral("links")).toArray();
     if (nodesArr.isEmpty())
-        return qMakePair(false, i18n("UI workflow has no nodes."));
+        return qMakePair(false, ComfyTr::tr("UI workflow has no nodes."));
 
     QHash<int, QJsonObject> nodesById;
     for (const QJsonValue &nv : nodesArr) {
@@ -2194,7 +2279,7 @@ QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow
         const QJsonObject optional = inputWrapper.value(QStringLiteral("optional")).toObject();
         if (required.isEmpty() && optional.isEmpty())
             return qMakePair(false,
-                             i18n("Node type \"%1\" is not in object_info — connect to the matching ComfyUI server.",
+                             ComfyTr::tr("Node type \"%1\" is not in object_info — connect to the matching ComfyUI server.",
                                   classType));
 
         const QJsonArray uiInputs = uiNode.value(QStringLiteral("inputs")).toArray();
@@ -2219,16 +2304,16 @@ QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow
                 const int linkId = jsonIntFlexible(inObj.value(QStringLiteral("link")));
                 if (!linksById.contains(linkId))
                     return qMakePair(false,
-                                     i18n("Unknown link id %1 on node %2, input \"%3\".", linkId, nodeId, name));
+                                     ComfyTr::tr("Unknown link id %1 on node %2, input \"%3\".", linkId, nodeId, name));
                 const LinkEntry &le = linksById.value(linkId);
                 if (le.toNode >= 0 && le.toNode != nodeId)
                     return qMakePair(false,
-                                     i18n("Link %1 does not target node %2 (input \"%3\").", linkId, nodeId, name));
+                                     ComfyTr::tr("Link %1 does not target node %2 (input \"%3\").", linkId, nodeId, name));
                 const QJsonValue resolved =
                     resolveOutputToApi(nodesById, linksById, le.fromNode, le.fromSlot, 0);
                 if (resolved.isNull() || resolved.isUndefined())
                     return qMakePair(false,
-                                     i18n("Could not resolve link %1 (node %2, input \"%3\").", linkId, nodeId, name));
+                                     ComfyTr::tr("Could not resolve link %1 (node %2, input \"%3\").", linkId, nodeId, name));
                 inputs.insert(name, resolved);
             } else {
                 if (isConnectionInputSpec(specVal)) {
@@ -2237,7 +2322,7 @@ QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow
                 }
                 if (widgetIdx >= widgetsValues.size())
                     return qMakePair(false,
-                                     i18n("Not enough widget values for node %1 (input \"%2\").", nodeId, name));
+                                     ComfyTr::tr("Not enough widget values for node %1 (input \"%2\").", nodeId, name));
                 const QJsonValue w = widgetsValues.at(widgetIdx++);
                 inputs.insert(name, coerceWidgetForSpec(w, specVal));
             }
@@ -2269,7 +2354,7 @@ QPair<bool, QString> convertComfyUiWorkflowUiToApi(const QJsonObject &uiWorkflow
     }
 
     if (outApi->isEmpty())
-        return qMakePair(false, i18n("No exportable nodes found in UI workflow (after filtering notes/primitives)."));
+        return qMakePair(false, ComfyTr::tr("No exportable nodes found in UI workflow (after filtering notes/primitives)."));
     return qMakePair(true, QString());
 }
 
@@ -2381,7 +2466,7 @@ QNetworkReply *tryUploadLoraFileViaEtnApi(QNetworkAccessManager *nam,
 QString formatServerErrorMessage(const QString &serverError)
 {
     if (serverError.toLower().contains(QLatin1String("lcm")))
-        return i18n("LCM is no longer supported by the server. Please change the Style's sampling method to 'Realtime - Hyper'.");
+        return ComfyTr::tr("LCM is no longer supported by the server. Please change the Style's sampling method to 'Realtime - Hyper'.");
     return serverError;
 }
 
@@ -2519,6 +2604,23 @@ const QStringList &comfyUiSpecSection58NodeClassTypes()
         QStringLiteral("ImageScale"),
     };
     return list;
+}
+
+QStringList vaeNamesFromObjectInfo(const QJsonObject &objectInfoRoot)
+{
+    const QJsonObject nodeInfo = objectInfoRoot.value(QStringLiteral("VAELoader")).toObject();
+    const QJsonObject input = nodeInfo.value(QStringLiteral("input")).toObject();
+    const QJsonObject required = input.value(QStringLiteral("required")).toObject();
+    const QJsonValue vaeVal = required.value(QStringLiteral("vae_name"));
+    QStringList names;
+    if (vaeVal.isArray()) {
+        const QJsonArray arr = vaeVal.toArray();
+        if (!arr.isEmpty() && arr.at(0).isArray()) {
+            for (const QJsonValue &v : arr.at(0).toArray())
+                names << v.toString();
+        }
+    }
+    return names;
 }
 
 QStringList specSection58NodesPresentInObjectInfo(const QJsonObject &objectInfoRoot)
@@ -2732,7 +2834,7 @@ QPair<bool, QString> validateCustomWorkflowStyleAndPromptNodes(const QJsonObject
             count++;
     }
     if (count > 1)
-        return qMakePair(false, i18n("Workflow contains multiple 'Krita Style & Prompt' nodes, but only one is allowed."));
+        return qMakePair(false, ComfyTr::tr("Workflow contains multiple 'Krita Style & Prompt' nodes, but only one is allowed."));
     return qMakePair(true, QString());
 }
 
@@ -2817,6 +2919,8 @@ InpaintParams detectInpaintParams(const QString &mode, const QString &arch, doub
         p.fillKind = QStringLiteral("inpaint");
     else if (mode == QLatin1String("replace_background"))
         p.fillKind = QStringLiteral("replace");
+    else if (mode == QLatin1String("custom"))
+        p.fillKind = QStringLiteral("none");
     else
         p.fillKind = QStringLiteral("blur");
     p.useReference = fillOrExpand && positiveEmpty;
@@ -2828,6 +2932,52 @@ InpaintParams detectInpaintParams(const QString &mode, const QString &arch, doub
     p.useConditionMask = (arch == QLatin1String("sd15")) && (mode == QLatin1String("add_object"))
         && !positiveEmpty && !hasStructuralControl;
     return p;
+}
+
+QString defaultFillKindForInpaintMode(const QString &mode)
+{
+    if (mode == QLatin1String("fill"))
+        return QStringLiteral("blur");
+    if (mode == QLatin1String("expand"))
+        return QStringLiteral("border");
+    if (mode == QLatin1String("add_object"))
+        return QStringLiteral("neutral");
+    if (mode == QLatin1String("remove_object"))
+        return QStringLiteral("inpaint");
+    if (mode == QLatin1String("replace_background"))
+        return QStringLiteral("replace");
+    if (mode == QLatin1String("custom"))
+        return QStringLiteral("none");
+    return QStringLiteral("blur");
+}
+
+QString buildInpaintPromptInstructions(const QString &mode, const QString &archKey)
+{
+    const ComfyResources::Arch arch = ComfyResources::archFromKey(archKey);
+    if (!ComfyResources::supportsEditInstructions(arch))
+        return QString();
+    if (mode == QLatin1String("fill") || mode == QLatin1String("expand")) {
+        if (arch == ComfyResources::Arch::Flux2_4b)
+            return QStringLiteral("Fill the green spaces according to the image.\n");
+        return QString();
+    }
+    if (mode == QLatin1String("add_object"))
+        return QStringLiteral("Add the object to the scene.\n");
+    if (mode == QLatin1String("remove_object"))
+        return QStringLiteral("Remove the object.\n");
+    if (mode == QLatin1String("replace_background"))
+        return QStringLiteral("Replace the background while keeping the main subject.\n");
+    return QString();
+}
+
+QString prependInpaintPromptInstructions(const QString &prompt, const QString &mode, const QString &archKey)
+{
+    const QString instr = buildInpaintPromptInstructions(mode, archKey);
+    if (instr.isEmpty())
+        return prompt;
+    if (prompt.startsWith(instr))
+        return prompt;
+    return instr + prompt;
 }
 
 // §13.43: grow from get_selection_modifiers + calc_selection_pre_process (feather_rel × size + feather_min_px; grow = selection_grow_offset + feather/2)
@@ -3264,6 +3414,28 @@ QPair<QString, QString> readPromptFromImageFile(const QString &filePath)
     return out;
 }
 
+QString activePromptTranslationLanguage(const QJsonObject &settingsRoot)
+{
+    QJsonObject s = settingsRoot;
+    if (s.isEmpty())
+        s = loadSettingsJson();
+    if (!s.value(QStringLiteral("translation_enabled")).toBool(false))
+        return QString();
+    QString code = s.value(QStringLiteral("prompt_translation")).toString().trimmed();
+    if (code.isEmpty() || code == QLatin1String("disabled"))
+        return QString();
+    return code;
+}
+
+QString wrapPromptWithTranslationLanguage(const QString &prompt, const QString &languageCode)
+{
+    const QString p = prompt.trimmed();
+    const QString lang = languageCode.trimmed();
+    if (lang.isEmpty() || p.isEmpty())
+        return prompt;
+    return QStringLiteral("lang:%1 %2 lang:en ").arg(lang, prompt);
+}
+
 QString mergeStylePromptWithInstruction(const QString &styleTemplate, const QString &userInstruction)
 {
     const QString u = userInstruction.trimmed();
@@ -3311,6 +3483,41 @@ LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QStr
     o.stylePositiveTemplate = presetCfg.readEntry(QStringLiteral("Prompt"), QString());
     o.styleNegative = presetCfg.readEntry(QStringLiteral("Negative"), QString());
     return o;
+}
+
+void requestEtnPromptTranslation(QNetworkAccessManager *nam,
+                                 const QString &baseUrlTrimmed,
+                                 const QString &langCode,
+                                 const QString &text,
+                                 QObject *context,
+                                 std::function<void(bool ok, const QString &translated)> onDone)
+{
+    if (!onDone) {
+        return;
+    }
+    if (!nam || text.trimmed().isEmpty() || langCode.isEmpty() || langCode == QLatin1String("disabled")) {
+        onDone(false, text);
+        return;
+    }
+    QString base = baseUrlTrimmed.trimmed();
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    const QString encoded = QString::fromUtf8(QUrl::toPercentEncoding(text));
+    QUrl url(base + QStringLiteral("/api/etn/translate/") + langCode + QLatin1Char('/') + encoded);
+    QNetworkRequest req(url);
+    setComfyUIRequestHeaders(req);
+    QNetworkReply *reply = nam->get(req);
+    QObject::connect(reply, &QNetworkReply::finished, context, [reply, onDone, text]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            onDone(false, text);
+            return;
+        }
+        QString translated = QString::fromUtf8(reply->readAll()).trimmed();
+        if (translated.isEmpty())
+            translated = text;
+        onDone(true, translated);
+    });
 }
 
 }

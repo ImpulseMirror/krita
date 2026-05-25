@@ -8,6 +8,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyControlLayer.h"
+#include "ComfyRegionProcess.h"
 #include "ComfyWorkflowEngine.h"
 
 #include <QPointer>
@@ -27,6 +28,8 @@
 #include <QListWidget>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+
+class QWebSocket;
 #include <QTemporaryFile>
 #include <QUrl>
 #include <QRect>
@@ -71,6 +74,7 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnDeletePreset = nullptr;
     QPlainTextEdit *editPrompt = nullptr;
     QPlainTextEdit *editNegative = nullptr;
+    QWidget *rootPromptColumnWidget = nullptr;
     QWidget *promptResizeHandle = nullptr;   // §13.54
     QWidget *negativeResizeHandle = nullptr; // §13.54
     QWidget *negativePromptBlock = nullptr;  // §4.7: label row + negative editor (hide when "Show negative" off)
@@ -109,11 +113,11 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnCancelQueue = nullptr;
     QPushButton *btnInpaint = nullptr;
     QToolButton *btnGenerateViewOperations = nullptr; // §13.29: main action menu (Generate / Refine / Edit / …)
-    QComboBox *comboInpaintMode = nullptr;  // §13.206: Automatic | Fill | Expand (when not Automatic, overrides detectInpaintMode)
+    QComboBox *comboInpaintMode = nullptr;  // §13.206 / P4.1: all InpaintMode values (automatic … custom)
     QComboBox *comboFillMode = nullptr;    // §13.188: None | Neutral | Blur | Border | Inpaint (five options, replace/green internal only)
     QComboBox *comboInpaintContext = nullptr; // §13.169 / §13.194: selection/crop context (ETN_KritaSelection parity)
-    QCheckBox *checkInpaintUseModel = nullptr;      // §13.107 / §13.169: use_inpaint (dedicated inpaint path when available)
-    QCheckBox *checkInpaintUsePromptFocus = nullptr; // §13.107 / §13.169: use_prompt_focus → use_condition_mask
+    class ComfySwitchWidget *checkInpaintUseModel = nullptr;      // §13.107: Seamless (use_inpaint)
+    class ComfySwitchWidget *checkInpaintUsePromptFocus = nullptr; // §13.107: Focus (use_prompt_focus)
     bool inpaintPersistUseModel = true;     // §13.194: CustomInpaint use_inpaint (inpaint annotation)
     bool inpaintPersistUsePromptFocus = false; // §13.194: use_prompt_focus
     QSet<QString> documentDefaultsAppliedDocIds; // §13.194: apply document_defaults once per document id
@@ -138,6 +142,9 @@ struct ComfyUIRemoteDock::Private
     QCheckBox *checkLiveMode = nullptr;
     QWidget *liveSpinner = nullptr;  // §13.105: LiveSpinnerWidget for Live view progress
     QTimer *liveTimer = nullptr;
+    bool liveAwaitingLoraUploads = false;
+    int liveLoraUploadIndex = 0;
+    QStringList liveLoraUploadPaths;
     QString liveUploadedImageName;
     QString livePromptId;
     QCheckBox *checkLiveRecord = nullptr;  // §13.45: when checked, save each live result to .live-frames/frame-N.webp
@@ -177,16 +184,44 @@ struct ComfyUIRemoteDock::Private
         QString name;
         QString prompt;
         QString maskSource; // "selection" or "layer:LayerName"
+        QString layerIds;   // comma-separated Krita layer UUIDs (Python layer_ids)
         QList<ComfyControlLayerEntry> controlLayers;
     };
 
-    QList<ComfyControlLayerEntry> rootControlLayers;
-    QGroupBox *controlLayersGroupBox = nullptr;
-    QListWidget *listRootControlLayers = nullptr;
-    QPushButton *btnAddControlLayer = nullptr;
-    QPushButton *btnRemoveControlLayer = nullptr;
-    void refreshRootControlLayersList();
+    int activeRegionIndex = -1;
 
+    QList<ComfyControlLayerEntry> rootControlLayers;
+    QList<ComfyControlLayerEntry> generateControlLayersActive;
+    QString generateRefineUploadedImageName;
+    bool generateRefineAfterRegions = false;
+    ComfyWorkflowEngine::RefineParams generateStashedRefineParams;
+    QGroupBox *controlLayersGroupBox = nullptr;
+    class ComfyControlLayerListWidget *rootControlLayerList = nullptr;
+    void refreshRootControlLayersList();
+    QGroupBox *regionControlLayersGroupBox = nullptr;
+    QLabel *labelRegionControlLayers = nullptr;
+    class ComfyControlLayerListWidget *regionControlLayerList = nullptr;
+    /// P2.4: per-row generate_control_layer job (separate from §13.53 preview panel poll)
+    QTimer *controlLayerJobPollTimer = nullptr;
+    QString controlLayerJobPromptId;
+    int controlLayerJobPollCount = 0;
+    QString controlLayerJobMode;
+    QString controlLayerJobResultLayerName;
+    QString controlLayerJobAnchorLayerName;
+    bool controlLayerJobForRegion = false;
+    int controlLayerJobRegionRow = -1;
+    int controlLayerJobEntryIndex = -1;
+    bool controlLayerJobHandsCompositeBack = false;
+    QRect controlLayerJobCompositeLocalRect;
+    QSize controlLayerJobCompositeFullSize;
+    QJsonValue controlLayerJobOpenPoseJson;
+#if defined(COMFYUI_HAVE_QT_WEBSOCKETS)
+    class QWebSocket *controlLayerJobWebSocket = nullptr;
+#endif
+
+    bool generateAwaitingLoraUploads = false;
+    int generateLoraUploadIndex = 0;
+    QStringList generateLoraUploadPaths;
     bool generateAwaitingControlUploads = false;
     int generateControlUploadIndex = 0;
     QStringList generateControlUploadedNames;
@@ -196,18 +231,33 @@ struct ComfyUIRemoteDock::Private
     QJsonObject generatePendingBaseWorkflow;
     ComfyResources::Arch generatePendingArch = ComfyResources::Arch::Sd15;
     QList<ComfyWorkflowEngine::RegionalPromptInput> generateRegionalInputs;
-    QList<RegionEntry> generateRegionSnapshot;
+    QList<ComfyRegionProcess::ProcessedRegionEntry> generateProcessedRegions;
     bool generateAwaitingRegionMaskUploads = false;
     int generateRegionMaskUploadIndex = 0;
+
+    bool upscaleAwaitingControlUploads = false;
+    int upscaleControlUploadIndex = 0;
+    QStringList upscaleControlUploadedNames;
+    QList<ComfyControlLayerEntry> upscaleControlLayersActive;
+    ComfyWorkflowEngine::UpscaleTiledParams upscaleStashedTiledParams;
+    int upscaleStashedW2 = 0;
+    int upscaleStashedH2 = 0;
+    int upscaleStashedCanvasW = 0;
+    ComfyResources::Arch upscaleStashedArch = ComfyResources::Arch::Sd15;
+    QList<ComfyWorkflowEngine::RegionalPromptInput> upscaleRegionalInputs;
+    QList<ComfyRegionProcess::ProcessedRegionEntry> upscaleProcessedRegions;
+    bool upscaleAwaitingRegionMaskUploads = false;
+    int upscaleRegionMaskUploadIndex = 0;
+    bool upscalePendingIsTiled = false;
+    bool upscalePendingWantRefine = false;
     QList<RegionEntry> regionEntries;
     QList<RegionEntry> editRegionEntries;  // §13.125: edit_regions (Generate + Edit mode)
-    /// Snapshot of active regions when "Generate regions" started (async chain must not follow live toggles).
-    QList<RegionEntry> regionGenerationSnapshot;
     // §13.90: PromptHeader — full (title + description), icon (icon only), none (no header)
     int promptHeaderMode = 0;  // 0=full, 1=icon, 2=none; persisted in config
     QComboBox *regionHeaderCombo = nullptr;
     QLabel *regionHeaderLabel = nullptr;  // description or icon, visibility by mode
-    QListWidget *listRegions = nullptr;   // §13.106: objectName InactiveRegionWidget (list of regions; selected = active)
+    class ComfyRegionPromptWidget *regionPromptWidget = nullptr;
+    QListWidget *listRegions = nullptr;   // legacy; unused when regionPromptWidget is set
     QPushButton *btnAddRegion = nullptr;
     QPushButton *btnRemoveRegion = nullptr;
     QPushButton *btnMoveRegionUp = nullptr;
@@ -287,19 +337,19 @@ struct ComfyUIRemoteDock::Private
     /// §13.74: Full Animation + custom workflow + reference — upload current frame after each timeline seek, then replace REFERENCE_IMAGE
     bool batchNeedsPerFrameReference = false;
 
-    // Region generation state (used during slotGenerateRegions async chain)
-    QString regionJobId;  // §13.184: UUID for this region run; used when adding to history with regionLayerNames
-    QImage regionCurrentImage;
-    int regionIndex = 0;
-    QString regionUploadedImageName;
-    QString regionUploadedImageSubfolder;
-    QString regionPromptId;
-    QString regionMaskUploadedName;
-    QString regionMaskUploadedSubfolder;
-    int regionPollCount = 0;
-    static const int regionMaxPollCount = 300;
-
     // One-click inpaint state
+    QJsonObject inpaintPendingWorkflow;
+    QList<ComfyControlLayerEntry> inpaintControlLayersActive;
+    bool inpaintAwaitingLoraUploads = false;
+    int inpaintLoraUploadIndex = 0;
+    QStringList inpaintLoraUploadPaths;
+    int inpaintControlUploadIndex = 0;
+    QStringList inpaintControlUploadedNames;
+    ComfyResources::Arch inpaintPendingArch = ComfyResources::Arch::Sd15;
+    /// P4.3: active built-in/user style checkpoint options applied to template workflows
+    QString generateStyleVae;
+    int generateStyleClipSkip = 0;
+    ComfyResources::Arch generateStyleArch = ComfyResources::Arch::Sd15;
     QString inpaintUploadedImageName;
     QString inpaintUploadedImageSubfolder;
     QString inpaintUploadedMaskName;
@@ -330,7 +380,7 @@ struct ComfyUIRemoteDock::Private
     QLabel *labelUpscaleRefineStrength = nullptr;
     QSlider *sliderUpscaleRefineGuidance = nullptr;
     QLabel *labelUpscaleRefineGuidance = nullptr;
-    QCheckBox *checkUpscaleUsePrompt = nullptr;
+    class ComfySwitchWidget *checkUpscaleUsePrompt = nullptr;
 
     QString upscaleUploadedImageName;
     QString upscalePromptId;
@@ -361,7 +411,7 @@ struct ComfyUIRemoteDock::Private
     QJsonObject lastObjectInfoRoot;
 
     // Queue popup button (jobs, batch, seed, enqueue mode, cancel)
-    QToolButton *btnQueuePopup = nullptr;
+    class ComfyQueueButton *btnQueuePopup = nullptr;
     /// §5.7 / §13.92: Queue button on Generate + Animation; batch/enqueue rows hidden when not supports_batch.
     QWidget *queueButtonRowWidget = nullptr;
     QWidget *queueBatchOptionsRow = nullptr;
@@ -469,6 +519,28 @@ inline const QList<ComfyUIRemoteDock::Private::RegionEntry> &comfyActiveRegionEn
     if (onGenerate && editMode)
         return d->editRegionEntries;
     return d->regionEntries;
+}
+
+inline int comfyActiveRegionRow(const ComfyUIRemoteDock::Private *d)
+{
+    if (d->regionPromptWidget) {
+        const int i = d->activeRegionIndex;
+        return i >= 0 ? i : -1;
+    }
+    if (d->listRegions)
+        return d->listRegions->currentRow();
+    return -1;
+}
+
+inline QList<ComfyControlLayerEntry> mergedJobControlLayers(const QList<ComfyControlLayerEntry> &root,
+                                                            const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions)
+{
+    QList<ComfyControlLayerEntry> out = root;
+    for (const ComfyUIRemoteDock::Private::RegionEntry &r : regions) {
+        for (const ComfyControlLayerEntry &c : r.controlLayers)
+            out.append(c);
+    }
+    return out;
 }
 
 #endif

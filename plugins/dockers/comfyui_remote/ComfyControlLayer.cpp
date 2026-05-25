@@ -13,6 +13,19 @@
 
 namespace ComfyControlLayer {
 
+QStringList uiModeKeys()
+{
+    QStringList keys = allModeKeys();
+    keys.removeAll(QString::fromUtf8(ComfyResources::ControlMode::inpaint));
+    keys.removeAll(QString::fromUtf8(ComfyResources::ControlMode::universal));
+    return keys;
+}
+
+bool modeHasRange(const QString &mode)
+{
+    return ComfyResources::ControlMode::isStructural(mode) && !ComfyResources::ControlMode::isIpAdapter(mode);
+}
+
 QStringList allModeKeys()
 {
     return {
@@ -166,6 +179,11 @@ QList<ComfyControlLayerEntry> fromJsonArray(const QJsonArray &arr)
     return out;
 }
 
+bool canGenerateJob(const ComfyControlLayerEntry &entry)
+{
+    return !entry.layerName.isEmpty() && modeHasPreprocessor(entry.mode);
+}
+
 bool needsGenerateUpload(const ComfyControlLayerEntry &entry)
 {
     if (entry.layerName.isEmpty())
@@ -173,6 +191,25 @@ bool needsGenerateUpload(const ComfyControlLayerEntry &entry)
     if (ComfyResources::ControlMode::isIpAdapter(entry.mode))
         return true;
     return ComfyResources::ControlMode::isStructural(entry.mode);
+}
+
+bool hasStructuralControlAmong(const QList<ComfyControlLayerEntry> &layers)
+{
+    for (const ComfyControlLayerEntry &ce : layers) {
+        if (!ce.layerName.isEmpty() && ComfyResources::ControlMode::isStructural(ce.mode)
+            && !ComfyResources::ControlMode::isIpAdapter(ce.mode))
+            return true;
+    }
+    return false;
+}
+
+bool anyNeedsGenerateUpload(const QList<ComfyControlLayerEntry> &layers)
+{
+    for (const ComfyControlLayerEntry &ce : layers) {
+        if (needsGenerateUpload(ce))
+            return true;
+    }
+    return false;
 }
 
 ComfyControlLayerEntry makeDefaultForLayer(const QString &layerName, const QString &archKey)

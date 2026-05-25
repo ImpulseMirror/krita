@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "fixtures": [
+    "sd15_text2img",
+    "sdxl_text2img",
+    "flux_text2img",
+    "sd15_refine",
+    "sd15_inpaint",
+    "sd15_upscale_simple",
+    "sd15_upscale_refine"
+  ]
+}

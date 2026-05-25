@@ -13,13 +13,25 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QGuiApplication>
+#include <QPalette>
+#include <QFile>
+#include <QTemporaryDir>
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIIntervalSlider.h"
 #include "ComfyControlLayer.h"
+#include "ComfyOpenPose.h"
 #include "ComfyResources.h"
 #include "ComfyWorkflowEngine.h"
+#include "ComfyStyleCollection.h"
+#include "ComfyLocalization.h"
+#include "ComfyFileLibrary.h"
+#include "ComfyTheme.h"
+#include "ComfyRegionProcess.h"
 #include "ComfyUIUtils.h"
+#include "ComfyRegionLink.h"
 
 class ComfyUIRemoteDockTest : public QObject
 {
@@ -63,12 +75,39 @@ private Q_SLOTS:
     void testComfyResourcesArchFromCheckpoint();
     void testComfyResourcesControlModeHelpers();
     void testComfyWorkflowEngineBuildTextToImage();
+    void testComfyWorkflowEngineApplyCheckpointStyleOptions();
+    void testComfyStyleCollectionEntryToJson();
+    void testComfyLocalizationTranslate();
+    void testComfyLocalizationLoadFrenchJson();
+    void testComfyFileRecordHashAndSerialization();
+    void testComfyFileLibraryPreferredCheckpoint();
+    void testComfyWorkflowEngineBuildRefine();
+    void testComfyWorkflowEngineBuildInpaint();
+    void testComfyWorkflowEngineBuildLive();
+    void testComfyWorkflowEngineBuildAnimationFrame();
+    void testComfyWorkflowEngineBuildUpscaleSimple();
+    void testComfyWorkflowEngineBuildUpscaleRefine();
+    void testComfyWorkflowEngineBuildUpscaleTiled();
     void testComfyWorkflowEngineFluxCfgCap();
     void testComfyControlLayerJsonRoundtrip();
     void testComfyWorkflowEngineApplyControlNet();
     void testComfyWorkflowEngineApplyIpAdapter();
     void testComfyControlLayerNeedsGenerateUpload();
+    void testComfyControlLayerUiModeKeys();
+    void testComfyControlLayerCanGenerateJob();
+    void testComfyOpenPoseFromJsonToSvg();
+    void testComfyThemePaletteAndIcons();
+    void testComfyInpaintModeDetectAndInstructions();
+    void testComfyPromptTranslationHelpers();
+    void testComfyWorkflowEnginePromptTranslationNodes();
     void testComfyWorkflowEngineApplyRegionalGeneration();
+    void testComfyRegionProcessMaskOverlap();
+    void testComfyRegionProcessMaskInvertBackground();
+    void testDocumentUiJsonRegionControlRoundtrip();
+    void testComfyRegionLinkLayerIds();
+    void testComfyRegionLinkEffectiveMaskSource();
+    void testRegionUiStateLayerIdsJson();
+    void testComfyControlLayerHasStructuralAmong();
 };
 
 void ComfyUIRemoteDockTest::testDockCreationAndObserverName()
@@ -837,6 +876,258 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildTextToImage()
     QCOMPARE(i6.value(QStringLiteral("text")).toString(), QStringLiteral("mountain lake"));
 }
 
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyCheckpointStyleOptions()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.checkpoint = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    p.width = 512;
+    p.height = 512;
+    p.positivePrompt = QStringLiteral("test");
+    QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    QVERIFY(!wf.isEmpty());
+    ComfyWorkflowEngine::applyCheckpointStyleOptions(
+        &wf, QStringLiteral("ae.safetensors"), 2, ComfyResources::Arch::Sd15);
+    bool hasClipLayer = false;
+    bool hasVaeLoader = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString ct = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (ct == QLatin1String("CLIPSetLastLayer"))
+            hasClipLayer = true;
+        if (ct == QLatin1String("VAELoader"))
+            hasVaeLoader = true;
+    }
+    QVERIFY(hasClipLayer);
+    QVERIFY(hasVaeLoader);
+
+    QJsonObject wfFlux = ComfyWorkflowEngine::buildTextToImage(p);
+    ComfyWorkflowEngine::applyCheckpointStyleOptions(&wfFlux, QString(), 2, ComfyResources::Arch::Flux);
+    hasClipLayer = false;
+    for (auto it = wfFlux.constBegin(); it != wfFlux.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString() == QLatin1String("CLIPSetLastLayer"))
+            hasClipLayer = true;
+    }
+    QVERIFY(!hasClipLayer);
+}
+
+void ComfyUIRemoteDockTest::testComfyStyleCollectionEntryToJson()
+{
+    ComfyStyleEntry e;
+    e.name = QStringLiteral("Test Style");
+    e.architecture = QStringLiteral("sd15");
+    e.checkpoints = QStringList{QStringLiteral("ckpt.safetensors")};
+    e.vae = QStringLiteral("vae-ft-mse.safetensors");
+    e.clipSkip = 2;
+    e.preferredResolution = 768;
+    e.vPredictionZsnr = true;
+    e.selfAttentionGuidance = true;
+    const QJsonObject o = ComfyStyleCollection::instance().entryToJson(e);
+    QCOMPARE(o.value(QStringLiteral("vae")).toString(), QStringLiteral("vae-ft-mse.safetensors"));
+    QCOMPARE(o.value(QStringLiteral("clip_skip")).toInt(), 2);
+    QCOMPARE(o.value(QStringLiteral("preferred_resolution")).toInt(), 768);
+    QVERIFY(o.value(QStringLiteral("v_prediction_zsnr")).toBool());
+    QVERIFY(o.value(QStringLiteral("self_attention_guidance")).toBool());
+}
+
+void ComfyUIRemoteDockTest::testComfyLocalizationTranslate()
+{
+    ComfyLocalization::instance().loadLanguageForTest(
+        QStringLiteral("fr"), QStringLiteral("Français"),
+        {{QStringLiteral("Add"), QStringLiteral("Ajouter")},
+         {QStringLiteral("Missing key"), QStringLiteral("Should not appear")}});
+    QCOMPARE(ComfyLocalization::instance().translate(QStringLiteral("Add")), QStringLiteral("Ajouter"));
+    QCOMPARE(ComfyLocalization::instance().translate(QStringLiteral("Unknown")), QStringLiteral("Unknown"));
+    QCOMPARE(ComfyLocalization::instance().translate(QStringLiteral("Hello %1"), QStringLiteral("world")),
+             QStringLiteral("Hello world"));
+}
+
+void ComfyUIRemoteDockTest::testComfyLocalizationLoadFrenchJson()
+{
+    const QString path = ComfyUIUtils::pluginInstallDataDir() + QStringLiteral("/language/fr.json");
+    if (!QFile::exists(path))
+        QSKIP("Bundled fr.json not available (dev tree or install data missing)");
+    ComfyLocalization::instance().init();
+    bool foundFr = false;
+    for (const ComfyLanguageInfo &lang : ComfyLocalization::instance().availableLanguages()) {
+        if (lang.id == QLatin1String("fr")) {
+            foundFr = true;
+            break;
+        }
+    }
+    QVERIFY(foundFr);
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    const QJsonObject trans = root.value(QStringLiteral("translations")).toObject();
+    QHash<QString, QString> map;
+    for (auto it = trans.constBegin(); it != trans.constEnd(); ++it) {
+        if (it.value().isString() && !it.value().toString().isEmpty())
+            map.insert(it.key(), it.value().toString());
+    }
+    ComfyLocalization::instance().loadLanguageForTest(QStringLiteral("fr"), QStringLiteral("Français"), map);
+    const QString add = ComfyLocalization::instance().translate(QStringLiteral("Add"));
+    QVERIFY(add.contains(QStringLiteral("jouter"), Qt::CaseInsensitive));
+}
+
+void ComfyUIRemoteDockTest::testComfyFileRecordHashAndSerialization()
+{
+    QTemporaryDir tmp;
+    QVERIFY(tmp.isValid());
+    const QString path = tmp.path() + QStringLiteral("/test_lora.safetensors");
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("lora-bytes");
+    f.close();
+
+    ComfyFileRecord rec = ComfyFileRecord::local(path, ComfyFileFormat::Lora, true);
+    QVERIFY(!rec.hash.isEmpty());
+    QCOMPARE(ComfyFileLibraryUtil::sha256Base64OfFile(path), rec.hash);
+
+    rec.setMeta(QStringLiteral("strength_percent"), 80);
+    rec.setMeta(QStringLiteral("enabled"), true);
+    const QJsonObject o = rec.toJson();
+    ComfyFileRecord round = ComfyFileRecord::fromJson(o);
+    QCOMPARE(round.id, rec.id);
+    QCOMPARE(round.hash, rec.hash);
+    QCOMPARE(round.meta(QStringLiteral("strength_percent")).toInt(), 80);
+    QVERIFY(round.meta(QStringLiteral("enabled")).toBool());
+}
+
+void ComfyUIRemoteDockTest::testComfyFileLibraryPreferredCheckpoint()
+{
+    const QStringList style = {QStringLiteral("missing.ckpt"), QStringLiteral("dreamshaper_8.safetensors")};
+    const QStringList server = {QStringLiteral("other.safetensors"), QStringLiteral("dreamshaper_8.safetensors")};
+    QCOMPARE(ComfyFileLibrary::preferredCheckpoint(style, server), QStringLiteral("dreamshaper_8.safetensors"));
+    QCOMPARE(ComfyFileLibrary::preferredCheckpoint(QStringList{QStringLiteral("nope")}, server),
+             QStringLiteral("not-found"));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildRefine()
+{
+    ComfyWorkflowEngine::RefineParams p;
+    p.checkpoint = QStringLiteral("sd_xl_base.safetensors");
+    p.imageName = QStringLiteral("canvas.png");
+    p.denoise = 0.4;
+    p.positivePrompt = QStringLiteral("refined scene");
+    p.negativePrompt = QStringLiteral("blur");
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefine(p);
+    QVERIFY(!wf.isEmpty());
+    QCOMPARE(wf.value(QStringLiteral("1")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString(),
+             QStringLiteral("canvas.png"));
+    const QJsonObject i6 = wf.value(QStringLiteral("6")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i6.value(QStringLiteral("denoise")).toDouble(), 0.4);
+    const QJsonArray latent = i6.value(QStringLiteral("latent_image")).toArray();
+    QCOMPARE(latent.at(0).toString(), QStringLiteral("2"));
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildInpaint()
+{
+    ComfyWorkflowEngine::InpaintBuildParams p;
+    p.checkpoint = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    p.imageName = QStringLiteral("canvas.png");
+    p.maskImageName = QStringLiteral("mask.png");
+    p.growMaskBy = 12;
+    p.denoise = 0.6;
+    p.positivePrompt = QStringLiteral("inpaint subject");
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(p);
+    QVERIFY(!wf.isEmpty());
+    QCOMPARE(wf.value(QStringLiteral("1")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString(),
+             QStringLiteral("canvas.png"));
+    QCOMPARE(wf.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString(),
+             QStringLiteral("mask.png"));
+    const QJsonObject i7 = wf.value(QStringLiteral("7")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i7.value(QStringLiteral("grow_mask_by")).toInt(), 12);
+    const QJsonObject i8 = wf.value(QStringLiteral("8")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i8.value(QStringLiteral("denoise")).toDouble(), 0.6);
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildLive()
+{
+    ComfyWorkflowEngine::LiveParams p;
+    p.imageName = QStringLiteral("live_canvas.png");
+    p.denoise = 0.55;
+    p.steps = 8;
+    p.positivePrompt = QStringLiteral("live scene");
+    const QJsonObject wf = ComfyWorkflowEngine::buildLive(p);
+    QVERIFY(!wf.isEmpty());
+    QCOMPARE(wf.value(QStringLiteral("1")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString(),
+             QStringLiteral("live_canvas.png"));
+    const double denoise = wf.value(QStringLiteral("6")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("denoise")).toDouble();
+    QCOMPARE(denoise, 0.55);
+    QCOMPARE(wf.value(QStringLiteral("6")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("steps")).toInt(), 8);
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildAnimationFrame()
+{
+    QCOMPARE(ComfyWorkflowEngine::animationFrameSeed(100, 0, 4), static_cast<qint64>(100));
+    QCOMPARE(ComfyWorkflowEngine::animationFrameSeed(100, 2, 4), static_cast<qint64>(108));
+
+    ComfyWorkflowEngine::AnimationFrameParams af;
+    af.base.checkpoint = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    af.base.width = 768;
+    af.base.height = 512;
+    af.base.positivePrompt = QStringLiteral("frame prompt");
+    af.batchBaseSeed = 42;
+    af.frameIndex = 3;
+    af.batchSeedStep = 2;
+    const QJsonObject wf = ComfyWorkflowEngine::buildAnimationFrame(af);
+    QVERIFY(!wf.isEmpty());
+    const double seed = wf.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("seed")).toDouble();
+    QCOMPARE(static_cast<qint64>(seed), static_cast<qint64>(48));
+    const int w = wf.value(QStringLiteral("5")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("width")).toInt();
+    QCOMPARE(w, 768);
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildUpscaleSimple()
+{
+    ComfyWorkflowEngine::UpscaleSimpleParams p;
+    p.imageName = QStringLiteral("up.png");
+    p.targetWidth = 2048;
+    p.targetHeight = 1536;
+    const QJsonObject wf = ComfyWorkflowEngine::buildUpscaleSimple(p);
+    QVERIFY(!wf.isEmpty());
+    const QJsonObject i2 = wf.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(i2.value(QStringLiteral("width")).toInt(), 2048);
+    QCOMPARE(i2.value(QStringLiteral("height")).toInt(), 1536);
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildUpscaleRefine()
+{
+    ComfyWorkflowEngine::UpscaleRefineParams p;
+    p.imageName = QStringLiteral("up.png");
+    p.scaleWidth = 1024;
+    p.denoise = 0.3;
+    p.positivePrompt = QStringLiteral("sharp details");
+    const QJsonObject wf = ComfyWorkflowEngine::buildUpscaleRefine(p);
+    QVERIFY(!wf.isEmpty());
+    QCOMPARE(wf.value(QStringLiteral("7")).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("KSampler"));
+    QCOMPARE(wf.value(QStringLiteral("7")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("denoise")).toDouble(),
+             0.3);
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildUpscaleTiled()
+{
+    ComfyWorkflowEngine::UpscaleTiledParams p;
+    p.imageName = QStringLiteral("up.png");
+    p.scaledWidth = 1024;
+    p.scaledHeight = 768;
+    p.minTileSize = 512;
+    p.tileOverlapPx = 32;
+    const QJsonObject wf = ComfyWorkflowEngine::buildUpscaleTiled(p);
+    QVERIFY(!wf.isEmpty());
+    bool hasTileLayout = false;
+    bool hasMerge = false;
+    for (auto it = wf.begin(); it != wf.end(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QStringLiteral("ETN_TileLayout"))
+            hasTileLayout = true;
+        if (cls == QStringLiteral("ETN_MergeImageTile"))
+            hasMerge = true;
+    }
+    QVERIFY(hasTileLayout);
+    QVERIFY(hasMerge);
+}
+
 void ComfyUIRemoteDockTest::testComfyWorkflowEngineFluxCfgCap()
 {
     ComfyWorkflowEngine::TextToImageParams p;
@@ -914,6 +1205,159 @@ void ComfyUIRemoteDockTest::testComfyControlLayerNeedsGenerateUpload()
     QVERIFY(!ComfyControlLayer::needsGenerateUpload(e));
 }
 
+void ComfyUIRemoteDockTest::testComfyControlLayerUiModeKeys()
+{
+    const QStringList ui = ComfyControlLayer::uiModeKeys();
+    QVERIFY(ui.contains(QStringLiteral("reference")));
+    QVERIFY(ui.contains(QStringLiteral("depth")));
+    QVERIFY(ui.contains(QStringLiteral("pose")));
+    QVERIFY(!ui.contains(QStringLiteral("inpaint")));
+    QVERIFY(!ui.contains(QStringLiteral("universal")));
+    QVERIFY(ComfyControlLayer::modeHasRange(QStringLiteral("depth")));
+    QVERIFY(!ComfyControlLayer::modeHasRange(QStringLiteral("reference")));
+}
+
+void ComfyUIRemoteDockTest::testComfyControlLayerCanGenerateJob()
+{
+    ComfyControlLayerEntry e;
+    e.layerName = QStringLiteral("Sketch");
+    e.mode = QStringLiteral("depth");
+    QVERIFY(ComfyControlLayer::canGenerateJob(e));
+    e.mode = QStringLiteral("reference");
+    QVERIFY(!ComfyControlLayer::canGenerateJob(e));
+    e.mode = QStringLiteral("pose");
+    QVERIFY(ComfyControlLayer::canGenerateJob(e));
+    e.layerName.clear();
+    QVERIFY(!ComfyControlLayer::canGenerateJob(e));
+    QVERIFY(!ComfyUIUtils::buildControlImageWorkflow(QStringLiteral("x.png"), QStringLiteral("depth"), 512, false)
+                 .isEmpty());
+}
+
+void ComfyUIRemoteDockTest::testComfyOpenPoseFromJsonToSvg()
+{
+    QJsonArray kp;
+    for (int i = 0; i < ComfyOpenPose::jointCount * 3; ++i) {
+        if (i % 3 == 2)
+            kp.append(1.0);
+        else if (i < 6)
+            kp.append(static_cast<double>(10 + i));
+        else
+            kp.append(0.0);
+    }
+    QJsonObject person;
+    person.insert(QStringLiteral("pose_keypoints_2d"), kp);
+    QJsonObject root;
+    root.insert(QStringLiteral("canvas_width"), 123);
+    root.insert(QStringLiteral("canvas_height"), 456);
+    root.insert(QStringLiteral("people"), QJsonArray{person});
+    ComfyOpenPose::Pose pose = ComfyOpenPose::Pose::fromOpenPoseJson(root);
+    QCOMPARE(pose.extent, QSize(123, 456));
+    QVERIFY(pose.peopleCount >= 1);
+    QVERIFY(pose.joints.size() >= 2);
+    const QString svg = pose.toSvg();
+    QVERIFY(svg.contains(QStringLiteral("P00_J00")));
+    QVERIFY(svg.contains(QStringLiteral("<line id=\"P00_B")));
+    pose.scaleToExtent(QSize(246, 912));
+    QCOMPARE(pose.extent, QSize(246, 912));
+}
+
+void ComfyUIRemoteDockTest::testComfyThemePaletteAndIcons()
+{
+    const ComfyTheme::Palette pal = ComfyTheme::palette();
+    QVERIFY(!pal.base.isEmpty());
+    QVERIFY(!pal.highlight.isEmpty());
+    QVERIFY(ComfyTheme::flatComboStyleSheet().contains(QStringLiteral("QComboBox")));
+    const bool dark = QGuiApplication::palette().color(QPalette::Window).lightness() < 128;
+    QCOMPARE(ComfyTheme::isDarkTheme(), dark);
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("inpaint-fill")).isNull());
+    QVERIFY(!ComfyTheme::checkpointIcon(ComfyResources::Arch::Sdxl).isNull());
+    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-active")),
+             ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")));
+}
+
+void ComfyUIRemoteDockTest::testComfyInpaintModeDetectAndInstructions()
+{
+    QCOMPARE(ComfyUIUtils::defaultFillKindForInpaintMode(QStringLiteral("add_object")), QStringLiteral("neutral"));
+    QCOMPARE(ComfyUIUtils::defaultFillKindForInpaintMode(QStringLiteral("remove_object")), QStringLiteral("inpaint"));
+    QCOMPARE(ComfyUIUtils::defaultFillKindForInpaintMode(QStringLiteral("replace_background")), QStringLiteral("replace"));
+
+    ComfyUIUtils::InpaintParams addObj = ComfyUIUtils::detectInpaintParams(
+        QStringLiteral("add_object"), QStringLiteral("sd15"), 0.6, false, false, false);
+    QCOMPARE(addObj.fillKind, QStringLiteral("neutral"));
+    QVERIFY(addObj.useInpaintModel);
+
+    ComfyUIUtils::InpaintParams removeObj = ComfyUIUtils::detectInpaintParams(
+        QStringLiteral("remove_object"), QStringLiteral("sd15"), 0.6, false, false, false);
+    QCOMPARE(removeObj.fillKind, QStringLiteral("inpaint"));
+
+    ComfyUIUtils::InpaintParams replaceBg = ComfyUIUtils::detectInpaintParams(
+        QStringLiteral("replace_background"), QStringLiteral("sd15"), 0.6, false, false, false);
+    QCOMPARE(replaceBg.fillKind, QStringLiteral("replace"));
+
+    const QString instr = ComfyUIUtils::buildInpaintPromptInstructions(QStringLiteral("add_object"), QStringLiteral("sd15"));
+    QVERIFY(instr.isEmpty());
+    const QString flux2Instr =
+        ComfyUIUtils::buildInpaintPromptInstructions(QStringLiteral("fill"), QStringLiteral("flux2_4b"));
+    QVERIFY(flux2Instr.contains(QStringLiteral("green spaces")));
+
+    const QString merged =
+        ComfyUIUtils::prependInpaintPromptInstructions(QStringLiteral("a cat"), QStringLiteral("remove_object"), QStringLiteral("flux_k"));
+    QVERIFY(merged.startsWith(QStringLiteral("Remove the object.")));
+    QVERIFY(merged.contains(QStringLiteral("a cat")));
+}
+
+void ComfyUIRemoteDockTest::testComfyPromptTranslationHelpers()
+{
+    QJsonObject enabled;
+    enabled.insert(QStringLiteral("translation_enabled"), true);
+    enabled.insert(QStringLiteral("prompt_translation"), QStringLiteral("de"));
+    QCOMPARE(ComfyUIUtils::activePromptTranslationLanguage(enabled), QStringLiteral("de"));
+
+    QJsonObject disabled = enabled;
+    disabled.insert(QStringLiteral("translation_enabled"), false);
+    QVERIFY(ComfyUIUtils::activePromptTranslationLanguage(disabled).isEmpty());
+
+    QCOMPARE(ComfyUIUtils::wrapPromptWithTranslationLanguage(QStringLiteral("hello"), QStringLiteral("de")),
+             QStringLiteral("lang:de hello lang:en "));
+    QCOMPARE(ComfyUIUtils::wrapPromptWithTranslationLanguage(QString(), QStringLiteral("de")), QString());
+}
+
+void ComfyUIRemoteDockTest::testComfyWorkflowEnginePromptTranslationNodes()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.positivePrompt = QStringLiteral("cat");
+    p.negativePrompt = QStringLiteral("ugly");
+    p.promptTranslationLanguage = QStringLiteral("de");
+    const QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    QVERIFY(!wf.isEmpty());
+
+    int translateNodes = 0;
+    int clipLinked = 0;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        const QString ct = node.value(QStringLiteral("class_type")).toString();
+        if (ct == QLatin1String("ETN_Translate")) {
+            ++translateNodes;
+            const QString text = node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("text")).toString();
+            QVERIFY(text.contains(QStringLiteral("lang:de")));
+        }
+        if (ct == QLatin1String("CLIPTextEncode")) {
+            const QJsonValue text =
+                node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("text"));
+            if (text.isArray())
+                ++clipLinked;
+        }
+    }
+    QCOMPARE(translateNodes, 2);
+    QCOMPARE(clipLinked, 2);
+
+    p.promptTranslationLanguage.clear();
+    const QJsonObject wfOff = ComfyWorkflowEngine::buildTextToImage(p);
+    for (auto it = wfOff.constBegin(); it != wfOff.constEnd(); ++it) {
+        QVERIFY(it.value().toObject().value(QStringLiteral("class_type")).toString() != QLatin1String("ETN_Translate"));
+    }
+}
+
 void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyRegionalGeneration()
 {
     ComfyWorkflowEngine::TextToImageParams p;
@@ -927,6 +1371,7 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyRegionalGeneration()
     ComfyWorkflowEngine::RegionalPromptInput r1;
     r1.positivePrompt = QStringLiteral("red hair character");
     r1.maskImageName = QStringLiteral("mask1.png");
+    r1.promptTranslationLanguage = QStringLiteral("fr");
     regions.append(r1);
     ComfyWorkflowEngine::RegionalPromptInput r2;
     r2.positivePrompt = QStringLiteral("blue sky");
@@ -943,6 +1388,150 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineApplyRegionalGeneration()
             hasEtn = true;
     }
     QVERIFY(hasEtn);
+    bool hasTranslate = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString() == QLatin1String("ETN_Translate")) {
+            hasTranslate = true;
+            const QString text =
+                it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("text")).toString();
+            QVERIFY(text.contains(QStringLiteral("lang:fr")));
+        }
+    }
+    QVERIFY(hasTranslate);
+}
+
+void ComfyUIRemoteDockTest::testComfyRegionProcessMaskOverlap()
+{
+    QImage top(4, 4, QImage::Format_Grayscale8);
+    top.fill(255);
+    QImage bottom(4, 4, QImage::Format_Grayscale8);
+    bottom.fill(0);
+    for (int x = 0; x < 4; x++)
+        bottom.setPixel(x, 2, qRgb(255, 255, 255));
+    const QImage bottomOnly = ComfyRegionProcess::maskSubtract(bottom, top);
+    QCOMPARE(ComfyRegionProcess::maskAverage(bottomOnly), 0.0);
+    const QImage topOnly = ComfyRegionProcess::maskSubtract(top, bottom);
+    QVERIFY(ComfyRegionProcess::maskAverage(topOnly) > 0.5);
+    const QImage unionMask = ComfyRegionProcess::maskAdd(top, bottom);
+    QVERIFY(ComfyRegionProcess::maskAverage(unionMask) > 0.9);
+}
+
+void ComfyUIRemoteDockTest::testComfyRegionProcessMaskInvertBackground()
+{
+    QImage partial(10, 10, QImage::Format_Grayscale8);
+    partial.fill(0);
+    for (int x = 3; x < 7; x++)
+        for (int y = 3; y < 7; y++)
+            partial.setPixel(x, y, qRgb(200, 200, 200));
+    const QImage inverted = ComfyRegionProcess::maskInvert(partial);
+    QVERIFY(ComfyRegionProcess::maskAverage(inverted) > ComfyRegionProcess::maskAverage(partial));
+}
+
+void ComfyUIRemoteDockTest::testComfyControlLayerHasStructuralAmong()
+{
+    ComfyControlLayerEntry depth;
+    depth.mode = QStringLiteral("depth");
+    depth.layerName = QStringLiteral("Sketch");
+    ComfyControlLayerEntry reference;
+    reference.mode = QStringLiteral("reference");
+    reference.layerName = QStringLiteral("Ref");
+    QVERIFY(ComfyControlLayer::hasStructuralControlAmong({depth}));
+    QVERIFY(!ComfyControlLayer::hasStructuralControlAmong({reference}));
+    QVERIFY(ComfyControlLayer::hasStructuralControlAmong({reference, depth}));
+}
+
+void ComfyUIRemoteDockTest::testComfyRegionLinkEffectiveMaskSource()
+{
+    ComfyUIRemoteDock::Private::RegionEntry e;
+    e.maskSource = QStringLiteral("selection");
+    e.layerIds = QStringLiteral("not-a-valid-uuid");
+    QCOMPARE(ComfyRegionLink::effectiveMaskSource(e, KisImageSP()), QStringLiteral("selection"));
+}
+
+void ComfyUIRemoteDockTest::testComfyRegionLinkLayerIds()
+{
+    const QUuid a = QUuid::createUuid();
+    const QUuid b = QUuid::createUuid();
+    const QString aStr = a.toString(QUuid::WithoutBraces);
+    const QString bStr = b.toString(QUuid::WithoutBraces);
+
+    QString csv = ComfyRegionLink::joinLayerIds({aStr});
+    QVERIFY(ComfyRegionLink::containsLayerId(csv, a));
+    QVERIFY(!ComfyRegionLink::containsLayerId(csv, b));
+
+    csv = ComfyRegionLink::toggleLayerId(csv, b);
+    QVERIFY(ComfyRegionLink::containsLayerId(csv, a));
+    QVERIFY(ComfyRegionLink::containsLayerId(csv, b));
+
+    csv = ComfyRegionLink::toggleLayerId(csv, a);
+    QVERIFY(!ComfyRegionLink::containsLayerId(csv, a));
+    QVERIFY(ComfyRegionLink::containsLayerId(csv, b));
+
+    QCOMPARE(ComfyRegionLink::parseLayerIds(QStringLiteral("  %1 , , %2 ")).size(), 2);
+}
+
+void ComfyUIRemoteDockTest::testRegionUiStateLayerIdsJson()
+{
+    ComfyRegionUiStateEntry e;
+    e.name = QStringLiteral("Face");
+    e.positive = QStringLiteral("smile");
+    e.layerIds = QStringLiteral("abc-def,123-456");
+    const QJsonObject o = regionUiStateEntryToJson(e);
+    QCOMPARE(o.value(QStringLiteral("layer_ids")).toString(), e.layerIds);
+    const ComfyRegionUiStateEntry back = regionUiStateEntryFromJson(o);
+    QCOMPARE(back.layerIds, e.layerIds);
+}
+
+void ComfyUIRemoteDockTest::testDocumentUiJsonRegionControlRoundtrip()
+{
+    ComfyControlLayerEntry cl;
+    cl.mode = QStringLiteral("depth");
+    cl.layerName = QStringLiteral("Sketch");
+    cl.layerId = QStringLiteral("uuid-1");
+    cl.presetValue = 2;
+    cl.strength = 60;
+
+    ComfyRegionUiStateEntry region;
+    region.name = QStringLiteral("Hair");
+    region.positive = QStringLiteral("red hair");
+    region.maskSource = QStringLiteral("layer:Hair");
+    region.controlLayers = {cl};
+
+    const QJsonObject rootWrap =
+        rootRegionUiWrapToJson(QStringLiteral("a portrait"), QStringLiteral("blurry"), {region});
+    QCOMPARE(rootWrap.value(QStringLiteral("positive")).toString(), QStringLiteral("a portrait"));
+    QCOMPARE(rootWrap.value(QStringLiteral("negative")).toString(), QStringLiteral("blurry"));
+    const QJsonArray regions = rootWrap.value(QStringLiteral("regions")).toArray();
+    QCOMPARE(regions.size(), 1);
+
+    QString pos;
+    QString neg;
+    QList<ComfyRegionUiStateEntry> parsed;
+    QVERIFY(rootRegionUiWrapFromJson(rootWrap, &pos, &neg, &parsed));
+    QCOMPARE(pos, QStringLiteral("a portrait"));
+    QCOMPARE(parsed.size(), 1);
+    QCOMPARE(parsed.first().positive, QStringLiteral("red hair"));
+    QCOMPARE(parsed.first().maskSource, QStringLiteral("layer:Hair"));
+    QCOMPARE(parsed.first().controlLayers.size(), 1);
+    QCOMPARE(parsed.first().controlLayers.first().mode, QStringLiteral("depth"));
+
+    QJsonObject ui;
+    ui.insert(QStringLiteral("version"), persistenceFormatVersion);
+    ui.insert(QStringLiteral("root"), rootWrap);
+    ui.insert(QStringLiteral("control"), ComfyControlLayer::toJsonArray({cl}));
+    bool found = false;
+    const QJsonArray fromUi = readRegionUiArrayFromDocumentUi(ui, &found);
+    QVERIFY(found);
+    QCOMPARE(fromUi.size(), 1);
+    const ComfyRegionUiStateEntry fromArr = regionUiStateEntryFromJson(fromUi.at(0).toObject());
+    QCOMPARE(fromArr.positive, QStringLiteral("red hair"));
+
+    const ComfyRegionUiStateEntry pythonStyle = regionUiStateEntryFromJson(
+        QJsonObject{{QStringLiteral("positive"), QStringLiteral("sky only")},
+                    {QStringLiteral("layer_ids"), QStringLiteral("")},
+                    {QStringLiteral("control"), QJsonArray()}});
+    QCOMPARE(pythonStyle.positive, QStringLiteral("sky only"));
+    QCOMPARE(pythonStyle.maskSource, QStringLiteral("selection"));
 }
 
 SIMPLE_TEST_MAIN(ComfyUIRemoteDockTest)

@@ -23,8 +23,10 @@
 #include <KoShape.h>
 #include <SvgParser.h>
 #include <SvgWriter.h>
+#include <KoShapeLayer.h>
 
 #include <KisDocument.h>
+#include <commands/KoShapeCreateCommand.h>
 
 namespace
 {
@@ -198,6 +200,67 @@ void ComfyUIPoseLayers::syncCachedSvg(KisShapeLayer *sl, KisImageSP image)
     const QString svg = shapeLayerToSvg(sl, image);
     if (!svg.isEmpty())
         m_lastSvgByUuid.insert(sl->uuid(), svg);
+}
+
+bool ComfyUIPoseLayers::createVectorLayerFromSvg(KisImageSP image,
+                                                 KisDocument *document,
+                                                 const QString &layerName,
+                                                 const QString &svg,
+                                                 KisNodeSP insertAbove)
+{
+    if (!image || !document || !document->shapeController() || svg.isEmpty())
+        return false;
+    QString errorMsg;
+    int errorLine = 0;
+    int errorColumn = 0;
+    QDomDocument dom = SvgParser::createDocumentFromSvg(svg, &errorMsg, &errorLine, &errorColumn);
+    if (dom.isNull())
+        return false;
+
+    KisShapeLayerSP layer(
+        new KisShapeLayer(document->shapeController(), image, layerName, OPACITY_OPAQUE_U8));
+    auto *container = dynamic_cast<KoShapeContainer *>(layer.data());
+    if (!container)
+        return false;
+
+    QSizeF fragmentSize;
+    SvgParser parser(document->shapeController()->resourceManager());
+    parser.setResolution(image->bounds(), image->xRes() * 72.0);
+    QList<KoShape *> newShapes = parser.parseSvg(dom.documentElement(), &fragmentSize);
+    if (newShapes.isEmpty())
+        return false;
+
+    KUndo2Command *cmd =
+        new KoShapeCreateCommand(document->shapeController(), newShapes, container);
+    KisProcessingApplicator::runSingleCommandStroke(image, cmd);
+    image->waitForDone();
+
+    KisNodeSP parent = image->rootLayer();
+    KisNodeSP above = insertAbove;
+    if (above)
+        parent = above->parent();
+    if (!parent)
+        parent = image->rootLayer();
+    image->addNode(layer, parent, above);
+
+    const QUuid id = layer->uuid();
+    bool found = false;
+    for (const TrackEntry &e : m_tracked) {
+        if (e.layerUuid == id && e.image.toStrongRef() == image) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        TrackEntry te;
+        te.image = image;
+        te.layerUuid = id;
+        m_tracked.append(te);
+    }
+    if (!m_pollTimer.isActive())
+        m_pollTimer.start();
+    syncCachedSvg(layer.data(), image);
+    return true;
 }
 
 void ComfyUIPoseLayers::slotPoll()

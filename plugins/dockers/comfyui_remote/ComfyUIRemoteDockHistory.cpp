@@ -4,6 +4,7 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 
@@ -219,11 +220,11 @@ void ComfyUIRemoteDock::slotHistoryApply()
     int imageIndex = -1;
     QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
     if (path.isEmpty() || !QFile::exists(path)) {
-        setStatusMessage(i18n("No result image to apply."), true);
+        setStatusMessage(ComfyTr::tr("No result image to apply."), true);
         return;
     }
     if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
-        setStatusMessage(i18n("Open a document first."), true);
+        setStatusMessage(ComfyTr::tr("Open a document first."), true);
         return;
     }
     // §13.184 / §3.5: apply_region_behavior vs apply_region_behavior_live when Live workspace is active
@@ -239,7 +240,7 @@ void ComfyUIRemoteDock::slotHistoryApply()
             refreshHistoryList();
             scheduleDocumentUiJsonSave();
             if (m_d->canvas) m_d->canvas->updateCanvas();
-            m_d->labelStatus->setText(i18n("Applied result to region layers."));
+            m_d->labelStatus->setText(ComfyTr::tr("Applied result to region layers."));
             return;
         }
     }
@@ -250,9 +251,9 @@ void ComfyUIRemoteDock::slotHistoryApply()
         refreshHistoryList();
         scheduleDocumentUiJsonSave();
         if (m_d->canvas) m_d->canvas->updateCanvas();
-        m_d->labelStatus->setText(i18n("Applied result to the canvas."));
+        m_d->labelStatus->setText(ComfyTr::tr("Applied result to the canvas."));
     } else {
-        setStatusMessage(i18n("Could not import image."), true);
+        setStatusMessage(ComfyTr::tr("Could not import image."), true);
     }
 }
 
@@ -266,28 +267,28 @@ void ComfyUIRemoteDock::slotHistoryContextMenu(QPoint pos)
     if (entryIndex < 0) return;
     const Private::HistoryEntry &entry = m_d->historyEntries.at(entryIndex);
     QMenu menu(this);
-    menu.addAction(i18n("Apply"), this, &ComfyUIRemoteDock::slotHistoryApply);
-    menu.addAction(i18n("Copy Prompt"), this, &ComfyUIRemoteDock::slotHistoryCopyPrompt);
-    menu.addAction(i18n("Copy Prompt (Evaluated)"), this, &ComfyUIRemoteDock::slotHistoryCopyPromptEvaluated);
-    menu.addAction(i18n("Copy Strength"), this, &ComfyUIRemoteDock::slotHistoryCopyStrength);
-    QAction *copyStyleAction = menu.addAction(i18n("Copy Style"), this, &ComfyUIRemoteDock::slotHistoryCopyStyle);
+    menu.addAction(ComfyTr::tr("Apply"), this, &ComfyUIRemoteDock::slotHistoryApply);
+    menu.addAction(ComfyTr::tr("Copy Prompt"), this, &ComfyUIRemoteDock::slotHistoryCopyPrompt);
+    menu.addAction(ComfyTr::tr("Copy Prompt (Evaluated)"), this, &ComfyUIRemoteDock::slotHistoryCopyPromptEvaluated);
+    menu.addAction(ComfyTr::tr("Copy Strength"), this, &ComfyUIRemoteDock::slotHistoryCopyStrength);
+    QAction *copyStyleAction = menu.addAction(ComfyTr::tr("Copy Style"), this, &ComfyUIRemoteDock::slotHistoryCopyStyle);
     if (m_d->comboPreset) {
         int idx = m_d->comboPreset->findText(entry.styleName);
         copyStyleAction->setEnabled(idx >= 0);
     } else {
         copyStyleAction->setEnabled(false);
     }
-    menu.addAction(i18n("Copy Seed"), this, &ComfyUIRemoteDock::slotHistoryCopySeed);
-    menu.addAction(i18n("Info to Clipboard"), this, &ComfyUIRemoteDock::slotHistoryCopyInfo);
+    menu.addAction(ComfyTr::tr("Copy Seed"), this, &ComfyUIRemoteDock::slotHistoryCopySeed);
+    menu.addAction(ComfyTr::tr("Info to Clipboard"), this, &ComfyUIRemoteDock::slotHistoryCopyInfo);
     menu.addSeparator();
-    QAction *saveAction = menu.addAction(i18n("Save Image"), this, &ComfyUIRemoteDock::slotHistorySaveImage);
+    QAction *saveAction = menu.addAction(ComfyTr::tr("Save Image"), this, &ComfyUIRemoteDock::slotHistorySaveImage);
     const bool docSaved = m_d->canvas && m_d->canvas->imageView() && m_d->canvas->imageView()->document()
         && !m_d->canvas->imageView()->document()->path().isEmpty();
     // §13.28: Save Image disabled if document unsaved
     saveAction->setEnabled(!path.isEmpty() && QFile::exists(path) && docSaved);
-    menu.addAction(i18n("Discard Image"), this, &ComfyUIRemoteDock::slotHistoryDiscard);
+    menu.addAction(ComfyTr::tr("Discard Image"), this, &ComfyUIRemoteDock::slotHistoryDiscard);
     menu.addSeparator();
-    menu.addAction(i18n("Clear History"), this, &ComfyUIRemoteDock::slotHistoryClear);
+    menu.addAction(ComfyTr::tr("Clear History"), this, &ComfyUIRemoteDock::slotHistoryClear);
     menu.exec(m_d->listHistory->mapToGlobal(pos));
 }
 
@@ -299,7 +300,7 @@ void ComfyUIRemoteDock::slotHistoryCopyPrompt()
     QString text = m_d->historyEntries.at(entryIndex).prompt;
     if (QClipboard *cb = QApplication::clipboard())
         cb->setText(text);
-    m_d->labelStatus->setText(i18n("Prompt copied to clipboard."));
+    m_d->labelStatus->setText(ComfyTr::tr("Prompt copied to clipboard."));
 }
 
 void ComfyUIRemoteDock::slotHistoryCopyPromptEvaluated()
@@ -313,7 +314,7 @@ void ComfyUIRemoteDock::slotHistoryCopyPromptEvaluated()
     ComfyUIUtils::extractLayerPlaceholders(evaluated);  // §13.35: <layer:name> → "Picture {n}"
     if (QClipboard *cb = QApplication::clipboard())
         cb->setText(evaluated);
-    m_d->labelStatus->setText(i18n("Evaluated prompt copied to clipboard."));
+    m_d->labelStatus->setText(ComfyTr::tr("Evaluated prompt copied to clipboard."));
 }
 
 void ComfyUIRemoteDock::slotHistoryCopyStrength()
@@ -326,7 +327,7 @@ void ComfyUIRemoteDock::slotHistoryCopyStrength()
         cb->setText(QString::number(strength));
     if (m_d->spinStrength)
         m_d->spinStrength->setValue(qBound(1, strength, 100));
-    setStatusMessage(i18n("Strength %1% copied and set.", strength));
+    setStatusMessage(ComfyTr::tr("Strength %1% copied and set.", strength));
 }
 
 void ComfyUIRemoteDock::slotHistoryCopyStyle()
@@ -338,7 +339,7 @@ void ComfyUIRemoteDock::slotHistoryCopyStyle()
     int idx = m_d->comboPreset->findText(styleName);
     if (idx >= 0) {
         m_d->comboPreset->setCurrentIndex(idx);
-        m_d->labelStatus->setText(i18n("Style set to \"%1\".", styleName));
+        m_d->labelStatus->setText(ComfyTr::tr("Style set to \"%1\".", styleName));
     }
 }
 
@@ -350,7 +351,7 @@ void ComfyUIRemoteDock::slotHistoryCopySeed()
     qint64 seed = m_d->historyEntries.at(entryIndex).seed;
     if (QClipboard *cb = QApplication::clipboard())
         cb->setText(QString::number(seed));
-    m_d->labelStatus->setText(i18n("Seed copied to clipboard."));
+    m_d->labelStatus->setText(ComfyTr::tr("Seed copied to clipboard."));
 }
 
 void ComfyUIRemoteDock::slotHistoryCopyInfo()
@@ -370,7 +371,7 @@ void ComfyUIRemoteDock::slotHistoryCopyInfo()
         .arg(e.checkpoint);
     if (QClipboard *cb = QApplication::clipboard())
         cb->setText(info);
-    m_d->labelStatus->setText(i18n("Info copied to clipboard."));
+    m_d->labelStatus->setText(ComfyTr::tr("Info copied to clipboard."));
 }
 
 void ComfyUIRemoteDock::slotHistorySaveImage()
@@ -378,12 +379,12 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
     int entryIndex = -1;
     QString sourcePath = pathForCurrentHistoryRow(&entryIndex, nullptr);
     if (entryIndex < 0 || sourcePath.isEmpty() || !QFile::exists(sourcePath)) {
-        setStatusMessage(i18n("No result image to save."), true);
+        setStatusMessage(ComfyTr::tr("No result image to save."), true);
         return;
     }
     if (!m_d->canvas || !m_d->canvas->imageView() || !m_d->canvas->imageView()->document()
         || m_d->canvas->imageView()->document()->path().isEmpty()) {
-        setStatusMessage(i18n("Save the document first to save images from history."), true);
+        setStatusMessage(ComfyTr::tr("Save the document first to save images from history."), true);
         return;
     }
     const Private::HistoryEntry &e = m_d->historyEntries.at(entryIndex);
@@ -391,15 +392,15 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
     const QString formatKey = sset.value(QStringLiteral("save_image_format")).toString();
     // §4.7 / §3.5: png | png_small | webp | webp_lossless | jpeg
     QString ext = QStringLiteral("png");
-    QString filter = i18n("PNG images (*.png);;All files (*)");
+    QString filter = ComfyTr::tr("PNG images (*.png);;All files (*)");
     int quality = 90;
     if (formatKey == QLatin1String("jpeg")) {
         ext = QStringLiteral("jpg");
-        filter = i18n("JPEG images (*.jpg);;All files (*)");
+        filter = ComfyTr::tr("JPEG images (*.jpg);;All files (*)");
         quality = ComfyUIUtils::saveImageQualityJpeg(sset);
     } else if (formatKey == QLatin1String("webp") || formatKey == QLatin1String("webp_lossless")) {
         ext = QStringLiteral("webp");
-        filter = i18n("WebP images (*.webp);;All files (*)");
+        filter = ComfyTr::tr("WebP images (*.webp);;All files (*)");
         quality = (formatKey == QLatin1String("webp_lossless")) ? 100 : ComfyUIUtils::saveImageQualityWebp(sset);
     } else if (formatKey == QLatin1String("png_small")) {
         ext = QStringLiteral("png");
@@ -420,11 +421,11 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
     QString defaultPath = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
     if (defaultPath.isEmpty()) defaultPath = QDir::homePath();
     defaultPath += QDir::separator() + suggestedName + QLatin1Char('.') + ext;
-    QString savePath = QFileDialog::getSaveFileName(this, i18n("Save image"), defaultPath, filter);
+    QString savePath = QFileDialog::getSaveFileName(this, ComfyTr::tr("Save image"), defaultPath, filter);
     if (savePath.isEmpty()) return;
     QImage img(sourcePath);
     if (img.isNull()) {
-        setStatusMessage(i18n("Could not load image to save."), true);
+        setStatusMessage(ComfyTr::tr("Could not load image to save."), true);
         return;
     }
     const bool embedMeta = sset.value(QStringLiteral("save_image_metadata")).toBool(true);
@@ -444,9 +445,9 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
         writer.setText(QStringLiteral("parameters"), metadata);
     }
     if (writer.write(img)) {
-        setStatusMessage(i18n("Saved to %1", savePath));
+        setStatusMessage(ComfyTr::tr("Saved to %1", savePath));
     } else {
-        setStatusMessage(i18n("Could not save: %1", savePath), true);
+        setStatusMessage(ComfyTr::tr("Could not save: %1", savePath), true);
     }
 }
 
@@ -458,8 +459,8 @@ void ComfyUIRemoteDock::slotHistoryDiscard()
     if (entryIndex < 0 || path.isEmpty()) return;
     // §13.192: confirm_discard_image gates confirmation; Clear History always confirms (see slotHistoryClear)
     const bool confirmDiscard = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("ConfirmDiscardImage", true);
-    if (confirmDiscard && QMessageBox::warning(this, i18n("Discard image"),
-            i18n("Remove this image from history?"),
+    if (confirmDiscard && QMessageBox::warning(this, ComfyTr::tr("Discard image"),
+            ComfyTr::tr("Remove this image from history?"),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
         return;
     Private::HistoryEntry &e = m_d->historyEntries[entryIndex];
@@ -488,15 +489,15 @@ void ComfyUIRemoteDock::slotHistoryDiscard()
     }
     refreshHistoryList();
     updateHistoryUsageLabel();  // §13.145: update "Currently using X.X MB" if Configure → Performance is open
-    setStatusMessage(i18n("Discarded from history."));
+    setStatusMessage(ComfyTr::tr("Discarded from history."));
 }
 
 void ComfyUIRemoteDock::slotHistoryClear()
 {
     if (m_d->historyEntries.isEmpty()) return;
     // §13.140 / §13.192: Clear History always confirms via QMessageBox.warning; default No
-    if (QMessageBox::warning(this, i18n("Clear history"),
-            i18n("Discard all %1 generated images from history?", m_d->historyEntries.size()),
+    if (QMessageBox::warning(this, ComfyTr::tr("Clear history"),
+            ComfyTr::tr("Discard all %1 generated images from history?", m_d->historyEntries.size()),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
     for (const Private::HistoryEntry &e : m_d->historyEntries) {
@@ -514,7 +515,7 @@ void ComfyUIRemoteDock::slotHistoryClear()
     updateHistoryUsageLabel();  // §13.145: update "Currently using X.X MB" if Configure → Performance is open
     m_d->btnHistoryReRun->setEnabled(false);
     m_d->btnHistoryApply->setEnabled(false);
-    setStatusMessage(i18n("History cleared."));
+    setStatusMessage(ComfyTr::tr("History cleared."));
 }
 
 void ComfyUIRemoteDock::slotHistoryReRun()
@@ -566,7 +567,7 @@ bool ComfyUIRemoteDock::applyResultToRegions(const QString &resultPath, int entr
         if (!regionLayer)
             continue;
         if (behavior == QLatin1String("layer_group")) {
-            KisGroupLayerSP group = new KisGroupLayer(image, i18n("Result: %1", layerName), OPACITY_OPAQUE_U8, image->colorSpace());
+            KisGroupLayerSP group = new KisGroupLayer(image, ComfyTr::tr("Result: %1", layerName), OPACITY_OPAQUE_U8, image->colorSpace());
             if (!image->addNode(group, regionLayer->parent(), regionLayer))
                 continue;
             qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(resultPath), "KisPaintLayer");
@@ -666,7 +667,7 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
         return false;
     KisNodeSP node = KisLayerUtils::findNodeByUuid(root, uid);
     if (!node) {
-        setStatusMessage(i18n("Animation target layer was not found."), true);
+        setStatusMessage(ComfyTr::tr("Animation target layer was not found."), true);
         return false;
     }
     auto *pl = qobject_cast<KisPaintLayer *>(node.data());
@@ -675,7 +676,7 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
 
     QImage qimg;
     if (!qimg.load(localPath) || qimg.isNull()) {
-        setStatusMessage(i18n("Could not load result image for the animation target layer."), true);
+        setStatusMessage(ComfyTr::tr("Could not load result image for the animation target layer."), true);
         return false;
     }
 
@@ -702,7 +703,7 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
 
     KisPainter painter(dst);
     painter.setCompositeOpId(COMPOSITE_COPY);
-    painter.beginTransaction(kundo2_i18n("ComfyUI animation frame"));
+    painter.beginTransaction(kundo2_ComfyTr::tr("ComfyUI animation frame"));
     painter.bitBlt(dstPt, tmp, srcRect);
     painter.endTransaction(kisImage->undoAdapter());
 
@@ -710,11 +711,11 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
         m_d->canvas->updateCanvas();
     if (timelineMismatch) {
         setStatusMessage(
-            i18n("Frame written to layer \"%1\". Generated frame does not match current time.", pl->name()),
+            ComfyTr::tr("Frame written to layer \"%1\". Generated frame does not match current time.", pl->name()),
             false,
             true);
     } else {
-        setStatusMessage(i18n("Frame written to layer \"%1\".", pl->name()));
+        setStatusMessage(ComfyTr::tr("Frame written to layer \"%1\".", pl->name()));
     }
     return true;
 }
@@ -788,7 +789,7 @@ void ComfyUIRemoteDock::handleGenerationFinished(const QString &resultImagePath,
         m_d->historyEntries[0].imageInUse.insert(0, true);
         refreshHistoryList();
         scheduleDocumentUiJsonSave();
-        m_d->labelStatus->setText(i18n("Generation finished — result applied."));
+        m_d->labelStatus->setText(ComfyTr::tr("Generation finished — result applied."));
     }
 }
 

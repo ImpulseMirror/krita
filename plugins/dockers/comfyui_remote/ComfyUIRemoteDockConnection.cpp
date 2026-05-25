@@ -4,8 +4,10 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
+#include "ComfyFileLibrary.h"
 
 #include <QUrl>
 #include <QNetworkRequest>
@@ -21,35 +23,16 @@
 
 #include <kis_icon_utils.h>
 
-namespace {
-QStringList parseCheckpointNamesFromObjectInfoRoot(const QJsonObject &root)
-{
-    const QJsonObject nodeInfo = root.value(QStringLiteral("CheckpointLoaderSimple")).toObject();
-    const QJsonObject input = nodeInfo.value(QStringLiteral("input")).toObject();
-    const QJsonObject required = input.value(QStringLiteral("required")).toObject();
-    const QJsonValue ckptVal = required.value(QStringLiteral("ckpt_name"));
-    QStringList names;
-    if (ckptVal.isArray()) {
-        const QJsonArray arr = ckptVal.toArray();
-        if (!arr.isEmpty() && arr.at(0).isArray()) {
-            for (const QJsonValue &v : arr.at(0).toArray())
-                names << v.toString();
-        }
-    }
-    return names;
-}
-} // namespace
-
 void ComfyUIRemoteDock::slotRefreshSamplers()
 {
     QString urlStr = m_d->editServerUrl->text().trimmed();
     if (urlStr.isEmpty()) {
-        setStatusMessage(i18n("Enter a server URL first."), true);
+        setStatusMessage(ComfyTr::tr("Enter a server URL first."), true);
         return;
     }
     QUrl url(urlStr);
     if (!url.isValid()) {
-        setStatusMessage(i18n("Invalid URL."), true);
+        setStatusMessage(ComfyTr::tr("Invalid URL."), true);
         return;
     }
     QString path = url.path();
@@ -57,7 +40,7 @@ void ComfyUIRemoteDock::slotRefreshSamplers()
     if (path.isEmpty() || path == "/") url.setPath("/object_info");
     else if (!path.endsWith('/')) url.setPath(path + "/object_info");
     else url.setPath(path + "object_info");
-    setStatusMessage(i18n("Loading samplers…"));
+    setStatusMessage(ComfyTr::tr("Loading samplers…"));
     m_d->btnRefreshSamplers->setEnabled(false);
     QNetworkRequest req(url);
     ComfyUIUtils::setComfyUIRequestHeaders(req);
@@ -66,7 +49,7 @@ void ComfyUIRemoteDock::slotRefreshSamplers()
         m_d->btnRefreshSamplers->setEnabled(true);
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            setStatusMessage(i18n("Failed to load samplers: %1", reply->errorString()), true);
+            setStatusMessage(ComfyTr::tr("Failed to load samplers: %1", reply->errorString()), true);
             return;
         }
         QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
@@ -92,9 +75,9 @@ void ComfyUIRemoteDock::slotRefreshSamplers()
             int idx = m_d->comboSampler->findText(current);
             if (idx >= 0) m_d->comboSampler->setCurrentIndex(idx);
             else m_d->comboSampler->setCurrentIndex(0);
-            setStatusMessage(i18n("Loaded %1 samplers.", names.size()));
+            setStatusMessage(ComfyTr::tr("Loaded %1 samplers.", names.size()));
         } else {
-            setStatusMessage(i18n("No sampler list in server response."), true);
+            setStatusMessage(ComfyTr::tr("No sampler list in server response."), true);
         }
     });
 }
@@ -106,7 +89,7 @@ void ComfyUIRemoteDock::slotRefreshCheckpoints()
         clearObjectInfoDerivedServerCaches();
         refreshStylesTabLoraWarning();
         applyStylesTabLoraListFilter();
-        setStatusMessage(i18n("Enter a server URL first."), true);
+        setStatusMessage(ComfyTr::tr("Enter a server URL first."), true);
         return;
     }
     QUrl url(urlStr);
@@ -114,14 +97,14 @@ void ComfyUIRemoteDock::slotRefreshCheckpoints()
         clearObjectInfoDerivedServerCaches();
         refreshStylesTabLoraWarning();
         applyStylesTabLoraListFilter();
-        setStatusMessage(i18n("Invalid URL."), true);
+        setStatusMessage(ComfyTr::tr("Invalid URL."), true);
         return;
     }
     QString path = url.path();
     if (path.isEmpty() || path == "/") url.setPath("/object_info");
     else if (!path.endsWith('/')) url.setPath(path + "/object_info");
     else url.setPath(path + "object_info");
-    setStatusMessage(i18n("Loading checkpoints…"));
+    setStatusMessage(ComfyTr::tr("Loading checkpoints…"));
     m_d->btnRefreshCheckpoints->setEnabled(false);
     QNetworkRequest req(url);
     ComfyUIUtils::setComfyUIRequestHeaders(req);
@@ -134,12 +117,12 @@ void ComfyUIRemoteDock::slotRefreshCheckpoints()
             clearObjectInfoDerivedServerCaches();
             refreshStylesTabLoraWarning();
             applyStylesTabLoraListFilter();
-            setStatusMessage(i18n("Failed to load checkpoints: %1", reply->errorString()), true);
+            setStatusMessage(ComfyTr::tr("Failed to load checkpoints: %1", reply->errorString()), true);
             return;
         }
         QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
         QJsonObject root = doc.object();
-        const QStringList names = parseCheckpointNamesFromObjectInfoRoot(root);
+        const QStringList names = ComfyUIUtils::parseCheckpointNamesFromObjectInfoRoot(root);
         syncFromObjectInfoRoot(root);
         fetchComfyModelsLorasMergeAndRefreshStylesTab();
         fetchFilteredCheckpointListAndApply(names, baseUrlStr, false);
@@ -185,6 +168,8 @@ void ComfyUIRemoteDock::fetchComfyModelsLorasMergeAndRefreshStylesTab()
             }
             m_d->comfyServerLoraFilenames = QStringList(seen.begin(), seen.end());
             m_d->comfyServerLoraFilenames.sort(Qt::CaseInsensitive);
+            ComfyFileLibrary::instance().init();
+            ComfyFileLibrary::instance().updateRemoteLoras(m_d->comfyServerLoraFilenames);
         }
         refreshStylesTabLoraWarning();
         applyStylesTabLoraListFilter();
@@ -209,18 +194,18 @@ static QString missingCustomNodeListItemHtml(const QString &classType)
 {
     const QString href = QStringLiteral("https://github.com/comfyanonymous/ComfyUI");
     return QLatin1String("<li>") + classType.toHtmlEscaped() + QLatin1String(" — <a href=\"") + href + QLatin1String("\">")
-        + i18n("ComfyUI core / extensions").toHtmlEscaped() + QLatin1String("</a></li>");
+        + ComfyTr::tr("ComfyUI core / extensions").toHtmlEscaped() + QLatin1String("</a></li>");
 }
 
 // §13.71: Build list-format HTML for missing custom nodes (heading, <ul>, sentences)
 static QString buildMissingNodesListFormat(const QStringList &missingNodes)
 {
     QString html;
-    html += QLatin1String("<p><b>") + i18n("The following ComfyUI custom nodes are missing or too old") + QLatin1String("</b></p><ul>");
+    html += QLatin1String("<p><b>") + ComfyTr::tr("The following ComfyUI custom nodes are missing or too old") + QLatin1String("</b></p><ul>");
     for (const QString &name : missingNodes)
         html += missingCustomNodeListItemHtml(name);
-    html += QLatin1String("</ul><p>") + i18n("Please install or update the custom node package (e.g. ComfyUI Manager or the node's repository).") + QLatin1String("</p>");
-    html += QLatin1String("<p>") + i18n("If nodes are still missing, check the ComfyUI output at startup for errors.") + QLatin1String("</p>");
+    html += QLatin1String("</ul><p>") + ComfyTr::tr("Please install or update the custom node package (e.g. ComfyUI Manager or the node's repository).") + QLatin1String("</p>");
+    html += QLatin1String("<p>") + ComfyTr::tr("If nodes are still missing, check the ComfyUI output at startup for errors.") + QLatin1String("</p>");
     return html;
 }
 
@@ -247,25 +232,25 @@ static QString buildMissingResourcesDictFormatHtml(const QStringList &checkpoint
     QString html;
     // §13.71 (b): When the server exposes no checkpoint filenames, treat as missing common (Arch.all) model inventory.
     if (checkpointNames.isEmpty()) {
-        html += QLatin1String("<p><b>") + i18n("Missing common models (required):") + QLatin1String("</b></p><ul>");
-        html += QLatin1String("<li>") + i18n("Checkpoints: server returned no ckpt_name entries in object_info (install models or fix CheckpointLoaderSimple).").toHtmlEscaped()
+        html += QLatin1String("<p><b>") + ComfyTr::tr("Missing common models (required):") + QLatin1String("</b></p><ul>");
+        html += QLatin1String("<li>") + ComfyTr::tr("Checkpoints: server returned no ckpt_name entries in object_info (install models or fix CheckpointLoaderSimple).").toHtmlEscaped()
             + QLatin1String("</li>");
         html += QLatin1String("</ul>");
     }
-    html += QLatin1String("<p><b>") + i18n("Detected base models:") + QLatin1String("</b></p><ul>");
+    html += QLatin1String("<p><b>") + ComfyTr::tr("Detected base models:") + QLatin1String("</b></p><ul>");
     for (const auto &row : rows) {
         const QString key = QString::fromLatin1(row.classifierKey);
         const QString label = QString::fromLatin1(row.displayArch);
         const bool ok = present.contains(key);
         html += QLatin1String("<li><b>") + label.toHtmlEscaped() + QLatin1String("</b>: ");
         if (ok)
-            html += i18n("supported").toHtmlEscaped();
+            html += ComfyTr::tr("supported").toHtmlEscaped();
         else
-            html += i18n("missing %1", QString::fromLatin1(row.displayArch)).toHtmlEscaped();
+            html += ComfyTr::tr("missing %1", QString::fromLatin1(row.displayArch)).toHtmlEscaped();
         html += QLatin1String("</li>");
     }
     html += QLatin1String("</ul>");
-    html += QLatin1String("<p>") + i18n("See <a href=\"https://docs.interstice.cloud\">Custom ComfyUI Setup</a> for required models. Check the client.log file for more details.") + QLatin1String("</p>");
+    html += QLatin1String("<p>") + ComfyTr::tr("See <a href=\"https://docs.interstice.cloud\">Custom ComfyUI Setup</a> for required models. Check the client.log file for more details.") + QLatin1String("</p>");
     return html;
 }
 
@@ -278,11 +263,11 @@ void ComfyUIRemoteDock::refreshCloudAuthStatusLabel()
     if (tokenEmpty) {
         // §13.89: Cloud + empty token → auth_missing (no CloudClient in this build)
         m_d->labelCloudAuthStatus->setText(
-            i18n("Authentication required: Online Service sign-in is not available in this build. Use Custom ComfyUI or the Python plugin."));
+            ComfyTr::tr("Authentication required: Online Service sign-in is not available in this build. Use Custom ComfyUI or the Python plugin."));
         m_d->labelCloudAuthStatus->setStyleSheet(QStringLiteral("color: palette(highlight);"));
     } else {
         m_d->labelCloudAuthStatus->setText(
-            i18n("An access token is stored, but the Online Service API is not available in this build. Use Custom ComfyUI to connect to your own server."));
+            ComfyTr::tr("An access token is stored, but the Online Service API is not available in this build. Use Custom ComfyUI to connect to your own server."));
         m_d->labelCloudAuthStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
     }
     m_d->labelCloudAuthStatus->setWordWrap(true);
@@ -294,16 +279,16 @@ void ComfyUIRemoteDock::refreshConnectionActionButton()
         return;
     if (m_d->isConnecting) {
         m_d->btnTest->setEnabled(false);
-        m_d->btnTest->setText(i18n("Connecting…"));
+        m_d->btnTest->setText(ComfyTr::tr("Connecting…"));
         m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
         return;
     }
     m_d->btnTest->setEnabled(true);
     if (m_d->isConnected) {
-        m_d->btnTest->setText(i18n("Disconnect"));
+        m_d->btnTest->setText(ComfyTr::tr("Disconnect"));
         m_d->btnTest->setIcon(KisIconUtils::loadIcon("dialog-cancel"));
     } else {
-        m_d->btnTest->setText(i18n("Connect"));
+        m_d->btnTest->setText(ComfyTr::tr("Connect"));
         m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
     }
 }
@@ -323,6 +308,16 @@ void ComfyUIRemoteDock::slotDisconnect()
         m_d->livePollTimer->stop();
     if (m_d->controlPreviewPollTimer)
         m_d->controlPreviewPollTimer->stop();
+    if (m_d->controlLayerJobPollTimer)
+        m_d->controlLayerJobPollTimer->stop();
+#if defined(COMFYUI_HAVE_QT_WEBSOCKETS)
+    if (m_d->controlLayerJobWebSocket) {
+        m_d->controlLayerJobWebSocket->close();
+        m_d->controlLayerJobWebSocket->deleteLater();
+        m_d->controlLayerJobWebSocket = nullptr;
+    }
+#endif
+    m_d->controlLayerJobOpenPoseJson = QJsonValue();
 
     m_d->isConnected = false;
     m_d->isConnecting = false;
@@ -331,20 +326,20 @@ void ComfyUIRemoteDock::slotDisconnect()
     m_d->comfyDeviceSummary.clear();
     m_d->lastComfySystemStats = QJsonObject();
     if (m_d->labelPerfDevice)
-        m_d->labelPerfDevice->setText(i18n("Device: (connect to server)"));
+        m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
     if (m_d->labelConnectionStatus) {
-        m_d->labelConnectionStatus->setText(i18n("Disconnected"));
+        m_d->labelConnectionStatus->setText(ComfyTr::tr("Disconnected"));
         m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
     }
     if (m_d->labelDetectedModels) {
-        m_d->labelDetectedModels->setText(i18n("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
+        m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
         m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
         m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
     }
     clearObjectInfoDerivedServerCaches();
     refreshStylesTabLoraWarning();
     applyStylesTabLoraListFilter();
-    setStatusMessage(i18n("Disconnected from server."));
+    setStatusMessage(ComfyTr::tr("Disconnected from server."));
     updateWelcomeVisibility();
     refreshConnectionActionButton();
 }
@@ -354,7 +349,7 @@ void ComfyUIRemoteDock::slotTestConnection()
 {
     QString urlStr = m_d->editServerUrl->text().trimmed();
     if (urlStr.isEmpty()) {
-        setStatusMessage(i18n("Enter a server URL."), true);
+        setStatusMessage(ComfyTr::tr("Enter a server URL."), true);
         m_d->isConnected = false;
         m_d->isConnecting = false;
         m_d->connectionErrorOccurred = false;
@@ -362,13 +357,13 @@ void ComfyUIRemoteDock::slotTestConnection()
         m_d->comfyDeviceSummary.clear();
         m_d->lastComfySystemStats = QJsonObject();
         if (m_d->labelPerfDevice)
-            m_d->labelPerfDevice->setText(i18n("Device: (connect to server)"));
+            m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
         if (m_d->labelConnectionStatus) {
-            m_d->labelConnectionStatus->setText(i18n("Disconnected"));
+            m_d->labelConnectionStatus->setText(ComfyTr::tr("Disconnected"));
             m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
         }
         if (m_d->labelDetectedModels) {
-            m_d->labelDetectedModels->setText(i18n("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
+            m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
             m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
             m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
         }
@@ -381,7 +376,7 @@ void ComfyUIRemoteDock::slotTestConnection()
     }
     QUrl url(urlStr);
     if (!url.isValid()) {
-        setStatusMessage(i18n("Invalid URL."), true);
+        setStatusMessage(ComfyTr::tr("Invalid URL."), true);
         m_d->isConnected = false;
         m_d->isConnecting = false;
         m_d->connectionErrorOccurred = true;
@@ -391,13 +386,13 @@ void ComfyUIRemoteDock::slotTestConnection()
         refreshStylesTabLoraWarning();
         applyStylesTabLoraListFilter();
         if (m_d->labelPerfDevice)
-            m_d->labelPerfDevice->setText(i18n("Device: (connect to server)"));
+            m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
         if (m_d->labelConnectionStatus) {
-            m_d->labelConnectionStatus->setText(i18n("Error: Invalid URL"));
+            m_d->labelConnectionStatus->setText(ComfyTr::tr("Error: Invalid URL"));
             m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: red;"));
         }
         if (m_d->labelDetectedModels) {
-            m_d->labelDetectedModels->setText(i18n("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
+            m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
         }
         updateWelcomeVisibility();
         refreshConnectionActionButton();
@@ -407,12 +402,12 @@ void ComfyUIRemoteDock::slotTestConnection()
     if (path.isEmpty() || path == "/") url.setPath("/system_stats");
     else if (!path.endsWith('/')) url.setPath(path + "/system_stats");
     else url.setPath(path + "system_stats");
-    setStatusMessage(i18n("Connecting…"));
+    setStatusMessage(ComfyTr::tr("Connecting…"));
     m_d->isConnecting = true;
     m_d->connectionErrorOccurred = false;
     updateWelcomeVisibility();
     if (m_d->labelConnectionStatus) {
-        m_d->labelConnectionStatus->setText(i18n("Connecting"));
+        m_d->labelConnectionStatus->setText(ComfyTr::tr("Connecting"));
         m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
     }
     refreshConnectionActionButton();
@@ -436,9 +431,9 @@ void ComfyUIRemoteDock::slotTestConnection()
                     m_d->labelPerfDevice->setText(m_d->comfyDeviceSummary);
             }
             syncPerformanceFromAutoPreset();
-            setStatusMessage(i18n("Connected to ComfyUI."));
+            setStatusMessage(ComfyTr::tr("Connected to ComfyUI."));
             if (m_d->labelConnectionStatus) {
-                m_d->labelConnectionStatus->setText(i18n("Connected"));
+                m_d->labelConnectionStatus->setText(ComfyTr::tr("Connected"));
                 m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: green;"));
             }
             // §13.71: Fetch object_info to detect missing nodes; then update labelDetectedModels
@@ -461,7 +456,7 @@ void ComfyUIRemoteDock::slotTestConnection()
                     clearObjectInfoDerivedServerCaches();
                     refreshStylesTabLoraWarning();
                     applyStylesTabLoraListFilter();
-                    m_d->labelDetectedModels->setText(i18n("Connected. Could not load node list: %1", replyObj->errorString()));
+                    m_d->labelDetectedModels->setText(ComfyTr::tr("Connected. Could not load node list: %1", replyObj->errorString()));
                     m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
                     m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
                     updateWelcomeVisibility();
@@ -472,7 +467,7 @@ void ComfyUIRemoteDock::slotTestConnection()
                 syncFromObjectInfoRoot(root);
                 fetchComfyModelsLorasMergeAndRefreshStylesTab();
                 {
-                    const QStringList ckptNames = parseCheckpointNamesFromObjectInfoRoot(root);
+                    const QStringList ckptNames = ComfyUIUtils::parseCheckpointNamesFromObjectInfoRoot(root);
                     const QString bu = m_d->editServerUrl->text().trimmed();
                     if (!ckptNames.isEmpty() && !bu.isEmpty())
                         fetchFilteredCheckpointListAndApply(ckptNames, bu, true);
@@ -491,7 +486,7 @@ void ComfyUIRemoteDock::slotTestConnection()
                     m_d->labelDetectedModels->setOpenExternalLinks(true);
                     m_d->labelDetectedModels->setTextInteractionFlags(Qt::TextBrowserInteraction);
                 } else {
-                    const QStringList ckptNames = parseCheckpointNamesFromObjectInfoRoot(root);
+                    const QStringList ckptNames = ComfyUIUtils::parseCheckpointNamesFromObjectInfoRoot(root);
                     m_d->labelDetectedModels->setTextFormat(Qt::RichText);
                     m_d->labelDetectedModels->setText(buildMissingResourcesDictFormatHtml(ckptNames));
                     m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
@@ -508,28 +503,28 @@ void ComfyUIRemoteDock::slotTestConnection()
             refreshStylesTabLoraWarning();
             applyStylesTabLoraListFilter();
             if (m_d->labelPerfDevice)
-                m_d->labelPerfDevice->setText(i18n("Device: (connect to server)"));
+                m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
             m_d->isConnected = false;
             m_d->connectionErrorOccurred = true;
             if (httpCode == 401) {
                 m_d->connectionErrorKind = QStringLiteral("network");
-                setStatusMessage(i18n("Unauthorized (401). Check server authentication."), true);
+                setStatusMessage(ComfyTr::tr("Unauthorized (401). Check server authentication."), true);
                 if (m_d->labelConnectionStatus) {
-                    m_d->labelConnectionStatus->setText(i18n("Error: Unauthorized (401)"));
+                    m_d->labelConnectionStatus->setText(ComfyTr::tr("Error: Unauthorized (401)"));
                     m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: red;"));
                 }
             } else {
                 bool networkError = (reply->error() != QNetworkReply::NoError
                     && reply->error() != QNetworkReply::ContentNotFoundError);
                 m_d->connectionErrorKind = networkError ? QStringLiteral("network") : QStringLiteral("unknown");
-                setStatusMessage(i18n("Connection failed: %1", reply->errorString()), true);
+                setStatusMessage(ComfyTr::tr("Connection failed: %1", reply->errorString()), true);
                 if (m_d->labelConnectionStatus) {
-                    m_d->labelConnectionStatus->setText(i18n("Error: %1", reply->errorString()));
+                    m_d->labelConnectionStatus->setText(ComfyTr::tr("Error: %1", reply->errorString()));
                     m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: red;"));
                 }
             }
             if (m_d->labelDetectedModels) {
-                m_d->labelDetectedModels->setText(i18n("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
+                m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
                 m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
                 m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
             }
@@ -551,6 +546,8 @@ void ComfyUIRemoteDock::syncFromObjectInfoRoot(const QJsonObject &objectInfoRoot
 {
     m_d->lastObjectInfoRoot = objectInfoRoot;
     ComfyUIUtils::extractLoraFilenamesFromObjectInfo(objectInfoRoot, &m_d->comfyServerLoraFilenames);
+    ComfyFileLibrary::instance().init();
+    ComfyFileLibrary::instance().updateRemoteLoras(m_d->comfyServerLoraFilenames);
     m_d->objectInfoSpec58NodesPresent = ComfyUIUtils::specSection58NodesPresentInObjectInfo(objectInfoRoot);
     const QString sig = m_d->objectInfoSpec58NodesPresent.join(QLatin1Char('\x1e'));
     if (sig != m_d->objectInfoSpec58LastLoggedSignature) {
@@ -599,20 +596,22 @@ void ComfyUIRemoteDock::applyServerCheckpointList(const QStringList &filteredNam
         m_d->comboCheckpoint->addItem(QStringLiteral("v1-5-pruned-emaonly.safetensors"));
         m_d->comboCheckpoint->setCurrentIndex(0);
         if (emptyServerList)
-            setStatusMessage(i18n("No checkpoint list in server response (use custom name)."), true);
+            setStatusMessage(ComfyTr::tr("No checkpoint list in server response (use custom name)."), true);
         return;
     }
 
     m_d->comboCheckpoint->addItems(filteredNames);
+    ComfyFileLibrary::instance().init();
+    ComfyFileLibrary::instance().updateRemoteCheckpoints(filteredNames);
     const int ix = m_d->comboCheckpoint->findText(prevCkpt);
     if (ix >= 0) {
         m_d->comboCheckpoint->setCurrentIndex(ix);
-        setStatusMessage(i18n("Loaded %1 checkpoints.", filteredNames.size()));
+        setStatusMessage(ComfyTr::tr("Loaded %1 checkpoints.", filteredNames.size()));
         return;
     }
 
     m_d->comboCheckpoint->setCurrentIndex(0);
-    setStatusMessage(i18n("Loaded %1 checkpoints.", filteredNames.size()));
+    setStatusMessage(ComfyTr::tr("Loaded %1 checkpoints.", filteredNames.size()));
 
     if (prevPresetIdx >= firstCustom && m_d->comboPreset) {
         const QString presetName = m_d->comboPreset->itemText(prevPresetIdx);
@@ -622,7 +621,7 @@ void ComfyUIRemoteDock::applyServerCheckpointList(const QStringList &filteredNam
             QSignalBlocker b(m_d->comboPreset);
             m_d->comboPreset->setCurrentIndex(0);
             slotPresetChanged(0);
-            setStatusMessage(i18n("The checkpoint saved with style \"%1\" is not on this server. Style reset to None.",
+            setStatusMessage(ComfyTr::tr("The checkpoint saved with style \"%1\" is not on this server. Style reset to None.",
                                   presetName),
                              false,
                              true);

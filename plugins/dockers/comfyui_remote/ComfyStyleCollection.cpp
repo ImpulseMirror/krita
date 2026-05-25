@@ -147,6 +147,53 @@ const ComfyStyleEntry *ComfyStyleCollection::findByStyleId(const QString &styleI
     return nullptr;
 }
 
+QJsonObject ComfyStyleCollection::entryToJson(const ComfyStyleEntry &entry) const
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("name"), entry.name);
+    o.insert(QStringLiteral("version"), 1);
+    o.insert(QStringLiteral("architecture"), entry.architecture);
+    QJsonArray ckpts;
+    for (const QString &c : entry.checkpoints)
+        ckpts.append(c);
+    o.insert(QStringLiteral("checkpoints"), ckpts);
+    o.insert(QStringLiteral("loras"), entry.loras);
+    o.insert(QStringLiteral("style_prompt"), entry.stylePrompt);
+    o.insert(QStringLiteral("negative_prompt"), entry.negativePrompt);
+    o.insert(QStringLiteral("vae"), entry.vae.isEmpty() ? QStringLiteral("Checkpoint Default") : entry.vae);
+    o.insert(QStringLiteral("clip_skip"), entry.clipSkip);
+    o.insert(QStringLiteral("v_prediction_zsnr"), entry.vPredictionZsnr);
+    o.insert(QStringLiteral("rescale_cfg"), entry.rescaleCfg);
+    o.insert(QStringLiteral("self_attention_guidance"), entry.selfAttentionGuidance);
+    o.insert(QStringLiteral("preferred_resolution"), entry.preferredResolution);
+    if (!entry.linkedEditStyle.isEmpty())
+        o.insert(QStringLiteral("linked_edit_style"), entry.linkedEditStyle);
+    if (!entry.samplerPresetName.isEmpty())
+        o.insert(QStringLiteral("sampler"), entry.samplerPresetName);
+    o.insert(QStringLiteral("sampler_steps"), entry.samplerSteps);
+    o.insert(QStringLiteral("cfg_scale"), entry.cfgScale);
+    if (!entry.liveSamplerPresetName.isEmpty())
+        o.insert(QStringLiteral("live_sampler"), entry.liveSamplerPresetName);
+    o.insert(QStringLiteral("live_sampler_steps"), entry.liveSamplerSteps);
+    o.insert(QStringLiteral("live_cfg_scale"), entry.liveCfgScale);
+    return o;
+}
+
+QString ComfyStyleCollection::saveEntryToUserStyles(const ComfyStyleEntry &entry)
+{
+    const QString baseName = QFileInfo(entry.filepath).fileName();
+    if (baseName.isEmpty())
+        return QString();
+    const QString dest = userStylesDir() + QLatin1Char('/') + baseName;
+    QFile f(dest);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return QString();
+    f.write(QJsonDocument(entryToJson(entry)).toJson(QJsonDocument::Indented));
+    f.close();
+    reload();
+    return dest;
+}
+
 const ComfyStyleEntry *ComfyStyleCollection::findByComboIndex(int comboIndex,
                                                                bool showBuiltin,
                                                                int legacyKConfigCustomCount) const

@@ -8,6 +8,8 @@
 
 #include "ComfyUIRemotePlugin.h"
 #include "ComfyUIUtils.h"
+#include "ComfyLocalization.h"
+#include "ComfyFileLibrary.h"
 #include <kpluginfactory.h>
 #include <KoDockFactoryBase.h>
 #include <KoDockRegistry.h>
@@ -68,6 +70,8 @@ ComfyUIRemotePlugin::ComfyUIRemotePlugin(QObject *parent, const QVariantList &)
     ComfyUIUtils::migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(); // §10.2: preserve layout after factory id change
     ComfyUIUtils::checkPluginInstallationPath();  // §13.165: warn if not in expected location
     ComfyUIUtils::ensureBundledPluginDataInstalled();
+    ComfyLocalization::instance().init();
+    ComfyFileLibrary::instance().init();
     KoDockRegistry::instance()->add(new ComfyUIRemoteDockFactory());
 }
 

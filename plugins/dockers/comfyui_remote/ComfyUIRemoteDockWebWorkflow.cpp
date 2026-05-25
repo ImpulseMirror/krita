@@ -4,6 +4,7 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 
@@ -79,7 +80,7 @@ public:
                 m_d->editCustomWorkflow->setPlainText(json);
             }
             if (m_dock)
-                m_dock->setStatusMessage(i18n("Received published workflow from ComfyUI web UI."));
+                m_dock->setStatusMessage(ComfyTr::tr("Received published workflow from ComfyUI web UI."));
             if (m_dock)
                 m_dock->persistOpenCustomWorkflowToDocument();
             shutdown();
@@ -93,7 +94,7 @@ public:
 #endif
                              if (m_dock)
                                  m_dock->setStatusMessage(
-                                     i18n("WebSocket error while listening for workflows: %1", m_ws->errorString()),
+                                     ComfyTr::tr("WebSocket error while listening for workflows: %1", m_ws->errorString()),
                                      false,
                                      true);
                          });
@@ -148,17 +149,17 @@ void ComfyUIRemoteDock::beginWebWorkflowSwitch()
 #if defined(COMFYUI_HAVE_QT_WEBSOCKETS)
     QUrl wsUrl = ComfyUIUtils::comfyWebSocketUrlForClient(base, m_d->clientId);
     if (!wsUrl.isValid()) {
-        setStatusMessage(i18n("Could not build WebSocket URL for workflow subscription."), false, true);
+        setStatusMessage(ComfyTr::tr("Could not build WebSocket URL for workflow subscription."), false, true);
         return;
     }
     auto *session = new WebWorkflowSwitchSession(this, m_d.data());
     m_d->webWorkflowSwitchSession = session;
     session->openSocket(wsUrl);
     setStatusMessage(
-        i18n("Listening for workflows published from ComfyUI (5 minutes). Publish in the web UI to load the graph here."));
+        ComfyTr::tr("Listening for workflows published from ComfyUI (5 minutes). Publish in the web UI to load the graph here."));
 #else
     setStatusMessage(
-        i18n("Subscribed for workflow updates. This build has no Qt WebSockets — import the exported API JSON from "
+        ComfyTr::tr("Subscribed for workflow updates. This build has no Qt WebSockets — import the exported API JSON from "
              "Settings → Workflow, or rebuild Krita’s Qt with the WebSockets module for automatic capture."),
         false,
         true);

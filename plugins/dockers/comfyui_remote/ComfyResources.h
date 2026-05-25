@@ -40,7 +40,13 @@ bool isEditArch(Arch arch);
 bool isFluxLike(Arch arch);
 bool isSdxlLike(Arch arch);
 bool isQwenLike(Arch arch);
+/// Python Arch.supports_edit — edit models + Flux2 can use inpaint instruction prefixes.
+bool supportsEditInstructions(Arch arch);
+/// Python Arch.has_controlnet_inpaint — dedicated inpaint ControlNet available for arch.
+bool hasControlnetInpaint(Arch arch);
 bool supportsRegions(Arch arch);
+bool supportsClipSkip(Arch arch);
+bool supportsAttentionGuidance(Arch arch);
 int latentCompressionFactor(Arch arch);
 
 /// Control layer mode keys (ai_diffusion/resources.py ControlMode names).

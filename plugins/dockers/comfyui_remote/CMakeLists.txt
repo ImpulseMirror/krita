@@ -3,10 +3,23 @@ add_subdirectory(tests)
 # Static lib for dock (used by plugin and tests)
 set(kritacomfyuiremote_static_SOURCES
     ComfyControlLayer.cpp
+    ComfyControlLayerRowWidget.cpp
+    ComfyControlLayerListWidget.cpp
+    ComfyOpenPose.cpp
+    ComfyRegionProcess.cpp
+    ComfyRegionLink.cpp
+    ComfyRegionPromptWidget.cpp
+    ComfyPromptResizeHandle.cpp
     ComfyResources.cpp
     ComfyStyleCollection.cpp
+    ComfyLocalization.cpp
+    ComfyFileLibrary.cpp
+    ComfyTheme.cpp
+    ComfySwitchWidget.cpp
+    ComfyQueueButton.cpp
     ComfyWorkflowEngine.cpp
     ComfyUIRemoteDockControl.cpp
+    ComfyUIRemoteDockControlGenerate.cpp
     ComfyUIIntervalSlider.cpp
     ComfyUIPoseLayers.cpp
     ComfyUIUtils.cpp

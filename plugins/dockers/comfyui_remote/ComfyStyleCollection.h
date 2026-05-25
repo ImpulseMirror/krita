@@ -53,6 +53,10 @@ public:
     QString builtinStylesDir() const;
     QString userStylesDir() const;
 
+    QJsonObject entryToJson(const ComfyStyleEntry &entry) const;
+    /// Writes JSON to user styles dir (built-in → user override copy). Returns path or empty on failure.
+    QString saveEntryToUserStyles(const ComfyStyleEntry &entry);
+
 private:
     ComfyStyleCollection();
     ComfyStyleEntry loadStyleFile(const QString &path, bool isBuiltin) const;

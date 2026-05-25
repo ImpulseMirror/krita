@@ -57,6 +57,7 @@ private:
     void loadRegionsFromConfig();
     void saveRegionsToConfig();
     void setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout);
+    void setupRegionControlLayersUi(QWidget *parent, QVBoxLayout *layout);
     void refreshRootControlLayersList();
 
     // §13.44: Persist preview layer ID to document annotation (call when user sets preview layer)
@@ -184,6 +185,10 @@ private Q_SLOTS:
     void slotRestoreDefaults();
     void slotLiveTick();
     void slotLivePoll();
+    void beginLiveUploadPipeline();
+    void uploadNextLiveLoraFile();
+    void continueLiveAfterLoraUploads();
+    void uploadLiveCanvasAndPrompt();
     void setLiveProgress(int percent);
     void startLiveSpinner();
     void stopLiveSpinner();
@@ -193,8 +198,6 @@ private Q_SLOTS:
     void slotMoveRegionDown();
     void slotEditRegion();
     void slotGenerateRegions();
-    void runNextRegionInpainting();
-    void pollRegionHistory();
     void slotInpaintPoll();
     /// §13.195: ai_diffusion_toggle_workspace — same cycle as Python Workspace enum
     void slotAiDiffusionToggleWorkspace();
@@ -223,14 +226,38 @@ private Q_SLOTS:
     /// §13.98: Insert default pose SVG into active KisShapeLayer; register for 500 ms polling
     void slotAddPoseGuideToVectorLayer();
     void slotAddControlLayer();
-    void slotRemoveControlLayer();
+    void slotRemoveControlLayerAt(int row);
     void slotControlLayerSelectionChanged();
+    void refreshRegionControlLayersList();
+    void slotAddRegionControlLayer();
+    void slotRemoveRegionControlLayerAt(int row);
+    void slotRegionControlLayerSelectionChanged();
+    void slotAddPoseForControlLayer(bool forRegion, int index);
+    void slotControlLayerJobPoll();
+    void refreshControlLayerGenerateButtons();
+    void beginControlLayerGenerateJob(bool forRegion, int entryIndex);
 
 private:
+    void beginGenerateUploadPipeline();
+    void uploadNextGenerateLoraFile();
+    void continueGenerateAfterLoraUploads();
     void uploadNextGenerateControlImage();
     void uploadNextGenerateRegionMask();
     void continueGenerateAfterControlUploads();
+    void beginInpaintUploadPipeline();
+    void uploadNextInpaintLoraFile();
+    void continueInpaintAfterLoraUploads();
     void finalizeGenerateWorkflowAndSubmit(QJsonObject workflow);
+    void continueUpscaleAfterCanvasUpload(int canvasW, int canvasH, int w2, int h2);
+    void beginUpscaleConditioningUploadPipeline();
+    void uploadNextUpscaleControlImage();
+    void uploadNextUpscaleRegionMask();
+    void finalizeUpscaleWorkflowAndSubmit();
+    void submitUpscaleWorkflow(const QJsonObject &workflow, bool wantRefine, bool useTiledRefine);
+    void uploadNextInpaintControlImage();
+    void submitInpaintWorkflow(QJsonObject workflow);
+    bool tryStartRefineFromGenerate();
+    void uploadCanvasForRefineGenerate();
     // §13.194 / §13.137: RecentlyUsedSync — document_defaults in settings.json; skip layer_bounds on fresh docs
     void persistDocumentDefaultsToSettings();
     void tryApplyDocumentDefaultsForNewDocument(KisImageSP image);
@@ -250,6 +277,7 @@ private:
     // §13.169 / §13.31: document annotations (ui.json equivalent) using current canvas image
     void saveInpaintWorkspaceToDocument();
     void loadInpaintWorkspaceFromDocument();
+    void updateInpaintControlsForArch();
     void saveEmbeddedCustomWorkflowToDocument();
     void loadEmbeddedCustomWorkflowFromDocument();
     void scheduleSaveEmbeddedCustomWorkflowToDocument();
@@ -269,6 +297,14 @@ private:
     void syncPoseGuidePeopleCountFromSettings();
     /// §13.53: Stop control preprocessor preview poll (separate from main generate / live queues)
     void stopControlPreviewPolling();
+    void stopControlLayerJobPolling();
+    void startControlLayerJobWebSocketListen();
+    bool importControlLayerFromOpenPoseJson(const QJsonValue &openPoseJson,
+                                            const QString &resultLayerName,
+                                            const QString &anchorLayerName,
+                                            bool forRegion,
+                                            int regionRow,
+                                            int entryIndex);
 
     void fetchComfyModelsLorasMergeAndRefreshStylesTab();
     void clearObjectInfoDerivedServerCaches();

@@ -9,6 +9,7 @@
 #include "ComfyResources.h"
 
 #include <QJsonObject>
+#include <QRect>
 #include <QString>
 
 namespace ComfyWorkflowEngine {
@@ -21,6 +22,8 @@ struct TextToImageParams {
     int batchSize = 1;
     QString positivePrompt;
     QString negativePrompt;
+    /// P4.2: 2-letter code when translation_enabled (ETN_Translate via lang:xx directives); empty = off.
+    QString promptTranslationLanguage;
     qint64 seed = 0;
     QString sampler = QStringLiteral("euler");
     QString scheduler = QStringLiteral("normal");
@@ -30,9 +33,203 @@ struct TextToImageParams {
     ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
 };
 
-/// Build ComfyUI API workflow JSON (CheckpointLoaderSimple + EmptyLatent + KSampler path).
-/// Arch selects guidance defaults; full graph parity with workflow.py is extended incrementally.
+/// Build ComfyUI API workflow JSON (CheckpointLoaderSimple + EmptyLatent + sampler path).
+/// When usesSamplerCustomAdvanced(arch), KSampler is replaced with SamplerCustomAdvanced (Python generate()).
 QJsonObject buildTextToImage(const TextToImageParams &params);
+
+/// Python workflow.generate() uses SamplerCustomAdvanced for all arches.
+bool usesSamplerCustomAdvanced(ComfyResources::Arch arch);
+
+/// Replace template KSampler with SamplerCustomAdvanced (after conditioning is applied).
+void finishWorkflowWithSamplerCustom(QJsonObject *workflow,
+                                     const QString &samplerNodeId,
+                                     ComfyResources::Arch arch,
+                                     int extentWidth,
+                                     int extentHeight,
+                                     double denoiseStrength);
+
+/// Control / IP-Adapter / regional inputs applied after base graph (Python Conditioning).
+struct GenerationConditioningParams {
+    QList<IpAdapterLayerInput> ipLayers;
+    QList<ControlNetLayerInput> controlLayers;
+    QList<RegionalPromptInput> regions;
+    bool editReference = false;
+};
+
+/// Node ids for applyGenerationConditioning (text2img vs img2img/refine).
+struct WorkflowGraphContext {
+    QString samplerNodeId = QStringLiteral("3");
+    QString modelNodeId = QStringLiteral("4");
+    QString positiveNodeId = QStringLiteral("6");
+    QString negativeNodeId = QStringLiteral("7");
+    QString clipSourceNodeId = QStringLiteral("4");
+    QString latentImageNodeId;
+    QString canvasImageNodeId;
+    int extentWidth = 512;
+    int extentHeight = 512;
+};
+
+struct GenerationConditioningResult {
+    QString modelNodeId;
+    QString positiveNodeId;
+    QString negativeNodeId;
+};
+
+/// IP → regional → control → optional ReferenceLatent (edit arches). Order matches Python generate().
+GenerationConditioningResult applyGenerationConditioning(QJsonObject *workflow,
+                                                         const GenerationConditioningParams &params,
+                                                         const WorkflowGraphContext &ctx,
+                                                         ComfyResources::Arch arch);
+
+/// Infer graph context from a text2img or img2img template workflow.
+WorkflowGraphContext discoverWorkflowGraphContext(const QJsonObject &workflow);
+
+/// Text2img + style options + conditioning + SamplerCustomAdvanced (GAP-A build_generate).
+struct GenerateParams : TextToImageParams {
+    GenerationConditioningParams conditioning;
+    QString styleVae;
+    int styleClipSkip = 0;
+};
+
+QJsonObject buildGenerate(const GenerateParams &params);
+
+/// Python create_control_image — delegates to ComfyUIUtils preprocessor graph.
+struct ControlPreviewParams {
+    QString uploadedImageName;
+    QString mode;
+    int resolutionBase = 512;
+    bool returnPreprocessed = false;
+};
+
+QJsonObject buildControlPreview(const ControlPreviewParams &params);
+
+/// Insert CLIPSetLastLayer / VAELoader when style JSON specifies clip_skip or non-default VAE.
+void applyCheckpointStyleOptions(QJsonObject *workflow,
+                                   const QString &vaeName,
+                                   int clipSkip,
+                                   ComfyResources::Arch arch);
+
+/// img2img refine (WorkflowKind.refine): canvas already uploaded; LoadImage node 1 uses imageName.
+struct RefineParams {
+    QString checkpoint;
+    QString imageName;
+    QString positivePrompt;
+    QString negativePrompt;
+    /// P4.2: 2-letter code when translation_enabled (ETN_Translate via lang:xx directives); empty = off.
+    QString promptTranslationLanguage;
+    qint64 seed = 0;
+    QString sampler = QStringLiteral("euler");
+    QString scheduler = QStringLiteral("normal");
+    int steps = 20;
+    double cfg = 7.0;
+    double denoise = 0.75;
+    ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+};
+
+QJsonObject buildRefine(const RefineParams &params);
+
+/// Inpaint (selection mask uploaded): LoadImage + VAEEncodeForInpaint + KSampler path.
+struct InpaintBuildParams {
+    QString imageName;
+    QString maskImageName;
+    QString checkpoint;
+    QString positivePrompt;
+    QString negativePrompt;
+    /// P4.2: 2-letter code when translation_enabled (ETN_Translate via lang:xx directives); empty = off.
+    QString promptTranslationLanguage;
+    qint64 seed = 0;
+    QString sampler = QStringLiteral("euler");
+    QString scheduler = QStringLiteral("normal");
+    int steps = 20;
+    double cfg = 7.0;
+    double denoise = 1.0;
+    int growMaskBy = 6;
+    ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+};
+
+QJsonObject buildInpaint(const InpaintBuildParams &params);
+
+/// Live preview (WorkflowKind.live): img2img from uploaded canvas; same graph as refine.
+using LiveParams = RefineParams;
+QJsonObject buildLive(const LiveParams &params);
+
+/// Per-frame text2img for animation batch (WorkflowKind.generate, batch_count=1 per prompt).
+struct AnimationFrameParams {
+    TextToImageParams base;
+    qint64 batchBaseSeed = 0;
+    int frameIndex = 0;
+    int batchSeedStep = 1;
+};
+
+/// seed = batchBaseSeed + frameIndex * batchSeedStep (§13.212).
+qint64 animationFrameSeed(qint64 batchBaseSeed, int frameIndex, int batchSeedStep);
+
+QJsonObject buildAnimationFrame(const AnimationFrameParams &params);
+
+/// Lanczos/ImageScale upscale (WorkflowKind.upscale_simple when no diffusion model).
+struct UpscaleSimpleParams {
+    QString imageName;
+    int targetWidth = 1024;
+    int targetHeight = 1024;
+    QString upscaleMethod = QStringLiteral("lanczos");
+};
+
+QJsonObject buildUpscaleSimple(const UpscaleSimpleParams &params);
+
+/// Single-pass upscale + diffusion refine (partial parity with upscale_tiled for one tile).
+struct UpscaleRefineParams {
+    QString imageName;
+    int scaleWidth = 1024;
+    int scaleHeight = 1024;
+    QString upscaleMethod = QStringLiteral("lanczos");
+    QString checkpoint;
+    QString positivePrompt;
+    QString negativePrompt;
+    /// P4.2: 2-letter code when translation_enabled (ETN_Translate via lang:xx directives); empty = off.
+    QString promptTranslationLanguage;
+    qint64 seed = 0;
+    QString sampler = QStringLiteral("euler");
+    QString scheduler = QStringLiteral("normal");
+    int steps = 20;
+    double cfg = 8.0;
+    double denoise = 0.35;
+    ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+};
+
+QJsonObject buildUpscaleRefine(const UpscaleRefineParams &params);
+
+/// Multi-tile diffusion upscale (WorkflowKind.upscale_tiled; requires ETN tooling nodes).
+struct UpscaleTiledParams {
+    QString imageName;
+    QString checkpoint;
+    QString positivePrompt;
+    QString negativePrompt;
+    /// P4.2: 2-letter code when translation_enabled (ETN_Translate via lang:xx directives); empty = off.
+    QString promptTranslationLanguage;
+    qint64 seed = 0;
+    QString sampler = QStringLiteral("euler");
+    QString scheduler = QStringLiteral("normal");
+    int steps = 20;
+    double cfg = 7.0;
+    double denoise = 0.35;
+    ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+    int scaledWidth = 1024;
+    int scaledHeight = 1024;
+    int targetWidth = 1024;
+    int targetHeight = 1024;
+    int tileOverlapPx = -1;
+    int minTileSize = 512;
+    int stylePreferredResolution = 0;
+    QString upscaleModelName;
+    QList<ControlNetLayerInput> controlLayers;
+    QList<IpAdapterLayerInput> ipAdapterLayers;
+    QList<RegionalPromptInput> regionalPrompts;
+    double upscaleFactor = 1.0;
+    /// Python cond.edit_reference — ReferenceLatent from tile image/latent on edit arches.
+    bool editReference = false;
+};
+
+QJsonObject buildUpscaleTiled(const UpscaleTiledParams &params);
 
 /// One ControlNet layer ready for graph injection (image already uploaded to ComfyUI).
 struct ControlNetLayerInput {
@@ -52,24 +249,41 @@ struct IpAdapterLayerInput {
     double endPercent = 1.0;
 };
 
+/// Node ids for conditioning injection (generate, upscale tiled, etc.).
+struct ConditioningGraphRef {
+    QString samplerNodeId = QStringLiteral("3");
+    QString modelNodeId;
+    QString positiveNodeId;
+    QString negativeNodeId;
+    QString clipSourceNodeId = QStringLiteral("4");
+    int nextNodeId = 50;
+    QString tileLayoutNodeId;
+    int tileIndex = -1;
+    int scaledWidth = 0;
+    int scaledHeight = 0;
+};
+
 /// Apply IP-Adapter to KSampler model input (SD1.5 / SDXL). Returns false if unsupported or no layers.
 bool applyIpAdapterLayers(QJsonObject *workflow,
                           const QList<IpAdapterLayerInput> &layers,
-                          ComfyResources::Arch arch);
+                          ComfyResources::Arch arch,
+                          ConditioningGraphRef *graph = nullptr);
 
-/// Chain ControlNetApplyAdvanced nodes onto default text2img positive conditioning (P1.3).
+/// Chain ControlNetApplyAdvanced nodes onto positive conditioning (P1.3).
 /// Skips IP-Adapter modes; returns false if no structural layers were applied.
 bool applyControlNetLayers(QJsonObject *workflow,
                              const QList<ControlNetLayerInput> &layers,
                              ComfyResources::Arch arch,
-                             const QString &positiveNode = QStringLiteral("6"),
-                             const QString &negativeNode = QStringLiteral("7"));
+                             ConditioningGraphRef *graph = nullptr);
 
 /// One region for ETN_BackgroundRegion / ETN_DefineRegion / ETN_AttentionMask (mask on ComfyUI server).
 struct RegionalPromptInput {
     QString positivePrompt;
     QString maskImageName;
     bool isBackground = false;
+    QString promptTranslationLanguage;
+    /// Upscaled-space mask bounds for tiled upscale region filtering (empty = no filter).
+    QRect maskBoundsUpscaled;
 };
 
 /// Result node ids for KSampler wiring after regional conditioning.
@@ -86,7 +300,8 @@ RegionalWorkflowNodes applyRegionalGeneration(QJsonObject *workflow,
                                               const QString &modelSourceNode,
                                               const QString &rootPositiveNode,
                                               const QString &rootNegativeNode,
-                                              const QString &clipSourceNode = QStringLiteral("4"));
+                                              const QString &clipSourceNode = QStringLiteral("4"),
+                                              ConditioningGraphRef *graph = nullptr);
 
 /// Resolve arch from checkpoint + optional style architecture string ("auto", "sdxl", …).
 ComfyResources::Arch resolveArch(const QString &checkpoint, const QString &styleArchitecture = QString());

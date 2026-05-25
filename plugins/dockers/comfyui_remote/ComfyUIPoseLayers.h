@@ -37,6 +37,13 @@ public:
     /// Rasterize cached pose SVG for \p layerUuid to \p size (transparent background). Empty if no cache.
     QImage rasterizedPoseImageForLayer(const QUuid &layerUuid, const QSize &size) const;
 
+    /// Python layers.create_vector — new KisShapeLayer with \p svg, inserted above \p insertAbove when set.
+    bool createVectorLayerFromSvg(KisImageSP image,
+                                  KisDocument *document,
+                                  const QString &layerName,
+                                  const QString &svg,
+                                  KisNodeSP insertAbove = KisNodeSP());
+
 private:
     explicit ComfyUIPoseLayers(QObject *parent = nullptr);
     void slotPoll();

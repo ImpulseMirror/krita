@@ -4,9 +4,12 @@
  */
 
 #include "ComfyUIRemoteDock.h"
+#include "ComfyLocalization.h"
+#include "ComfyFileLibrary.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
-#include "ComfyUIWorkflows.h"
+#include "ComfyWorkflowEngine.h"
+#include "ComfyStyleCollection.h"
 
 #include <QUrl>
 #include <QUrlQuery>
@@ -29,7 +32,9 @@
 
 void ComfyUIRemoteDock::slotLiveTick()
 {
-    if (!m_d->checkLiveMode->isChecked() || !m_d->viewManager || !m_d->viewManager->image()) return;
+    if (m_d->liveAwaitingLoraUploads || !m_d->checkLiveMode->isChecked() || !m_d->viewManager
+        || !m_d->viewManager->image())
+        return;
     KisImageSP image = m_d->viewManager->image();
     // §13.42: Block generation if document color mode is not RGBA 8-bit
     auto colorCheck = ComfyUIUtils::checkColorMode(image);
@@ -39,23 +44,143 @@ void ComfyUIRemoteDock::slotLiveTick()
         return;
     }
     QString urlStr = m_d->editServerUrl->text().trimmed();
-    if (urlStr.isEmpty()) { m_d->liveTimer->start(30000); return; }
+    if (urlStr.isEmpty()) {
+        m_d->liveTimer->start(30000);
+        return;
+    }
+    beginLiveUploadPipeline();
+}
+
+void ComfyUIRemoteDock::beginLiveUploadPipeline()
+{
+    m_d->liveLoraUploadPaths.clear();
+    if (m_d->isConnected && m_d->nam) {
+        ComfyFileLibrary::instance().init();
+        for (const ComfyFileRecord *rec :
+             ComfyFileLibrary::instance().localLorasMissingOnServer(m_d->comfyServerLoraFilenames)) {
+            if (rec && !rec->path.isEmpty())
+                m_d->liveLoraUploadPaths.append(rec->path);
+        }
+    }
+    if (!m_d->liveLoraUploadPaths.isEmpty()) {
+        m_d->liveAwaitingLoraUploads = true;
+        m_d->liveLoraUploadIndex = 0;
+        uploadNextLiveLoraFile();
+        return;
+    }
+    uploadLiveCanvasAndPrompt();
+}
+
+void ComfyUIRemoteDock::uploadNextLiveLoraFile()
+{
+    if (!m_d->liveAwaitingLoraUploads || !m_d->nam || !m_d->checkLiveMode->isChecked()) {
+        m_d->liveAwaitingLoraUploads = false;
+        m_d->liveTimer->start(30000);
+        return;
+    }
+    const QString urlStr = m_d->editServerUrl->text().trimmed();
+    if (urlStr.isEmpty()) {
+        m_d->liveAwaitingLoraUploads = false;
+        m_d->liveTimer->start(30000);
+        return;
+    }
+    while (m_d->liveLoraUploadIndex < m_d->liveLoraUploadPaths.size()) {
+        const QString path = m_d->liveLoraUploadPaths.at(m_d->liveLoraUploadIndex++);
+        const QString baseName = QFileInfo(path).fileName();
+        if (baseName.isEmpty() || !QFile::exists(path))
+            continue;
+
+        m_d->labelStatus->setText(ComfyTr::tr("Live: uploading LoRA %1…", baseName));
+        setProgressBarKind(true);
+        QNetworkReply *reply = ComfyUIUtils::tryUploadLoraFileViaEtnApi(m_d->nam, urlStr, path, this);
+        if (!reply) {
+            setProgressBarKind(false);
+            setStatusMessage(ComfyTr::tr("Could not read LoRA file %1 for upload.", baseName), true);
+            m_d->liveAwaitingLoraUploads = false;
+            m_d->liveTimer->start(30000);
+            return;
+        }
+        connect(reply, &QNetworkReply::finished, this, [this, reply, baseName]() {
+            reply->deleteLater();
+            setProgressBarKind(false);
+            if (!m_d->checkLiveMode->isChecked()) {
+                m_d->liveAwaitingLoraUploads = false;
+                return;
+            }
+            const QVariant codeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+            const int code = codeVar.isValid() ? codeVar.toInt() : 0;
+            const bool ok =
+                (reply->error() == QNetworkReply::NoError && (code == 200 || code == 201 || code == 204));
+            if (!ok) {
+                const QString codeStr = code > 0 ? QString::number(code) : QStringLiteral("—");
+                setStatusMessage(
+                    ComfyTr::tr("Live: LoRA upload failed for %1 (HTTP %2).", baseName, codeStr),
+                    true);
+                m_d->liveAwaitingLoraUploads = false;
+                m_d->liveTimer->start(30000);
+                return;
+            }
+            if (!m_d->comfyServerLoraFilenames.contains(baseName, Qt::CaseInsensitive)) {
+                m_d->comfyServerLoraFilenames.append(baseName);
+                m_d->comfyServerLoraFilenames.sort(Qt::CaseInsensitive);
+                ComfyFileLibrary::instance().init();
+                ComfyFileLibrary::instance().updateRemoteLoras(m_d->comfyServerLoraFilenames);
+            }
+            uploadNextLiveLoraFile();
+        });
+        return;
+    }
+    continueLiveAfterLoraUploads();
+}
+
+void ComfyUIRemoteDock::continueLiveAfterLoraUploads()
+{
+    m_d->liveAwaitingLoraUploads = false;
+    if (!m_d->checkLiveMode->isChecked()) {
+        m_d->liveTimer->start(30000);
+        return;
+    }
+    uploadLiveCanvasAndPrompt();
+}
+
+void ComfyUIRemoteDock::uploadLiveCanvasAndPrompt()
+{
+    if (!m_d->checkLiveMode->isChecked() || !m_d->viewManager || !m_d->viewManager->image()) {
+        m_d->liveTimer->start(30000);
+        return;
+    }
+    KisImageSP image = m_d->viewManager->image();
+    QString urlStr = m_d->editServerUrl->text().trimmed();
+    if (urlStr.isEmpty()) {
+        m_d->liveTimer->start(30000);
+        return;
+    }
     QImage canvasImg = ComfyUIUtils::getCanvasAsQImage(image);
-    if (canvasImg.isNull()) { m_d->liveTimer->start(30000); return; }
+    if (canvasImg.isNull()) {
+        m_d->liveTimer->start(30000);
+        return;
+    }
     QTemporaryFile *tmp = new QTemporaryFile(this);
-    tmp->setFileTemplate(tmp->fileTemplate() + ".png");
+    tmp->setFileTemplate(tmp->fileTemplate() + QStringLiteral(".png"));
     tmp->open();
     tmp->close();
-    if (!canvasImg.save(tmp->fileName())) { m_d->liveTimer->start(30000); return; }
+    if (!canvasImg.save(tmp->fileName())) {
+        m_d->liveTimer->start(30000);
+        return;
+    }
     QUrl uploadUrl(m_d->editServerUrl->text().trimmed());
     QString up = uploadUrl.path();
-    if (up.isEmpty() || up == "/") uploadUrl.setPath("/upload/image");
-    else if (!up.endsWith('/')) uploadUrl.setPath(up + "/upload/image");
-    else uploadUrl.setPath(up + "upload/image");
+    if (up.isEmpty() || up == QLatin1Char('/'))
+        uploadUrl.setPath(QStringLiteral("/upload/image"));
+    else if (!up.endsWith(QLatin1Char('/')))
+        uploadUrl.setPath(up + QStringLiteral("/upload/image"));
+    else
+        uploadUrl.setPath(up + QStringLiteral("upload/image"));
     tmp->open();
     QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
     QHttpPart part;
-    part.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant("form-data; name=\"image\"; filename=\"krita_live.png\""));
+    part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                   QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"krita_live.png\"")));
     part.setBodyDevice(tmp);
     tmp->setParent(multiPart);
     multiPart->append(part);
@@ -66,84 +191,94 @@ void ComfyUIRemoteDock::slotLiveTick()
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         if (!m_d->checkLiveMode->isChecked() || reply->error() != QNetworkReply::NoError) {
-            if (m_d->checkLiveMode->isChecked()) m_d->liveTimer->start(30000);
+            if (m_d->checkLiveMode->isChecked())
+                m_d->liveTimer->start(30000);
             return;
         }
-        m_d->liveUploadedImageName = QJsonDocument::fromJson(reply->readAll()).object().value("name").toString();
-        if (m_d->liveUploadedImageName.isEmpty()) { m_d->liveTimer->start(30000); return; }
-        QJsonParseError err;
-        QJsonObject workflow = QJsonDocument::fromJson(QByteArray(img2imgWorkflowTemplate), &err).object();
-        if (err.error != QJsonParseError::NoError) { m_d->liveTimer->start(30000); return; }
-        QJsonObject n1 = workflow["1"].toObject();
-        QJsonObject i1 = n1["inputs"].toObject();
-        i1["image"] = m_d->liveUploadedImageName;
-        n1["inputs"] = i1;
-        workflow["1"] = n1;
-        QJsonObject n3 = workflow["3"].toObject();
-        QJsonObject i3 = n3["inputs"].toObject();
-        i3["ckpt_name"] = m_d->comboCheckpoint->currentText().trimmed().isEmpty() ? QString("v1-5-pruned-emaonly.safetensors") : m_d->comboCheckpoint->currentText().trimmed();
-        n3["inputs"] = i3;
-        workflow["3"] = n3;
-        QJsonObject n4 = workflow["4"].toObject();
-        QJsonObject i4 = n4["inputs"].toObject();
-        quint32 liveSeed = static_cast<quint32>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
+        m_d->liveUploadedImageName =
+            QJsonDocument::fromJson(reply->readAll()).object().value(QStringLiteral("name")).toString();
+        if (m_d->liveUploadedImageName.isEmpty()) {
+            m_d->liveTimer->start(30000);
+            return;
+        }
+        const QString ckptName = m_d->comboCheckpoint->currentText().trimmed().isEmpty()
+            ? QStringLiteral("v1-5-pruned-emaonly.safetensors")
+            : m_d->comboCheckpoint->currentText().trimmed();
+        QString styleArch;
+        if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                styleArch = st->architecture;
+        }
+        const quint32 liveSeed =
+            static_cast<quint32>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
         QString livePos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
         livePos = ComfyUIUtils::evalWildcards(livePos, liveSeed);
-        ComfyUIUtils::extractLayerPlaceholders(livePos);  // §13.35: <layer:name> → "Picture {n}"
+        ComfyUIUtils::extractLayerPlaceholders(livePos);
         livePos = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(livePos);
-        i4["text"] = livePos.isEmpty() ? QString("a beautiful painting") : livePos;
-        n4["inputs"] = i4;
-        workflow["4"] = n4;
-        QJsonObject n5 = workflow["5"].toObject();
-        QJsonObject i5 = n5["inputs"].toObject();
-        i5["text"] = ComfyUIUtils::evalWildcards(ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed(), liveSeed);
-        n5["inputs"] = i5;
-        workflow["5"] = n5;
-        QJsonObject n6 = workflow["6"].toObject();
-        QJsonObject i6 = n6["inputs"].toObject();
-        i6["seed"] = static_cast<double>(liveSeed);
-        // §13.149: LiveWorkspace strength (denoise) — use persisted live strength
-        i6["denoise"] = (m_d->spinStrength ? m_d->spinStrength->value() : 75) / 100.0;
-        {
-            const ComfyUIUtils::ResolvedSamplerInputs si = ComfyUIUtils::resolveSamplerForLive(
-                ComfyUIUtils::loadSettingsJson(),
-                m_d->comboSampler ? m_d->comboSampler->currentText() : QString(),
-                m_d->spinSteps ? m_d->spinSteps->value() : 20,
-                m_d->spinCfg ? m_d->spinCfg->value() : 8.0);
-            i6["sampler_name"] = si.sampler;
-            i6["scheduler"] = si.scheduler;
-            i6["steps"] = si.steps;
-            i6["cfg"] = si.cfg;
+        const ComfyUIUtils::ResolvedSamplerInputs si = ComfyUIUtils::resolveSamplerForLive(
+            ComfyUIUtils::loadSettingsJson(),
+            m_d->comboSampler ? m_d->comboSampler->currentText() : QString(),
+            m_d->spinSteps ? m_d->spinSteps->value() : 20,
+            m_d->spinCfg ? m_d->spinCfg->value() : 8.0);
+        ComfyWorkflowEngine::LiveParams lp;
+        lp.checkpoint = ckptName;
+        lp.imageName = m_d->liveUploadedImageName;
+        lp.arch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
+        lp.seed = static_cast<qint64>(liveSeed);
+        lp.positivePrompt = livePos;
+        lp.negativePrompt =
+            ComfyUIUtils::evalWildcards(ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed(),
+                                       liveSeed);
+        lp.denoise = (m_d->spinStrength ? m_d->spinStrength->value() : 75) / 100.0;
+        lp.sampler = si.sampler;
+        lp.scheduler = si.scheduler;
+        lp.steps = si.steps;
+        lp.cfg = si.cfg;
+        lp.promptTranslationLanguage = ComfyUIUtils::activePromptTranslationLanguage();
+        QJsonObject workflow = ComfyWorkflowEngine::buildLive(lp);
+        if (workflow.isEmpty()) {
+            m_d->liveTimer->start(30000);
+            return;
         }
-        n6["inputs"] = i6;
-        workflow["6"] = n6;
+        ComfyWorkflowEngine::applyCheckpointStyleOptions(
+            &workflow, m_d->generateStyleVae, m_d->generateStyleClipSkip, m_d->generateStyleArch);
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
         if (m_d->clientId.isEmpty())
             m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         QString expectedPromptId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         QJsonObject payload;
-        payload["prompt"] = workflow;
-        payload["client_id"] = m_d->clientId;
-        payload["prompt_id"] = expectedPromptId;
+        payload[QStringLiteral("prompt")] = workflow;
+        payload[QStringLiteral("client_id")] = m_d->clientId;
+        payload[QStringLiteral("prompt_id")] = expectedPromptId;
         QUrl promptUrl(m_d->editServerUrl->text().trimmed());
         QString p = promptUrl.path();
-        if (p.isEmpty() || p == "/") promptUrl.setPath("/prompt");
-        else if (!p.endsWith('/')) promptUrl.setPath(p + "/prompt");
-        else promptUrl.setPath(p + "prompt");
+        if (p.isEmpty() || p == QLatin1Char('/'))
+            promptUrl.setPath(QStringLiteral("/prompt"));
+        else if (!p.endsWith(QLatin1Char('/')))
+            promptUrl.setPath(p + QStringLiteral("/prompt"));
+        else
+            promptUrl.setPath(p + QStringLiteral("prompt"));
         QNetworkRequest reqP(promptUrl);
         ComfyUIUtils::setComfyUIRequestHeaders(reqP);
-        reqP.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        reqP.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
         QNetworkReply *replyP = m_d->nam->post(reqP, QJsonDocument(payload).toJson(QJsonDocument::Compact));
         connect(replyP, &QNetworkReply::finished, this, [this, replyP, expectedPromptId]() {
             replyP->deleteLater();
             if (!m_d->checkLiveMode->isChecked() || replyP->error() != QNetworkReply::NoError) {
-                if (m_d->checkLiveMode->isChecked()) m_d->liveTimer->start(30000);
+                if (m_d->checkLiveMode->isChecked())
+                    m_d->liveTimer->start(30000);
                 return;
             }
-            QString promptId = QJsonDocument::fromJson(replyP->readAll()).object().value("prompt_id").toString();
-            if (promptId.isEmpty()) { m_d->liveTimer->start(30000); return; }
+            QString promptId =
+                QJsonDocument::fromJson(replyP->readAll()).object().value(QStringLiteral("prompt_id")).toString();
+            if (promptId.isEmpty()) {
+                m_d->liveTimer->start(30000);
+                return;
+            }
             if (promptId != expectedPromptId) {
-                setStatusMessage(i18n("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
+                setStatusMessage(
+                    ComfyTr::tr("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
                 m_d->liveTimer->start(30000);
                 return;
             }
