@@ -72,6 +72,14 @@ bool g_nsfwFilterWarningShownThisSession = false;
 
 void ComfyUIRemoteDock::slotConfigureHelp()
 {
+    // FAITHFUL_PORT: rebuild the dock-side preset combo BEFORE the Settings
+    // dialog is constructed. The Styles tab's stylesPresetMirror is populated
+    // from m_d->comboPreset, so if the bundled ComfyStyleCollection hadn't been
+    // reloaded yet (e.g. first time opening Settings on Android after a fresh
+    // install) the mirror only saw the placeholder "None" entry and the
+    // dropdown popup looked empty / non-functional.
+    if (m_d->comboPreset)
+        rebuildPresetComboItems();
     if (!m_d->settingsDialog) {
         QDialog *dlg = new QDialog(this);
         dlg->setWindowTitle(ComfyTr::tr("Configure Image Diffusion"));
@@ -104,7 +112,11 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QListWidget *navList = new QListWidget(dlg);
         navList->setFixedWidth(120);  // §13.175
         navList->setSelectionMode(QAbstractItemView::SingleSelection);
-        const QStringList navItems = { ComfyTr::tr("Connection"), ComfyTr::tr("Styles"), ComfyTr::tr("Diffusion"), ComfyTr::tr("Interface"), ComfyTr::tr("Performance"), ComfyTr::tr("Plugin") };
+        // FAITHFUL_PORT: Plugin tab dropped on Android — the auto-update path and
+        // diagnostics buttons there expose host-only flows (URL handlers, intent
+        // launchers) that crash or no-op on Android; the docker's About menu plus
+        // the footer's Open Settings folder cover the remaining info.
+        const QStringList navItems = { ComfyTr::tr("Connection"), ComfyTr::tr("Styles"), ComfyTr::tr("Diffusion"), ComfyTr::tr("Interface"), ComfyTr::tr("Performance") };
         for (const QString &label : navItems) {
             QListWidgetItem *item = new QListWidgetItem(label);
             item->setSizeHint(QSize(112, 24));  // §13.175
@@ -130,6 +142,12 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         serverUrlDesc->setWordWrap(true);
         connectionLayout->addWidget(serverUrlDesc);
         QFormLayout *connForm = new QFormLayout();
+        connForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        connForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        connForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        connForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        connForm->setHorizontalSpacing(12);
+        connForm->setVerticalSpacing(6);
         connForm->addRow(ComfyTr::tr("Server URL:"), m_d->editServerUrl);
         connectionLayout->addLayout(connForm);
 
@@ -215,8 +233,13 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         btnStylesRefresh->setToolTip(ComfyTr::tr("Reload the preset list and refresh the checkpoint list from the server"));
         QPushButton *btnStylesSavePreset = new QPushButton(ComfyTr::tr("Save"), stylesInner);
         btnStylesSavePreset->setToolTip(ComfyTr::tr("Save current dock settings into the selected custom preset"));
-        connect(btnStylesAddPreset, &QToolButton::clicked, this, &ComfyUIRemoteDock::slotSaveAsPreset);
-        connect(actStylesSaveAsNew, &QAction::triggered, this, &ComfyUIRemoteDock::slotSaveAsPreset);
+        // slotSaveAsPreset() mutates m_d->comboPreset (the dock-side combo) but
+        // does NOT touch this dialog's stylesPresetMirror. Wire the refresh
+        // explicitly below after syncStylesFromDock() is defined so the "+" and
+        // "Save as new preset…" actions actually update the mirror combo (which
+        // is what the user sees on Android — the dock combo is hidden in the
+        // compact layout). The connections live in dialog-scope so they are
+        // tied to dlg's lifetime via the dlg context object.
         connect(btnStylesDeletePreset, &QToolButton::clicked, this, &ComfyUIRemoteDock::slotDeletePreset);
         connect(btnStylesSavePreset, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotSaveCurrentPreset);
         presetBtnRow->addWidget(stylesPresetMirror, 1);
@@ -1008,6 +1031,31 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             reloadLoraListFromDisk();
             syncAdvCkptFromStyle();
         };
+        // FAITHFUL_PORT: deferred connects for the "+ / Save as new preset" actions.
+        // slotSaveAsPreset() prompts for a name, persists the preset, and inserts it
+        // into the dock-side m_d->comboPreset; we then run syncStylesFromDock() to
+        // rebuild stylesPresetMirror from comboPreset (and re-select the newly added
+        // entry via its data index), which is what the user actually sees here.
+        connect(btnStylesAddPreset, &QToolButton::clicked, dlg, [this, syncStylesFromDock](bool) {
+            slotSaveAsPreset();
+            syncStylesFromDock();
+        });
+        connect(actStylesSaveAsNew, &QAction::triggered, dlg, [this, syncStylesFromDock]() {
+            slotSaveAsPreset();
+            syncStylesFromDock();
+        });
+        // Also pick up out-of-dialog mutations to the preset list (refresh, delete,
+        // etc.) so the mirror never goes stale. modelReset fires from clear()+addItem
+        // bursts inside rebuildPresetComboItems(); rowsInserted/Removed cover the
+        // incremental add/delete paths used by slotSaveAsPreset / slotDeletePreset.
+        if (m_d->comboPreset) {
+            connect(m_d->comboPreset->model(), &QAbstractItemModel::rowsInserted, dlg,
+                    [syncStylesFromDock](const QModelIndex &, int, int) { syncStylesFromDock(); });
+            connect(m_d->comboPreset->model(), &QAbstractItemModel::rowsRemoved, dlg,
+                    [syncStylesFromDock](const QModelIndex &, int, int) { syncStylesFromDock(); });
+            connect(m_d->comboPreset->model(), &QAbstractItemModel::modelReset, dlg,
+                    [syncStylesFromDock]() { syncStylesFromDock(); });
+        }
         connect(checkStyleClipSkipOverride, &QCheckBox::toggled, advCkptBody,
                 [spinStyleClipSkip, checkStyleClipSkipOverride, effectiveStyleArch, updateStyleAdvancedArchUi,
                  persistStyleCheckpointOptions](bool on) {
@@ -1184,6 +1232,12 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         const bool selInvert = ComfyUIUtils::getSelectionModifiersInvert();
         const bool selSquare = ComfyUIUtils::getSelectionModifiersSquare();
         QFormLayout *diffForm = new QFormLayout();
+        diffForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        diffForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        diffForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        diffForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        diffForm->setHorizontalSpacing(12);
+        diffForm->setVerticalSpacing(6);
         // §4.6: Selection Feather — slider 0–25, suffix " %"
         QSlider *sliderSelectionFeather = new QSlider(Qt::Horizontal, diffusionPage);
         sliderSelectionFeather->setRange(0, 25);
@@ -1307,6 +1361,16 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         interfaceLayout->addWidget(ifaceHeading);
         QJsonObject ifaceSettings = ComfyUIUtils::loadSettingsJson();
         QFormLayout *ifaceForm = new QFormLayout();
+        // FAITHFUL_PORT: on the Android tablet width the longer labels ("Prompt
+        // line count (Live workspace):", "Tag Auto-Completion:", etc.) collided
+        // with the field column and looked unreadable. Wrap long rows onto two
+        // lines, let fields stretch, and bump spacing so the form is legible.
+        ifaceForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        ifaceForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        ifaceForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        ifaceForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        ifaceForm->setHorizontalSpacing(12);
+        ifaceForm->setVerticalSpacing(6);
         QComboBox *comboLanguage = new QComboBox(interfacePage);
         const QList<ComfyLanguageInfo> availableLangs = ComfyLocalization::instance().availableLanguages();
         for (const ComfyLanguageInfo &lang : availableLangs)
@@ -1654,6 +1718,12 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         perfHeading->setFont(perfHeadingFont);
         perfLayout->addWidget(perfHeading);
         QFormLayout *perfForm = new QFormLayout();
+        perfForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        perfForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        perfForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        perfForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        perfForm->setHorizontalSpacing(12);
+        perfForm->setVerticalSpacing(6);
         QLabel *activeHistDesc = new QLabel(ComfyTr::tr("Main memory (RAM) used for the history of generated images."), perfPage);
         activeHistDesc->setWordWrap(true);
         m_d->labelHistoryUsageMb = new QLabel(ComfyTr::tr("Currently using %1 MB", QStringLiteral("0.0")), perfPage);
@@ -2022,91 +2092,10 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         perfLayout->addStretch();
         stack->addWidget(perfPage);
 
-        // Plugin tab (index 5) — §4.9 Plugin Information and Updates
-        QWidget *pluginPage = new QWidget(dlg);
-        QVBoxLayout *pluginLayout = new QVBoxLayout(pluginPage);
-        QWidget *pluginHeaderWrap = new QWidget(pluginPage);
-        QHBoxLayout *pluginHeaderLay = new QHBoxLayout(pluginHeaderWrap);
-        QLabel *pluginLogo = new QLabel(pluginHeaderWrap);
-        {
-            const QPixmap pm = KisIconUtils::loadIcon(QStringLiteral("krita-branding")).pixmap(64, 64);
-            if (!pm.isNull())
-                pluginLogo->setPixmap(pm);
-            else
-                pluginLogo->setFixedSize(64, 64);
-        }
-        QLabel *pluginTitle = new QLabel(ComfyTr::tr("Generative AI for Krita"), pluginHeaderWrap);
-        QFont pluginTitleFont = pluginTitle->font();
-        pluginTitleFont.setPointSize(pluginTitleFont.pointSize() + 4);
-        pluginTitleFont.setBold(true);
-        pluginTitle->setFont(pluginTitleFont);
-        pluginTitle->setWordWrap(true);
-        pluginHeaderLay->addWidget(pluginLogo, 0, Qt::AlignTop);
-        pluginHeaderLay->addWidget(pluginTitle, 1);
-        pluginLayout->addWidget(pluginHeaderWrap);
-        QLabel *versionLabel = new QLabel(ComfyTr::tr("Current version: %1", ComfyUIUtils::pluginVersion()), pluginPage);
-        versionLabel->setWordWrap(true);
-        pluginLayout->addWidget(versionLabel);
-        QLabel *labelPluginLatest = new QLabel(pluginPage);
-        labelPluginLatest->setWordWrap(true);
-        m_d->pluginTabLatestVersionLabel = labelPluginLatest;
-        pluginLayout->addWidget(labelPluginLatest);
-        // §4.9 / §13.37: Check for updates on startup, Check for Updates, Download and Install
-        QJsonObject settings = ComfyUIUtils::loadSettingsJson();
-        bool autoUpdate = settings.value(QStringLiteral("auto_update")).toBool(true);
-        QCheckBox *checkAutoUpdate = new QCheckBox(ComfyTr::tr("Check for updates on startup"), pluginPage);
-        checkAutoUpdate->setChecked(autoUpdate);
-        checkAutoUpdate->setToolTip(ComfyTr::tr("When enabled, the Welcome view will check for a new plugin version when shown."));
-        connect(checkAutoUpdate, &QCheckBox::toggled, this, [this](bool checked) {
-            QJsonObject s = ComfyUIUtils::loadSettingsJson();
-            s.insert(QStringLiteral("auto_update"), checked);
-            ComfyUIUtils::saveSettingsJson(s);
-            // Keep Welcome Auto-update panel (§5.2) in sync with Plugin tab
-            syncPluginUpdateUi();
-        });
-        pluginLayout->addWidget(checkAutoUpdate);
-        QPushButton *checkUpdateBtn = new QPushButton(ComfyTr::tr("Check for Updates"), pluginPage);
-        connect(checkUpdateBtn, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotCheckForUpdates);
-        pluginLayout->addWidget(checkUpdateBtn);
-        QPushButton *btnPluginDownload = new QPushButton(ComfyTr::tr("Download and Install"), pluginPage);
-        btnPluginDownload->setEnabled(false);
-        btnPluginDownload->setToolTip(
-            ComfyTr::tr("Download the update package, verify it with SHA-256, and extract it to the application cache folder."));
-        connect(btnPluginDownload, &QPushButton::clicked, this, &ComfyUIRemoteDock::startPluginUpdateDownload);
-        m_d->pluginTabDownloadInstallButton = btnPluginDownload;
-        pluginLayout->addWidget(btnPluginDownload);
-        // §4.9: System Information — hint, Collect Diagnostics, View log files
-        QLabel *sysInfoHeading = new QLabel(ComfyTr::tr("System Information"), pluginPage);
-        sysInfoHeading->setStyleSheet(QStringLiteral("font-weight: bold;"));
-        pluginLayout->addWidget(sysInfoHeading);
-        QLabel *sysInfoHint = new QLabel(ComfyTr::tr("Please attach this information when reporting issues!"), pluginPage);
-        sysInfoHint->setWordWrap(true);
-        pluginLayout->addWidget(sysInfoHint);
-        QPushButton *collectDiagBtn = new QPushButton(ComfyTr::tr("Collect Diagnostics"), pluginPage);
-        connect(collectDiagBtn, &QPushButton::clicked, this, [this](bool) {
-            QString diag = ComfyUIUtils::collectDiagnostics(ComfyUIUtils::pluginVersion(), true,
-                                                            &m_d->objectInfoSpec58NodesPresent);
-            if (QClipboard *cb = QApplication::clipboard()) {
-                cb->setText(diag);
-            }
-            QDialog *diagDlg = new QDialog(this);
-            diagDlg->setWindowTitle(ComfyTr::tr("Diagnostics"));
-            QVBoxLayout *lay = new QVBoxLayout(diagDlg);
-            QPlainTextEdit *te = new QPlainTextEdit(diagDlg);
-            te->setReadOnly(true);
-            te->setPlainText(diag);
-            te->setMinimumSize(500, 300);
-            lay->addWidget(te);
-            QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Ok, diagDlg);
-            connect(box, &QDialogButtonBox::accepted, diagDlg, &QDialog::accept);
-            lay->addWidget(box);
-            diagDlg->exec();
-            diagDlg->deleteLater();
-        });
-        pluginLayout->addWidget(collectDiagBtn);
-        pluginLayout->addStretch();
-        syncPluginUpdateUi();
-        stack->addWidget(pluginPage);
+        // Plugin tab removed on Android (per FAITHFUL_PORT note above). The
+        // d-pointer's pluginTabLatestVersionLabel / pluginTabDownloadInstallButton
+        // QPointers stay null and syncPluginUpdateUi() guards on each access, so
+        // background update polling code paths still compile and run as no-ops.
 
         // Canonical refresh control for slotRefreshCheckpoints (hidden); Styles tab uses its own refresh button.
         if (m_d->btnRefreshCheckpoints) {
