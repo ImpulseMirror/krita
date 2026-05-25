@@ -246,6 +246,35 @@ void ComfyUIRemoteDock::slotGenerate()
         setStatusMessage(ComfyTr::tr("Enter a server URL in Settings → Connection."), true);
         return;
     }
+
+    // FAITHFUL_PORT: when the Size row is hidden (compact / Android view) the
+    // user never sees the W/H spinners, so they keep their construction-time
+    // defaults of 512×512 and every generation comes out at 512×512 regardless
+    // of how big the document is. Upstream krita-ai-diffusion derives the
+    // generation extent from the document bounds (or the selection bounds if
+    // one exists). Mirror that here just-in-time so the workflow build path
+    // below picks up the correct dimensions via spinWidth / spinHeight.
+    if (m_d->viewManager && m_d->viewManager->image()
+        && m_d->sizeRowWidget && !m_d->sizeRowWidget->isVisible()) {
+        KisImageSP img = m_d->viewManager->image();
+        QRect targetRect = img->bounds();
+        if (KisSelectionSP sel = m_d->viewManager->selection()) {
+            if (auto ps = sel->pixelSelection()) {
+                const QRect selRect = ps->selectedExactRect().intersected(img->bounds());
+                if (!selRect.isEmpty() && selRect.size() != img->bounds().size())
+                    targetRect = selRect;
+            }
+        }
+        const int tw = qBound(64, targetRect.width(), 8192);
+        const int th = qBound(64, targetRect.height(), 8192);
+        if (m_d->spinWidth && m_d->spinWidth->value() != tw)
+            m_d->spinWidth->setValue(tw);
+        if (m_d->spinHeight && m_d->spinHeight->value() != th)
+            m_d->spinHeight->setValue(th);
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "slotGenerate: compact-UI size override w=" << tw << " h=" << th
+            << " docBounds=" << img->bounds() << " targetRect=" << targetRect;
+    }
     QUrl baseUrl(urlStr);
     if (!baseUrl.isValid()) {
         setStatusMessage(ComfyTr::tr("Invalid server URL: %1", urlStr), true);

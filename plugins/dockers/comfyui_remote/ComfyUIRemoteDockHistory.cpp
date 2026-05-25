@@ -10,7 +10,10 @@
 
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QLoggingCategory>
 #include <QMenu>
+
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <QApplication>
 #include <QClipboard>
 #include <QFileDialog>
@@ -204,26 +207,57 @@ bool historyJsonToEntry(const QJsonObject &ho, const QByteArray &blob, KisImageS
 void ComfyUIRemoteDock::slotHistoryItemSelected()
 {
     bool hasSelection = m_d->listHistory->currentRow() >= 0;
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotHistoryItemSelected currentRow=" << m_d->listHistory->currentRow()
+        << " count=" << m_d->listHistory->count()
+        << " hasSelection=" << hasSelection;
     m_d->btnHistoryReRun->setEnabled(hasSelection);
     m_d->btnHistoryApply->setEnabled(hasSelection);
 }
 
 void ComfyUIRemoteDock::slotHistoryApply()
 {
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotHistoryApply ENTER currentRow="
+        << (m_d->listHistory ? m_d->listHistory->currentRow() : -1)
+        << " count=" << (m_d->listHistory ? m_d->listHistory->count() : -1)
+        << " workspace=" << (m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1)
+        << " btnHistoryApplyEnabled="
+        << (m_d->btnHistoryApply ? m_d->btnHistoryApply->isEnabled() : false);
     // §10.1: Apply action — only Generate (0) and Live (2) workspaces
     if (m_d->comboWorkspace) {
         const int ws = m_d->comboWorkspace->currentIndex();
-        if (ws != 0 && ws != 2)
+        if (ws != 0 && ws != 2) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: workspace gate, ws=" << ws << "; aborting";
             return;
+        }
+    }
+    // FAITHFUL_PORT: when the user single-taps a thumbnail on Android the
+    // itemClicked → slotHistoryApply path can fire before itemSelectionChanged
+    // (or with a race where currentRow() is still -1). pathForCurrentHistoryRow
+    // relies on currentRow(), so promote any tapped/highlighted item to the
+    // current row first. Without this, the very first tap on a fresh history
+    // list emitted "No result image to apply." silently.
+    if (m_d->listHistory && m_d->listHistory->currentRow() < 0 && m_d->listHistory->count() > 0) {
+        if (QListWidgetItem *first = m_d->listHistory->item(0)) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: forcing currentRow=0 (was -1, count>0)";
+            m_d->listHistory->setCurrentItem(first);
+        }
     }
     int entryIndex = -1;
     int imageIndex = -1;
     QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotHistoryApply resolved entryIndex=" << entryIndex
+        << " imageIndex=" << imageIndex
+        << " path=" << path
+        << " fileExists=" << (path.isEmpty() ? false : QFile::exists(path));
     if (path.isEmpty() || !QFile::exists(path)) {
         setStatusMessage(ComfyTr::tr("No result image to apply."), true);
         return;
     }
     if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: viewManager / imageManager unavailable";
         setStatusMessage(ComfyTr::tr("Open a document first."), true);
         return;
     }
@@ -722,16 +756,25 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
 
 bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath, const QString &applyBehavior)
 {
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "applyResultFileWithBehavior ENTER path=" << localPath
+        << " behavior=" << applyBehavior
+        << " exists=" << (localPath.isEmpty() ? false : QFile::exists(localPath));
     if (localPath.isEmpty() || !QFile::exists(localPath))
         return false;
-    if (!m_d->viewManager || !m_d->viewManager->imageManager())
+    if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: viewManager / imageManager unavailable";
         return false;
+    }
     KisImageSP image = m_d->viewManager->image();
-    if (!image)
+    if (!image) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: image is null";
         return false;
+    }
 
     KisLayerSP activeBefore = m_d->viewManager->activeLayer();
     const qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(localPath), QStringLiteral("KisPaintLayer"));
+    qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: importImage returned" << n;
     if (n <= 0)
         return false;
 

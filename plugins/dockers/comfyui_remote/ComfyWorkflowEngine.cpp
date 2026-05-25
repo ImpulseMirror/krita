@@ -194,9 +194,21 @@ QList<CheckpointLoraWeight> checkpointLorasFromEnabledLibrary()
     QList<CheckpointLoraWeight> out;
     ComfyFileLibrary::instance().init();
     for (const ComfyFileRecord &rec : ComfyFileLibrary::instance().loras().files()) {
-        if (!rec.meta(QStringLiteral("enabled")).toBool(true))
+        // FAITHFUL_PORT/BUG: defaulting `enabled` to true here meant every LoRA
+        // the server advertised was auto-attached to every Generate workflow.
+        // On a server with Wan 2.1/2.2 video LoRAs that produced HTTP 400
+        // `prompt_outputs_failed_validation` because the wrong-arch LoRA was
+        // attached to an SDXL checkpoint. Spec (Python plugin) treats LoRAs
+        // as opt-in — the user enables them in Settings → Files explicitly.
+        if (!rec.meta(QStringLiteral("enabled")).toBool(false))
             continue;
-        const QString fn = QFileInfo(rec.id.trimmed()).fileName();
+        // FAITHFUL_PORT/BUG: ComfyUI's LoraLoader.lora_name input is the path
+        // relative to the loras directory (e.g. "Video Loras/wan 2.1/foo.safetensors"),
+        // not just the basename. QFileInfo(...).fileName() stripped the folder
+        // and the server then rejected with "value_not_in_list". Use the full
+        // normalised id so it matches the LoraLoader.lora_name enum the server
+        // returned from /object_info.
+        const QString fn = rec.id.trimmed();
         if (fn.isEmpty())
             continue;
         const int pct = rec.meta(QStringLiteral("strength_percent")).toInt(100);

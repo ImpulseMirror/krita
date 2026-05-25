@@ -2140,6 +2140,17 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(m_d->listHistory, &QListWidget::customContextMenuRequested, this, &ComfyUIRemoteDock::slotHistoryContextMenu);
     connect(m_d->listHistory, &QListWidget::itemSelectionChanged, this, &ComfyUIRemoteDock::slotHistoryItemSelected);
     connect(m_d->listHistory, &QListWidget::doubleClicked, this, &ComfyUIRemoteDock::slotHistoryApply);
+    // FAITHFUL_PORT: on Android there is no reliable double-click gesture, so the
+    // spec doubleClicked-only binding meant tapping a history thumbnail did
+    // nothing visible. Mirror the desktop "click thumbnail → apply as preview
+    // layer" UX by routing single-click through slotHistoryApply too. The
+    // duplicate fire on desktop double-click is harmless because the second
+    // call is idempotent (it re-imports the same layer and marks the same
+    // imageInUse slot).
+    connect(m_d->listHistory, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (!item) return;
+        slotHistoryApply();
+    });
     histLayout->addWidget(m_d->listHistory);
     QHBoxLayout *historyBtns = new QHBoxLayout();
     m_d->btnHistoryReRun = new QPushButton(ComfyTr::tr("Re-run"));

@@ -1333,7 +1333,13 @@ QString mergeLibraryLoraTagsIntoPositivePrompt(const QString &positivePrompt)
     ComfyFileLibrary::instance().init();
     QStringList tags;
     for (const ComfyFileRecord &f : ComfyFileLibrary::instance().loras().files()) {
-        if (!f.meta(QStringLiteral("enabled")).toBool(true))
+        // FAITHFUL_PORT/BUG: defaulting `enabled` to true here caused every LoRA
+        // the server advertised to be auto-injected into the prompt on a fresh
+        // install. With Wan 2.1/2.2 video LoRAs present, ComfyUI rejected the
+        // /prompt with `prompt_outputs_failed_validation` because the wrong
+        // architecture's LoRA was attached. Spec (and the Python plugin) treat
+        // LoRAs as opt-in — the user must enable them explicitly.
+        if (!f.meta(QStringLiteral("enabled")).toBool(false))
             continue;
         const QString fn = f.id.trimmed();
         if (fn.isEmpty())
@@ -1342,10 +1348,15 @@ QString mergeLibraryLoraTagsIntoPositivePrompt(const QString &positivePrompt)
         if (pct <= 0)
             continue;
         const double w = qBound(0.01, pct / 100.0, 4.0);
-        const QString base = QFileInfo(fn).fileName();
-        if (base.isEmpty())
+        // FAITHFUL_PORT/BUG: ComfyUI's LoraLoader.lora_name input is the path
+        // relative to the loras directory, e.g. "Video Loras/wan 2.1/foo.safetensors",
+        // not just the basename. Stripping to QFileInfo::fileName() made the
+        // server reject "value_not_in_list" when the file lived in a subfolder.
+        // Use the full id (already normalised by ComfyFileLibrary) so the tag
+        // round-trips through workflow build correctly.
+        if (fn.isEmpty())
             continue;
-        tags.append(QStringLiteral("<lora:%1:%2>").arg(base, QString::number(w, 'f', 2)));
+        tags.append(QStringLiteral("<lora:%1:%2>").arg(fn, QString::number(w, 'f', 2)));
     }
     if (tags.isEmpty())
         return positivePrompt;
@@ -1555,8 +1566,17 @@ void generationPerformanceBatchResolution(const QJsonObject &settingsJson,
     if (!outBatch || !outResolutionMultiplier)
         return;
     QString preset = settingsJson.value(QStringLiteral("performance_preset")).toString();
+    // FAITHFUL_PORT: spec default is "auto" which infers a batch size from the
+    // server's reported VRAM (high → batch=6 on a 24GB card, cloud → 8). On
+    // Android the dock's Batch spinner is hidden behind the queue popup, so the
+    // user effectively had no way to get "1 image per click" without diving
+    // into Settings → Performance and switching to Custom. The compact view
+    // is supposed to mirror the desktop Python plugin's UX, which produces a
+    // single image per click on a fresh install. Default to Custom so the
+    // user's BatchCount setting (default 1) is honoured; the Performance tab
+    // still lets power users opt into "auto"/"high"/"cloud" batching.
     if (preset.isEmpty())
-        preset = QStringLiteral("auto");
+        preset = QStringLiteral("custom");
     if (preset == QLatin1String("custom")) {
         *outBatch = qBound(1, dockBatch, 256);
         *outResolutionMultiplier = dockResolutionMultiplier <= 0.0 ? 1.0 : dockResolutionMultiplier;
