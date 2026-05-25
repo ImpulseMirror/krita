@@ -165,6 +165,8 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnHistoryReRun = nullptr;
     QPushButton *btnHistoryApply = nullptr;
     QPlainTextEdit *editCustomWorkflow = nullptr;
+    QVBoxLayout *customWorkflowSettingsLayout = nullptr;
+    QVBoxLayout *graphWorkflowEditorLayout = nullptr;
     // §13.25: ETN_Parameter / ETN_KritaStyle / ETN_KritaImageLayer / ETN_KritaMaskLayer — Configure → Workflow tab (layer slots keyed by Comfy node id)
     QGroupBox *customWorkflowParamsGroup = nullptr;
     QFormLayout *customWorkflowParamsForm = nullptr;

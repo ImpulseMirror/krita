@@ -285,6 +285,7 @@ private:
     void refreshCustomWorkflowParameterPanel();
     /// §13.101: UI workflow (nodes/links) → prompt API using lastObjectInfoRoot; on failure sets status and returns false.
     bool tryResolveCustomWorkflowInPlace(QJsonObject *workflow);
+    void reparentCustomWorkflowEditor(bool toGraphWorkspace);
     // §13.170: after Open Web UI — ETN subscribe + WebSocket listen (when Qt WebSockets is available)
     void beginWebWorkflowSwitch();
     void endWebWorkflowSwitch();

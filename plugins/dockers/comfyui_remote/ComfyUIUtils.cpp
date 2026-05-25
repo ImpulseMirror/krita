@@ -2838,6 +2838,66 @@ QPair<bool, QString> validateCustomWorkflowStyleAndPromptNodes(const QJsonObject
     return qMakePair(true, QString());
 }
 
+QPair<bool, QString> validateCustomWorkflowApiGraph(const QJsonObject &workflow,
+                                                    const QJsonObject &objectInfoRoot)
+{
+    if (workflow.isEmpty())
+        return qMakePair(false, ComfyTr::tr("Custom workflow is empty. Paste API JSON in Settings → Workflow."));
+
+    int nodeCount = 0;
+    QStringList missingOnServer;
+    for (auto it = workflow.constBegin(); it != workflow.constEnd(); ++it) {
+        if (!it.value().isObject())
+            continue;
+        const QJsonObject node = it.value().toObject();
+        const QString classType = node.value(QStringLiteral("class_type")).toString();
+        if (classType.isEmpty())
+            return qMakePair(false,
+                             ComfyTr::tr("Workflow node %1 is missing class_type.", it.key()));
+        ++nodeCount;
+        if (!objectInfoRoot.isEmpty() && !objectInfoRoot.contains(classType))
+            missingOnServer.append(classType);
+    }
+    if (nodeCount == 0)
+        return qMakePair(false, ComfyTr::tr("Custom workflow has no API nodes. Export API JSON from ComfyUI (File → Export API)."));
+
+    missingOnServer.removeDuplicates();
+    if (!missingOnServer.isEmpty()) {
+        const int showMax = 8;
+        QStringList shown = missingOnServer.mid(0, showMax);
+        QString msg = ComfyTr::tr("Server is missing custom nodes required by this workflow: %1",
+                                  shown.join(QStringLiteral(", ")));
+        if (missingOnServer.size() > showMax)
+            msg += ComfyTr::tr(" (and %1 more)", missingOnServer.size() - showMax);
+        return qMakePair(false, msg);
+    }
+    if (!validateCustomWorkflowHasOutputNode(workflow)) {
+        return qMakePair(false,
+                         ComfyTr::tr("Custom workflow has no output node (SaveImage or ETN_ReturnImage). Add one "
+                                     "before running."));
+    }
+
+    return qMakePair(true, QString());
+}
+
+bool validateCustomWorkflowHasOutputNode(const QJsonObject &workflow)
+{
+    for (auto it = workflow.constBegin(); it != workflow.constEnd(); ++it) {
+        if (!it.value().isObject())
+            continue;
+        const QString classType = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (classType == QLatin1String("SaveImage") || classType == QLatin1String("ETN_ReturnImage")
+            || classType == QLatin1String("ETN_SendImage"))
+            return true;
+    }
+    return false;
+}
+
+bool settingsColorMatchEnabled()
+{
+    return loadSettingsJson().value(QStringLiteral("color_match")).toBool(true);
+}
+
 // §13.154: Entire-document selection → no mask, generation uses full image
 bool isSelectionEntireDocument(KisImageSP image, KisViewManager *viewManager)
 {

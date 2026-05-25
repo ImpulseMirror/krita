@@ -8,7 +8,9 @@
 #include "ComfyUIUtils.h"
 #include "ComfyUIWorkflows.h"
 #include "ComfyResources.h"
+#include "ComfyFileLibrary.h"
 
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -101,6 +103,195 @@ static QString findCheckpointNodeId(const QJsonObject &workflow)
     return QString();
 }
 
+static QString findNodeIdByClassType(const QJsonObject &workflow, const QString &classType)
+{
+    for (auto it = workflow.constBegin(); it != workflow.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString() == classType)
+            return it.key();
+    }
+    return QString();
+}
+
+static void replaceAllLinksFromNode(QJsonObject *workflow, const QString &fromNode, int fromSlot, const QString &toNode, int toSlot)
+{
+    replaceInputLink(workflow, QJsonArray{fromNode, fromSlot}, QJsonArray{toNode, toSlot});
+}
+
+static QString insertInpaintExpandMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int grow, int feather)
+{
+    if (grow <= 0 && feather <= 0)
+        return maskNodeId;
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_ExpandMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, 1}},
+                                              {QStringLiteral("grow"), grow},
+                                              {QStringLiteral("blur"), feather},
+                                              {QStringLiteral("blur_type"), QStringLiteral("linear")}}}});
+    return id;
+}
+
+static QString insertDifferentialDiffusion(QJsonObject *workflow, int *nextId, const QString &modelNodeId)
+{
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("DifferentialDiffusion")},
+                                 {QStringLiteral("inputs"), QJsonObject{{QStringLiteral("model"), QJsonArray{modelNodeId, 0}}}}});
+    return id;
+}
+
+static void appendColorMatchAfterDecode(QJsonObject *workflow,
+                                        const QString &decodeNodeId,
+                                        const QString &referenceImageNodeId,
+                                        const QString &maskNodeId,
+                                        int *nextId)
+{
+    const QString matchId = QString::number((*nextId)++);
+    QJsonObject inputs{{QStringLiteral("target"), QJsonArray{decodeNodeId, 0}},
+                       {QStringLiteral("reference"), QJsonArray{referenceImageNodeId, 0}},
+                       {QStringLiteral("strength"), 1.0}};
+    if (!maskNodeId.isEmpty())
+        inputs.insert(QStringLiteral("exclude_mask"), QJsonArray{maskNodeId, 1});
+    workflow->insert(matchId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_ColorMatch")},
+                                 {QStringLiteral("inputs"), inputs}});
+    const QString saveId = findNodeIdByClassType(*workflow, QStringLiteral("SaveImage"));
+    if (!saveId.isEmpty())
+        replaceAllLinksFromNode(workflow, decodeNodeId, 0, matchId, 0);
+}
+
+QList<CheckpointLoraWeight> checkpointLorasFromEnabledLibrary()
+{
+    QList<CheckpointLoraWeight> out;
+    ComfyFileLibrary::instance().init();
+    for (const ComfyFileRecord *rec : ComfyFileLibrary::instance().loras().files()) {
+        if (!rec || !rec->meta(QStringLiteral("enabled")).toBool(true))
+            continue;
+        const QString fn = QFileInfo(rec->id.trimmed()).fileName();
+        if (fn.isEmpty())
+            continue;
+        const int pct = rec->meta(QStringLiteral("strength_percent")).toInt(100);
+        if (pct <= 0)
+            continue;
+        CheckpointLoraWeight w;
+        w.name = fn;
+        w.strengthModel = qBound(0.01, pct / 100.0, 4.0);
+        w.strengthClip = w.strengthModel;
+        out.append(w);
+    }
+    return out;
+}
+
+bool loadCheckpointWithLora(QJsonObject *workflow, const CheckpointLoadParams &params, CheckpointGraphRefs *out)
+{
+    if (!workflow || workflow->isEmpty())
+        return false;
+
+    const QString ckpt =
+        params.checkpoint.trimmed().isEmpty() ? QStringLiteral("v1-5-pruned-emaonly.safetensors") : params.checkpoint.trimmed();
+    QString ckptId = findCheckpointNodeId(*workflow);
+    if (ckptId.isEmpty())
+        return false;
+
+    int nextId = 500;
+    while (workflow->contains(QString::number(nextId)))
+        ++nextId;
+
+    QString modelId = ckptId;
+    QString clipLinkNode = ckptId;
+    int clipLinkSlot = 1;
+    QString vaeLinkNode = ckptId;
+    int vaeLinkSlot = 2;
+
+    const bool nunchaku = ComfyResources::isNunchakuCheckpointFilename(ckpt);
+    const bool needsSplitLoader =
+        nunchaku && ComfyResources::isFluxLike(params.arch)
+        || (ComfyResources::isFluxLike(params.arch) && ckpt.endsWith(QStringLiteral(".gguf"), Qt::CaseInsensitive));
+
+    if (needsSplitLoader && ComfyResources::isFluxLike(params.arch) && nunchaku) {
+        const QString nunchakuId = QString::number(nextId++);
+        const double cache = params.dynamicCaching ? 0.12 : 0.0;
+        workflow->insert(nunchakuId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("NunchakuFluxDiTLoader")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("model_path"), ckpt},
+                                                  {QStringLiteral("cache_threshold"), cache}}}});
+        modelId = nunchakuId;
+
+        const ComfyResources::DualClipLoadSpec dual = ComfyResources::defaultDualClipLoadSpec(params.arch);
+        if (!dual.clipName1.isEmpty()) {
+            const QString dualId = QString::number(nextId++);
+            QJsonObject dualInputs{{QStringLiteral("clip_name1"), dual.clipName1},
+                                   {QStringLiteral("type"), dual.type}};
+            if (!dual.clipName2.isEmpty())
+                dualInputs.insert(QStringLiteral("clip_name2"), dual.clipName2);
+            workflow->insert(dualId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("DualCLIPLoader")},
+                                         {QStringLiteral("inputs"), dualInputs}});
+            clipLinkNode = dualId;
+            clipLinkSlot = 0;
+        }
+
+        workflow->remove(ckptId);
+        replaceAllLinksFromNode(workflow, ckptId, 0, modelId, 0);
+        replaceAllLinksFromNode(workflow, ckptId, 1, clipLinkNode, clipLinkSlot);
+        replaceAllLinksFromNode(workflow, ckptId, 2, vaeLinkNode, vaeLinkSlot);
+        ckptId = modelId;
+    } else {
+        QJsonObject n = workflow->value(ckptId).toObject();
+        QJsonObject i = n.value(QStringLiteral("inputs")).toObject();
+        i.insert(QStringLiteral("ckpt_name"), ckpt);
+        n.insert(QStringLiteral("inputs"), i);
+        workflow->insert(ckptId, n);
+    }
+
+    QString modelChain = modelId;
+    QString clipChainNode = clipLinkNode;
+    int clipChainSlot = clipLinkSlot;
+
+    for (const CheckpointLoraWeight &lora : params.loras) {
+        if (lora.name.isEmpty())
+            continue;
+        if (nunchaku && ComfyResources::isFluxLike(params.arch)) {
+            const QString loraId = QString::number(nextId++);
+            workflow->insert(loraId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("NunchakuFluxLoraLoader")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("model"), QJsonArray{modelChain, 0}},
+                                                      {QStringLiteral("lora_name"), lora.name},
+                                                      {QStringLiteral("lora_strength"), lora.strengthModel}}}});
+            modelChain = loraId;
+        } else {
+            const QString loraId = QString::number(nextId++);
+            workflow->insert(loraId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoraLoader")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("model"), QJsonArray{modelChain, 0}},
+                                                      {QStringLiteral("clip"), QJsonArray{clipChainNode, clipChainSlot}},
+                                                      {QStringLiteral("lora_name"), lora.name},
+                                                      {QStringLiteral("strength_model"), lora.strengthModel},
+                                                      {QStringLiteral("strength_clip"), lora.strengthClip}}}});
+            modelChain = loraId;
+            clipChainNode = loraId;
+            clipChainSlot = 1;
+        }
+    }
+
+    if (modelChain != ckptId)
+        replaceAllLinksFromNode(workflow, ckptId, 0, modelChain, 0);
+    if (clipChainNode != ckptId || clipChainSlot != 1)
+        replaceAllLinksFromNode(workflow, ckptId, 1, clipChainNode, clipChainSlot);
+
+    if (out) {
+        out->modelNodeId = modelChain;
+        out->clipNodeId = clipChainNode;
+        out->vaeNodeId = vaeLinkNode;
+        out->nextNodeId = nextId;
+    }
+    return true;
+}
+
 ComfyResources::Arch resolveArch(const QString &checkpoint, const QString &styleArchitecture)
 {
     const QString sa = styleArchitecture.trimmed().toLower();
@@ -157,11 +348,11 @@ QJsonObject buildTextToImage(const TextToImageParams &params)
         workflow.insert(QStringLiteral("3"), n3);
     }
     {
-        QJsonObject n4 = workflow.value(QStringLiteral("4")).toObject();
-        QJsonObject i4 = n4.value(QStringLiteral("inputs")).toObject();
-        i4.insert(QStringLiteral("ckpt_name"), ckpt);
-        n4.insert(QStringLiteral("inputs"), i4);
-        workflow.insert(QStringLiteral("4"), n4);
+        CheckpointLoadParams cl;
+        cl.checkpoint = ckpt;
+        cl.arch = arch;
+        cl.loras = checkpointLorasFromEnabledLibrary();
+        loadCheckpointWithLora(&workflow, cl);
     }
     {
         QJsonObject n5 = workflow.value(QStringLiteral("5")).toObject();
@@ -414,6 +605,74 @@ static QJsonObject parseImg2ImgWorkflowTemplate()
     return doc.object();
 }
 
+QJsonObject buildRefineRegion(const RefineRegionParams &params)
+{
+    if (params.refine.imageName.isEmpty() || params.maskImageName.isEmpty())
+        return QJsonObject();
+
+    InpaintBuildParams ip;
+    ip.imageName = params.refine.imageName;
+    ip.maskImageName = params.maskImageName;
+    ip.checkpoint = params.refine.checkpoint;
+    ip.positivePrompt = params.refine.positivePrompt;
+    ip.negativePrompt = params.refine.negativePrompt;
+    ip.promptTranslationLanguage = params.refine.promptTranslationLanguage;
+    ip.seed = params.refine.seed;
+    ip.steps = params.refine.steps;
+    ip.cfg = params.refine.cfg;
+    ip.denoise = params.refine.denoise;
+    ip.sampler = params.refine.sampler;
+    ip.scheduler = params.refine.scheduler;
+    ip.arch = params.refine.arch;
+    ip.growMaskBy = 0;
+
+    QJsonObject workflow = buildInpaint(ip);
+    if (workflow.isEmpty())
+        return workflow;
+
+    CheckpointLoadParams cl;
+    cl.checkpoint = ip.checkpoint;
+    cl.arch = ip.arch;
+    cl.loras = checkpointLorasFromEnabledLibrary();
+    CheckpointGraphRefs ckptRefs;
+    loadCheckpointWithLora(&workflow, cl, &ckptRefs);
+
+    int nextId = ckptRefs.nextNodeId;
+
+    const QString maskLoadId = QStringLiteral("2");
+    QString processedMask = maskLoadId;
+    if (params.growMaskBy > 0)
+        processedMask = insertInpaintExpandMask(&workflow, &nextId, maskLoadId, params.growMaskBy, 0);
+
+    const QString vaeEncodeId = QStringLiteral("7");
+    if (workflow.contains(vaeEncodeId)) {
+        QJsonObject n7 = workflow.value(vaeEncodeId).toObject();
+        QJsonObject i7 = n7.value(QStringLiteral("inputs")).toObject();
+        i7.insert(QStringLiteral("mask"), QJsonArray{processedMask, 1});
+        i7.insert(QStringLiteral("grow_mask_by"), 0);
+        n7.insert(QStringLiteral("inputs"), i7);
+        workflow.insert(vaeEncodeId, n7);
+    }
+
+    const QString ckptId = findCheckpointNodeId(workflow);
+    QString modelId = ckptRefs.modelNodeId.isEmpty() ? ckptId : ckptRefs.modelNodeId;
+    if (!modelId.isEmpty()) {
+        const QString diffId = insertDifferentialDiffusion(&workflow, &nextId, modelId);
+        replaceAllLinksFromNode(&workflow, modelId, 0, diffId, 0);
+        modelId = diffId;
+        patchSamplerNode(&workflow, QStringLiteral("8"), modelId);
+    }
+
+    if (params.colorMatch) {
+        const QString decodeId = QStringLiteral("9");
+        appendColorMatchAfterDecode(&workflow, decodeId, QStringLiteral("1"), processedMask, &nextId);
+    }
+
+    finishWorkflowWithSamplerCustom(
+        &workflow, QStringLiteral("8"), ip.arch, 1024, 1024, ip.denoise);
+    return workflow;
+}
+
 QJsonObject buildRefine(const RefineParams &params)
 {
     QJsonObject workflow = parseImg2ImgWorkflowTemplate();
@@ -436,11 +695,11 @@ QJsonObject buildRefine(const RefineParams &params)
         workflow.insert(QStringLiteral("1"), n1);
     }
     {
-        QJsonObject n3 = workflow.value(QStringLiteral("3")).toObject();
-        QJsonObject i3 = n3.value(QStringLiteral("inputs")).toObject();
-        i3.insert(QStringLiteral("ckpt_name"), ckpt);
-        n3.insert(QStringLiteral("inputs"), i3);
-        workflow.insert(QStringLiteral("3"), n3);
+        CheckpointLoadParams cl;
+        cl.checkpoint = ckpt;
+        cl.arch = arch;
+        cl.loras = checkpointLorasFromEnabledLibrary();
+        loadCheckpointWithLora(&workflow, cl);
     }
     int injectId = 90;
     const QString pos = params.positivePrompt.trimmed().isEmpty() ? QStringLiteral("a beautiful painting")
@@ -504,11 +763,11 @@ QJsonObject buildInpaint(const InpaintBuildParams &params)
         workflow.insert(QStringLiteral("2"), n2);
     }
     {
-        QJsonObject n4 = workflow.value(QStringLiteral("4")).toObject();
-        QJsonObject i4 = n4.value(QStringLiteral("inputs")).toObject();
-        i4.insert(QStringLiteral("ckpt_name"), ckpt);
-        n4.insert(QStringLiteral("inputs"), i4);
-        workflow.insert(QStringLiteral("4"), n4);
+        CheckpointLoadParams cl;
+        cl.checkpoint = ckpt;
+        cl.arch = arch;
+        cl.loras = checkpointLorasFromEnabledLibrary();
+        loadCheckpointWithLora(&workflow, cl);
     }
     int injectId = 90;
     const QString pos = params.positivePrompt.trimmed().isEmpty() ? QStringLiteral("a beautiful painting")
@@ -517,9 +776,16 @@ QJsonObject buildInpaint(const InpaintBuildParams &params)
     patchClipTextEncodeNode(workflow, QStringLiteral("6"), params.negativePrompt, params.promptTranslationLanguage,
                             &injectId);
     {
+        QString maskForEncode = QStringLiteral("2");
+        int growNext = 400;
+        while (workflow.contains(QString::number(growNext)))
+            ++growNext;
+        if (params.growMaskBy > 0)
+            maskForEncode = insertInpaintExpandMask(&workflow, &growNext, QStringLiteral("2"), params.growMaskBy, 0);
         QJsonObject n7 = workflow.value(QStringLiteral("7")).toObject();
         QJsonObject i7 = n7.value(QStringLiteral("inputs")).toObject();
-        i7.insert(QStringLiteral("grow_mask_by"), params.growMaskBy);
+        i7.insert(QStringLiteral("mask"), QJsonArray{maskForEncode, 1});
+        i7.insert(QStringLiteral("grow_mask_by"), 0);
         n7.insert(QStringLiteral("inputs"), i7);
         workflow.insert(QStringLiteral("7"), n7);
     }
@@ -1432,6 +1698,13 @@ bool applyControlNetLayers(QJsonObject *workflow,
         tileGraph = *graph;
     }
 
+    const QString ckptId = findCheckpointNodeId(*workflow);
+    QString modelSource = graph && !graph->modelNodeId.isEmpty() ? graph->modelNodeId : ckptId;
+    if (modelSource.isEmpty())
+        modelSource = QStringLiteral("4");
+    const QString initialModelSource = modelSource;
+    const QString vaeSource = ckptId.isEmpty() ? QStringLiteral("4") : ckptId;
+
     for (const ControlNetLayerInput &layer : layers) {
         if (layer.imageName.isEmpty())
             continue;
@@ -1439,12 +1712,57 @@ bool applyControlNetLayers(QJsonObject *workflow,
             continue;
         if (!ComfyResources::ControlMode::isStructural(layer.mode))
             continue;
-        const QString cnFile = ComfyResources::defaultControlNetFileName(arch, layer.mode);
+        QString cnFile = ComfyResources::defaultControlNetFileName(arch, layer.mode);
+
+        if (cnFile.isEmpty() && arch == ComfyResources::Arch::ZImage) {
+            const QString patchFile = ComfyResources::defaultZImageFunControlPatchFileName();
+            if (patchFile.isEmpty())
+                continue;
+            const QString patchId = QString::number(nextId++);
+            workflow->insert(patchId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ModelPatchLoader")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("name"), patchFile}}}});
+            const QString imageId =
+                graph ? insertConditioningImageNode(workflow, &nextId, layer.imageName, tileGraph)
+                      : QString::number(nextId++);
+            if (!graph) {
+                workflow->insert(imageId,
+                                 QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LoadImage")},
+                                             {QStringLiteral("inputs"),
+                                              QJsonObject{{QStringLiteral("image"), layer.imageName}}}});
+            }
+            QString vaeLink = QJsonArray{vaeSource, 2};
+            const QString decodeId = findNodeIdByClassType(*workflow, QStringLiteral("VAEDecode"));
+            if (!decodeId.isEmpty()) {
+                const QJsonArray vaeArr = workflow->value(decodeId)
+                                              .toObject()
+                                              .value(QStringLiteral("inputs"))
+                                              .toObject()
+                                              .value(QStringLiteral("vae"))
+                                              .toArray();
+                if (vaeArr.size() >= 2)
+                    vaeLink = vaeArr;
+            }
+            const QString zimgId = QString::number(nextId++);
+            workflow->insert(zimgId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ZImageFunControlnet")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("model"), QJsonArray{modelSource, 0}},
+                                                      {QStringLiteral("model_patch"), QJsonArray{patchId, 0}},
+                                                      {QStringLiteral("vae"), vaeLink},
+                                                      {QStringLiteral("image"), QJsonArray{imageId, 0}},
+                                                      {QStringLiteral("strength"), layer.strength}}}});
+            modelSource = zimgId;
+            applied = true;
+            continue;
+        }
+
         if (cnFile.isEmpty())
             continue;
 
         const QString loaderId = QString::number(nextId++);
-        const QString imageId =
+        QString imageId =
             graph ? insertConditioningImageNode(workflow, &nextId, layer.imageName, tileGraph)
                   : QString::number(nextId++);
         const QString applyId = QString::number(nextId++);
@@ -1455,16 +1773,35 @@ bool applyControlNetLayers(QJsonObject *workflow,
                                          {QStringLiteral("inputs"),
                                           QJsonObject{{QStringLiteral("image"), layer.imageName}}}});
         }
+        if (ComfyResources::ControlMode::isLines(layer.mode)) {
+            const QString invertId = QString::number(nextId++);
+            workflow->insert(invertId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageInvert")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("image"), QJsonArray{imageId, 0}}}}});
+            imageId = invertId;
+        }
         workflow->insert(loaderId,
                          QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ControlNetLoader")},
                                      {QStringLiteral("inputs"),
                                       QJsonObject{{QStringLiteral("control_net_name"), cnFile}}}});
+        QString controlNetLink = loaderId;
+        if (ComfyResources::controlNetUsesUnionTypeNode(cnFile, layer.mode)) {
+            const QString typeId = QString::number(nextId++);
+            workflow->insert(typeId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SetUnionControlNetType")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("control_net"), QJsonArray{loaderId, 0}},
+                                                      {QStringLiteral("type"),
+                                                       ComfyResources::unionControlNetTypeForMode(layer.mode)}}}});
+            controlNetLink = typeId;
+        }
         workflow->insert(applyId,
                          QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ControlNetApplyAdvanced")},
                                      {QStringLiteral("inputs"),
                                       QJsonObject{{QStringLiteral("positive"), QJsonArray{positiveNode, 0}},
                                                   {QStringLiteral("negative"), QJsonArray{negativeNode, 0}},
-                                                  {QStringLiteral("control_net"), QJsonArray{loaderId, 0}},
+                                                  {QStringLiteral("control_net"), QJsonArray{controlNetLink, 0}},
                                                   {QStringLiteral("image"), QJsonArray{imageId, 0}},
                                                   {QStringLiteral("strength"), layer.strength},
                                                   {QStringLiteral("start_percent"), layer.startPercent},
@@ -1480,9 +1817,14 @@ bool applyControlNetLayers(QJsonObject *workflow,
     if (graph) {
         graph->positiveNodeId = positiveNode;
         graph->nextNodeId = nextId;
-        if (!graph->samplerNodeId.isEmpty())
+        if (!graph->samplerNodeId.isEmpty()) {
+            if (modelSource != initialModelSource)
+                patchSamplerNode(workflow, graph->samplerNodeId, modelSource);
             patchSamplerNode(workflow, graph->samplerNodeId, QString(), positiveNode);
+        }
     } else {
+        if (modelSource != initialModelSource)
+            patchSamplerNode(workflow, QStringLiteral("3"), modelSource);
         patchSamplerNode(workflow, QStringLiteral("3"), QString(), positiveNode);
     }
     return true;

@@ -625,6 +625,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::workflowsStorageDir()));
         });
         workflowLayout->addWidget(m_d->checkUseReferenceImage);
+        m_d->customWorkflowSettingsLayout = workflowLayout;
         workflowLayout->addWidget(m_d->editCustomWorkflow);
         m_d->customWorkflowParamsGroup = new QGroupBox(ComfyTr::tr("Workflow parameters (ETN)"), workflowGroup);
         m_d->customWorkflowParamsForm = new QFormLayout(m_d->customWorkflowParamsGroup);

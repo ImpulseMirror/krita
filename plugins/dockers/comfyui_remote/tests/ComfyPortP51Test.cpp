@@ -43,6 +43,11 @@ private slots:
     void testBundledPluginDataLayout();
     void testBuildGenerateUsesSamplerCustom();
     void testBuildControlPreviewInEngine();
+    void testBuildRefineRegionUsesInpaintGraph();
+    void testControlNetLineInvertAndUnionType();
+    void testUnionControlNetTypeForMode();
+    void testLoadCheckpointWithLoraInsertsLoraLoader();
+    void testBuildRefineRegionColorMatchNode();
 };
 
 void ComfyPortP51Test::init()
@@ -396,6 +401,116 @@ void ComfyPortP51Test::testBuildControlPreviewInEngine()
     p.resolutionBase = 512;
     const QJsonObject wf = ComfyWorkflowEngine::buildControlPreview(p);
     QVERIFY(!wf.isEmpty());
+}
+
+void ComfyPortP51Test::testBuildRefineRegionUsesInpaintGraph()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("canvas.png");
+    rp.refine.maskImageName = QStringLiteral("mask.png");
+    rp.refine.positivePrompt = QStringLiteral("refine region");
+    rp.refine.arch = ComfyResources::Arch::Sd15;
+    rp.growMaskBy = 4;
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    QVERIFY(!wf.isEmpty());
+    bool hasMaskLoad = false;
+    bool hasSamplerCustom = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        const QString cls = node.value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("LoadImage")) {
+            const QString img = node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString();
+            if (img == QLatin1String("mask.png"))
+                hasMaskLoad = true;
+        }
+        if (cls == QLatin1String("SamplerCustomAdvanced"))
+            hasSamplerCustom = true;
+    }
+    QVERIFY(hasMaskLoad);
+    QVERIFY(hasSamplerCustom);
+}
+
+void ComfyPortP51Test::testUnionControlNetTypeForMode()
+{
+    QCOMPARE(ComfyResources::unionControlNetTypeForMode(QStringLiteral("pose")), QStringLiteral("openpose"));
+    QCOMPARE(ComfyResources::unionControlNetTypeForMode(QStringLiteral("line_art")),
+             QStringLiteral("canny/lineart/anime_lineart/mlsd"));
+    QVERIFY(ComfyResources::controlNetUsesUnionTypeNode(QStringLiteral("xinsir-controlnet-union-sdxl-1.0.safetensors"),
+                                                      QStringLiteral("depth")));
+}
+
+void ComfyPortP51Test::testControlNetLineInvertAndUnionType()
+{
+    QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(ComfyWorkflowEngine::TextToImageParams{});
+    QVERIFY(!wf.isEmpty());
+    ComfyWorkflowEngine::ControlNetLayerInput cn;
+    cn.mode = QStringLiteral("line_art");
+    cn.imageName = QStringLiteral("control.png");
+    QVERIFY(ComfyWorkflowEngine::applyControlNetLayers(&wf, {cn}, ComfyResources::Arch::Sd15));
+    bool hasInvert = false;
+    bool hasUnionType = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("ImageInvert"))
+            hasInvert = true;
+        if (cls == QLatin1String("SetUnionControlNetType"))
+            hasUnionType = true;
+    }
+    QVERIFY(hasInvert);
+    Q_UNUSED(hasUnionType);
+
+    QJsonObject wf2 = ComfyWorkflowEngine::buildTextToImage(ComfyWorkflowEngine::TextToImageParams{});
+    ComfyWorkflowEngine::ControlNetLayerInput uni;
+    uni.mode = QStringLiteral("universal");
+    uni.imageName = QStringLiteral("control.png");
+    QVERIFY(ComfyWorkflowEngine::applyControlNetLayers(&wf2, {uni}, ComfyResources::Arch::Sdxl));
+    bool hasUnion = false;
+    for (auto it = wf2.constBegin(); it != wf2.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("SetUnionControlNetType"))
+            hasUnion = true;
+    }
+    QVERIFY(hasUnion);
+}
+
+void ComfyPortP51Test::testLoadCheckpointWithLoraInsertsLoraLoader()
+{
+    ComfyWorkflowEngine::TextToImageParams p;
+    p.checkpoint = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    p.arch = ComfyResources::Arch::Sd15;
+    QJsonObject wf = ComfyWorkflowEngine::buildTextToImage(p);
+    ComfyWorkflowEngine::CheckpointLoadParams cl;
+    cl.checkpoint = p.checkpoint;
+    cl.arch = p.arch;
+    ComfyWorkflowEngine::CheckpointLoraWeight lw;
+    lw.name = QStringLiteral("test_lora.safetensors");
+    lw.strengthModel = 0.8;
+    lw.strengthClip = 0.6;
+    cl.loras = {lw};
+    QVERIFY(ComfyWorkflowEngine::loadCheckpointWithLora(&wf, cl));
+    bool hasLora = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString() == QLatin1String("LoraLoader"))
+            hasLora = true;
+    }
+    QVERIFY(hasLora);
+}
+
+void ComfyPortP51Test::testBuildRefineRegionColorMatchNode()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.refine.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sd15;
+    rp.colorMatch = true;
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    bool hasColorMatch = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("INPAINT_ColorMatch"))
+            hasColorMatch = true;
+    }
+    QVERIFY(hasColorMatch);
 }
 
 void ComfyPortP51Test::testWorkflowEngineStyleVaeAndClipSkip()

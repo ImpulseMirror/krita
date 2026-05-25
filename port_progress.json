@@ -6,7 +6,8 @@
   "target_path": "plugins/dockers/comfyui_remote",
   "branch": "comfyui-perfect-port",
   "updated": "2026-05-24",
-  "last_completed": "GAP-A",
+  "active_workstreams": [],
+  "last_completed": "M8",
   "manual_acceptance": {
     "status": "in_progress",
     "started": "2026-05-24",
@@ -48,12 +49,17 @@
       "cpp_targets": ["ComfyTheme.h", "ComfyTheme.cpp"]
     },
     "P0.4": {
-      "title": "Spec traceability / CI checklist (optional)",
+      "title": "Spec traceability / CI checklist",
       "phase": "P0",
-      "status": "not_started",
+      "status": "complete",
+      "evidence": "docs/PORT_TRACEABILITY.md; scripts/port_ci_checklist.sh passes offline",
       "depends_on": [],
-      "python_refs": [],
-      "cpp_targets": []
+      "python_refs": ["comfyui-perfect-port.plan.md"],
+      "cpp_targets": [
+        "plugins/dockers/comfyui_remote/docs/PORT_TRACEABILITY.md",
+        "plugins/dockers/comfyui_remote/scripts/port_ci_checklist.sh"
+      ],
+      "plan_section": "4 / 5.1"
     },
     "P1.1": {
       "title": "Port resources.py — Arch, ControlMode, ResourceId",
@@ -304,6 +310,32 @@
       "depends_on": ["P1.2", "P1.3", "P1.4", "P1.8"],
       "plan_section": "3.1.A"
     },
+    "GAP-A2": {
+      "title": "workflow.py remainder (§3.1.A)",
+      "phase": "P1",
+      "status": "complete",
+      "evidence": "loadCheckpointWithLora (Nunchaku Flux + LoraLoader); buildRefineRegion+grow+color_match+DifferentialDiffusion; inpaint INPAINT_ExpandMask; apply_control line invert+union+ZImageFunControlnet; wired refine-after-regions",
+      "depends_on": ["GAP-A"],
+      "python_refs": ["ai_diffusion/workflow.py"],
+      "cpp_targets": ["ComfyWorkflowEngine.cpp", "ComfyResources.cpp", "ComfyUIRemoteDockGenerate.cpp", "ComfyUIRemoteDockInpaint.cpp"],
+      "plan_section": "3.1.A"
+    },
+    "M8": {
+      "title": "Custom workflow parity (manual M8)",
+      "phase": "P5",
+      "status": "complete",
+      "evidence": "validateCustomWorkflowApiGraph+output node; Graph workspace editor+Generate+History; ComfyPortM8Test; manual M8 cpp_ready",
+      "depends_on": ["P1.2", "P5.1"],
+      "python_refs": ["ai_diffusion/ui/custom_workflow.py", "ai_diffusion/comfy_workflow.py"],
+      "cpp_targets": [
+        "ComfyUIUtils.cpp",
+        "ComfyUIRemoteDock.cpp",
+        "ComfyUIRemoteDockGenerate.cpp",
+        "tests/ComfyPortM8Test.cpp"
+      ],
+      "plan_section": "MANUAL_ACCEPTANCE_MATRIX M8",
+      "acceptance_manual_id": "M8-custom-workflow"
+    },
     "GAP-B": {
       "title": "Detail: Style presets from JSON",
       "phase": "P0",
@@ -464,7 +496,8 @@
       "id": "M8-custom-workflow",
       "title": "Custom workflow",
       "manual_status": "pending",
-      "cpp_ready": "partial",
+      "workstream": "M8",
+      "cpp_ready": true,
       "android_applicable": true,
       "python_reference": true,
       "workstreams": ["P3.3"],

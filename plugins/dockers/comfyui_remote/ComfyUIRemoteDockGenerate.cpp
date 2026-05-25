@@ -59,6 +59,17 @@
 
 namespace {
 
+bool validateCustomWorkflowGraphOrShowError(ComfyUIRemoteDock *dock,
+                                            ComfyUIRemoteDock::Private *d,
+                                            const QJsonObject &workflow)
+{
+    const auto apiCheck = ComfyUIUtils::validateCustomWorkflowApiGraph(workflow, d->lastObjectInfoRoot);
+    if (apiCheck.first)
+        return true;
+    dock->setStatusMessage(apiCheck.second, true);
+    return false;
+}
+
 QList<ComfyUIRemoteDock::Private::RegionEntry> regionsForGenerate(const ComfyUIRemoteDock::Private *d)
 {
     QList<ComfyUIRemoteDock::Private::RegionEntry> regs = comfyActiveRegionEntries(d);
@@ -202,6 +213,15 @@ void ComfyUIRemoteDock::slotGenerate()
         setStatusMessage(ComfyTr::tr("Open a document first."), true);
         return;
     }
+    const bool graphWorkspace = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 4;
+    if (graphWorkspace) {
+        const QString graphJson = m_d->editCustomWorkflow ? m_d->editCustomWorkflow->toPlainText().trimmed() : QString();
+        if (graphJson.isEmpty()) {
+            setStatusMessage(
+                ComfyTr::tr("Graph workspace: paste workflow JSON in Settings → Workflow, then click Generate."), true);
+            return;
+        }
+    }
     auto colorCheck = ComfyUIUtils::checkColorMode(m_d->viewManager->image());
     if (!colorCheck.first) {
         setStatusMessage(colorCheck.second, true);
@@ -242,6 +262,8 @@ void ComfyUIRemoteDock::slotGenerate()
                 setStatusMessage(validation.second, true);
                 return;
             }
+            if (!validateCustomWorkflowGraphOrShowError(this, m_d.data(), workflow))
+                return;
             {
                 KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
                 ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
@@ -373,6 +395,10 @@ void ComfyUIRemoteDock::slotGenerate()
                 m_d->btnGenerate->setEnabled(true);
                 return;
             }
+            if (!validateCustomWorkflowGraphOrShowError(this, m_d.data(), workflow)) {
+                m_d->btnGenerate->setEnabled(true);
+                return;
+            }
             {
                 KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
                 ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
@@ -452,12 +478,19 @@ void ComfyUIRemoteDock::slotGenerate()
             setStatusMessage(validation.second, true);
             return;
         }
+        if (!validateCustomWorkflowGraphOrShowError(this, m_d.data(), workflow))
+            return;
         {
             KisImageSP wfImage = m_d->viewManager ? m_d->viewManager->image().toStrongRef() : KisImageSP();
             ComfyUIUtils::applyCustomWorkflowParameterValues(workflow, m_d->customWorkflowParamOverrides, wfImage);
         }
         ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
     } else {
+        if (graphWorkspace) {
+            setStatusMessage(
+                ComfyTr::tr("Graph workspace requires a custom workflow JSON in Settings → Workflow."), true);
+            return;
+        }
         if (tryStartRefineFromGenerate())
             return;
         qint64 seed = m_d->checkFixedSeed->isChecked()
@@ -759,6 +792,10 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
             const auto validation = ComfyUIUtils::validateCustomWorkflowStyleAndPromptNodes(workflow);
             if (!validation.first) {
                 setStatusMessage(validation.second, true);
+                abortAnimBatch();
+                return;
+            }
+            if (!validateCustomWorkflowGraphOrShowError(this, m_d.data(), workflow)) {
                 abortAnimBatch();
                 return;
             }
@@ -1669,7 +1706,25 @@ void ComfyUIRemoteDock::uploadNextGenerateRegionMask()
 
     m_d->generateAwaitingRegionMaskUploads = false;
     if (m_d->generateRefineAfterRegions) {
-        QJsonObject workflow = ComfyWorkflowEngine::buildRefine(m_d->generateStashedRefineParams);
+        QJsonObject workflow;
+        QString regionMask;
+        for (const ComfyWorkflowEngine::RegionalPromptInput &ri : m_d->generateRegionalInputs) {
+            if (!ri.isBackground && !ri.maskImageName.isEmpty()) {
+                regionMask = ri.maskImageName;
+                break;
+            }
+        }
+        if (!regionMask.isEmpty()) {
+            ComfyWorkflowEngine::RefineRegionParams rrp;
+            rrp.refine = m_d->generateStashedRefineParams;
+            rrp.maskImageName = regionMask;
+            rrp.growMaskBy = ComfyUIUtils::clampInpaintGrowFeather(
+                ComfyUIUtils::loadSettingsJson().value(QStringLiteral("selection_grow_offset")).toInt(4));
+            rrp.colorMatch = ComfyUIUtils::settingsColorMatchEnabled();
+            workflow = ComfyWorkflowEngine::buildRefineRegion(rrp);
+        }
+        if (workflow.isEmpty())
+            workflow = ComfyWorkflowEngine::buildRefine(m_d->generateStashedRefineParams);
         if (workflow.isEmpty()) {
             setStatusMessage(ComfyTr::tr("Refine workflow error."), true);
             m_d->generateRefineAfterRegions = false;

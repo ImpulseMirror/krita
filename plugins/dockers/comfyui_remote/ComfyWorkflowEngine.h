@@ -128,6 +128,42 @@ struct RefineParams {
 
 QJsonObject buildRefine(const RefineParams &params);
 
+/// Regional refine with mask (Python refine_region subset — inpaint graph + sampler custom).
+struct RefineRegionParams {
+    RefineParams refine;
+    QString maskImageName;
+    int growMaskBy = 6;
+    bool colorMatch = false;
+};
+
+QJsonObject buildRefineRegion(const RefineRegionParams &params);
+
+/// One LoRA applied after checkpoint load (Python load_checkpoint_with_lora).
+struct CheckpointLoraWeight {
+    QString name;
+    double strengthModel = 1.0;
+    double strengthClip = 1.0;
+};
+
+struct CheckpointLoadParams {
+    QString checkpoint;
+    ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+    QList<CheckpointLoraWeight> loras;
+    bool dynamicCaching = false;
+};
+
+struct CheckpointGraphRefs {
+    QString modelNodeId;
+    QString clipNodeId;
+    QString vaeNodeId;
+    int nextNodeId = 500;
+};
+
+/// Replace/patch checkpoint node: CheckpointLoaderSimple, Nunchaku*, UNET+DualCLIP, + LoraLoader chain.
+bool loadCheckpointWithLora(QJsonObject *workflow, const CheckpointLoadParams &params, CheckpointGraphRefs *out = nullptr);
+
+QList<CheckpointLoraWeight> checkpointLorasFromEnabledLibrary();
+
 /// Inpaint (selection mask uploaded): LoadImage + VAEEncodeForInpaint + KSampler path.
 struct InpaintBuildParams {
     QString imageName;

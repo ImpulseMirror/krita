@@ -3,6 +3,7 @@ target_compile_definitions(kritacomfyuiremote_static PRIVATE COMFYUI_ENABLE_TEST
 kis_add_tests(
     ComfyUIRemoteDockTest.cpp
     ComfyPortP51Test.cpp
+    ComfyPortM8Test.cpp
     LINK_LIBRARIES kritacomfyuiremote_static kritaui kritaimage kritatestsdk
 )
 

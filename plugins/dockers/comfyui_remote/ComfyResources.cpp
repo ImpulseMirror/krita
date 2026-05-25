@@ -216,7 +216,7 @@ bool isEditArch(Arch arch)
 
 bool isFluxLike(Arch arch)
 {
-    return arch == Arch::Flux || arch == Arch::FluxK;
+    return arch == Arch::Flux || arch == Arch::FluxK || arch == Arch::Flux2_4b || arch == Arch::Flux2_9b;
 }
 
 bool isSdxlLike(Arch arch)
@@ -340,6 +340,97 @@ QString defaultControlNetFileName(Arch arch, const QString &mode)
     if (arch == Arch::Flux || arch == Arch::Flux2_4b || arch == Arch::Flux2_9b)
         return QStringLiteral("FLUX.1-dev-ControlNet-Union-Pro-2.0-fp8.safetensors");
     return QString();
+}
+
+QString unionControlNetTypeForMode(const QString &mode)
+{
+    const QString m = mode.trimmed().toLower();
+    if (m == QLatin1String(ControlMode::pose))
+        return QStringLiteral("openpose");
+    if (m == QLatin1String(ControlMode::depth) || m == QLatin1String(ControlMode::hands))
+        return QStringLiteral("depth");
+    if (m == QLatin1String(ControlMode::scribble) || m == QLatin1String(ControlMode::soft_edge))
+        return QStringLiteral("hed/pidi/scribble/ted");
+    if (m == QLatin1String(ControlMode::line_art) || m == QLatin1String(ControlMode::canny_edge))
+        return QStringLiteral("canny/lineart/anime_lineart/mlsd");
+    if (m == QLatin1String(ControlMode::normal))
+        return QStringLiteral("normal");
+    if (m == QLatin1String(ControlMode::segmentation))
+        return QStringLiteral("segment");
+    if (m == QLatin1String(ControlMode::blur))
+        return QStringLiteral("tile");
+    return QStringLiteral("auto");
+}
+
+bool controlNetUsesUnionTypeNode(const QString &controlNetFileName, const QString &mode)
+{
+    const QString m = mode.trimmed().toLower();
+    if (m == QLatin1String(ControlMode::universal))
+        return true;
+    return controlNetFileName.contains(QStringLiteral("union"), Qt::CaseInsensitive);
+}
+
+bool isNunchakuCheckpointFilename(const QString &checkpointFile)
+{
+    return checkpointFile.contains(QStringLiteral("svdq"), Qt::CaseInsensitive);
+}
+
+DualClipLoadSpec defaultDualClipLoadSpec(Arch arch)
+{
+    DualClipLoadSpec spec;
+    switch (arch) {
+    case Arch::Sdxl:
+    case Arch::Illu:
+    case Arch::IlluV:
+        spec.clipName1 = QStringLiteral("clip_l.safetensors");
+        spec.clipName2 = QStringLiteral("clip_g.safetensors");
+        spec.type = QStringLiteral("sdxl");
+        break;
+    case Arch::Sd3:
+        spec.clipName1 = QStringLiteral("clip_l.safetensors");
+        spec.clipName2 = QStringLiteral("clip_g.safetensors");
+        spec.type = QStringLiteral("sd3");
+        break;
+    case Arch::Flux:
+    case Arch::FluxK:
+        spec.clipName1 = QStringLiteral("clip_l.safetensors");
+        spec.clipName2 = QStringLiteral("t5xxl_fp16.safetensors");
+        spec.type = QStringLiteral("flux");
+        break;
+    case Arch::Flux2_4b:
+        spec.clipName1 = QStringLiteral("qwen_3_4b.safetensors");
+        spec.clipName2 = QString();
+        spec.type = QStringLiteral("flux2");
+        break;
+    case Arch::Flux2_9b:
+        spec.clipName1 = QStringLiteral("qwen_3_8b.safetensors");
+        spec.clipName2 = QString();
+        spec.type = QStringLiteral("flux2");
+        break;
+    case Arch::Chroma:
+        spec.clipName1 = QStringLiteral("t5xxl_fp16.safetensors");
+        spec.type = QStringLiteral("chroma");
+        break;
+    case Arch::Qwen:
+    case Arch::QwenE:
+    case Arch::QwenEP:
+    case Arch::QwenL:
+        spec.clipName1 = QStringLiteral("qwen_2.5_vl_7b.safetensors");
+        spec.type = QStringLiteral("qwen_image");
+        break;
+    case Arch::ZImage:
+        spec.clipName1 = QStringLiteral("qwen_3_4b.safetensors");
+        spec.type = QStringLiteral("lumina2");
+        break;
+    default:
+        break;
+    }
+    return spec;
+}
+
+QString defaultZImageFunControlPatchFileName()
+{
+    return QStringLiteral("Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2601-8steps.safetensors");
 }
 
 bool supportsIpAdapterWorkflow(Arch arch)

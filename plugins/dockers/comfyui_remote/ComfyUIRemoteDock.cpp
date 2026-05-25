@@ -978,7 +978,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (idx == 0 && img)
             loadInpaintWorkspaceFromDocument();
 
-        if (m_d->btnGenerate) m_d->btnGenerate->setVisible(isGenerate);
+        if (m_d->btnGenerate) m_d->btnGenerate->setVisible(isGenerate || isGraph);
         if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate);
         if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(isGenerate);
         if (m_d->comboFillMode) m_d->comboFillMode->setVisible(isGenerate);
@@ -1014,9 +1014,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         cfg.writeEntry("WorkspaceIndex", idx);
         if (m_d->genContentContainer) m_d->genContentContainer->setVisible(!isGraph);
         if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
-        if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate);
+        reparentCustomWorkflowEditor(isGraph);
+        if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate || isGraph);
         if (m_d->queueButtonRowWidget)
-            m_d->queueButtonRowWidget->setVisible(isGenerate || isAnimation);
+            m_d->queueButtonRowWidget->setVisible(isGenerate || isAnimation || isGraph);
         refreshQueuePopupSupportsBatch();
         updateQueueStatus();
         applyInterfaceAppearanceSettings(); // §3.5: prompt_line_count_live when Live workspace
@@ -2008,10 +2009,15 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     genLayout->addWidget(m_d->genContentContainer);
 
     m_d->graphPlaceholderWidget = new QWidget(genGroup);
-    QVBoxLayout *graphPlaceholderLayout = new QVBoxLayout(m_d->graphPlaceholderWidget);
-    QLabel *graphLabel = new QLabel(ComfyTr::tr("Custom workflow: configure in Settings → Workflow tab, then use Generate with your workflow."));
+    m_d->graphWorkflowEditorLayout = new QVBoxLayout(m_d->graphPlaceholderWidget);
+    QLabel *graphLabel = new QLabel(ComfyTr::tr("Paste ComfyUI API JSON below, then click Generate (results in History)."));
     graphLabel->setWordWrap(true);
-    graphPlaceholderLayout->addWidget(graphLabel);
+    m_d->graphWorkflowEditorLayout->addWidget(graphLabel);
+    QPushButton *btnGraphLoadWorkflow = new QPushButton(ComfyTr::tr("Load from file…"), m_d->graphPlaceholderWidget);
+    connect(btnGraphLoadWorkflow, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
+    m_d->graphWorkflowEditorLayout->addWidget(btnGraphLoadWorkflow);
+    m_d->graphWorkflowEditorLayout->insertWidget(1, m_d->editCustomWorkflow);
+    m_d->editCustomWorkflow->setVisible(true);
     // §13.170: Open Web UI — open client.url in default browser (QDesktopServices::openUrl)
     QPushButton *btnOpenWebUI = new QPushButton(ComfyTr::tr("Open Web UI"));
     btnOpenWebUI->setToolTip(ComfyTr::tr("Open Web UI to create custom workflows"));
@@ -2029,10 +2035,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         QDesktopServices::openUrl(QUrl(urlStr));
         beginWebWorkflowSwitch();
     });
-    graphPlaceholderLayout->addWidget(btnOpenWebUI);
+    m_d->graphWorkflowEditorLayout->addWidget(btnOpenWebUI);
     QPushButton *btnOpenSettingsForGraph = new QPushButton(ComfyTr::tr("Open Settings"));
     connect(btnOpenSettingsForGraph, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
-    graphPlaceholderLayout->addWidget(btnOpenSettingsForGraph);
+    m_d->graphWorkflowEditorLayout->addWidget(btnOpenSettingsForGraph);
     m_d->graphPlaceholderWidget->setVisible(false);
     genLayout->addWidget(m_d->graphPlaceholderWidget);
 
@@ -2219,9 +2225,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     const bool isGenerate = (ws == 0);
     if (m_d->genContentContainer) m_d->genContentContainer->setVisible(!isGraph);
     if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
-    if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate);
+    reparentCustomWorkflowEditor(isGraph);
+    if (m_d->histGroupBox) m_d->histGroupBox->setVisible(isGenerate || isGraph);
     if (m_d->queueButtonRowWidget)
-        m_d->queueButtonRowWidget->setVisible((ws == 0 || ws == 3) && !isGraph);
+        m_d->queueButtonRowWidget->setVisible(ws == 0 || ws == 3 || isGraph);
     refreshQueuePopupSupportsBatch();
     if (m_d->btnQueuePopup) {
         const bool animWs = (ws == 3);
@@ -2331,6 +2338,23 @@ bool ComfyUIRemoteDock::tryResolveCustomWorkflowInPlace(QJsonObject *workflow)
         return false;
     }
     return true;
+}
+
+void ComfyUIRemoteDock::reparentCustomWorkflowEditor(bool toGraphWorkspace)
+{
+    if (!m_d->editCustomWorkflow)
+        return;
+    QVBoxLayout *from = toGraphWorkspace ? m_d->customWorkflowSettingsLayout : m_d->graphWorkflowEditorLayout;
+    QVBoxLayout *to = toGraphWorkspace ? m_d->graphWorkflowEditorLayout : m_d->customWorkflowSettingsLayout;
+    if (!to)
+        return;
+    if (from)
+        from->removeWidget(m_d->editCustomWorkflow);
+    to->insertWidget(toGraphWorkspace ? 1 : 2, m_d->editCustomWorkflow);
+    m_d->editCustomWorkflow->setMaximumHeight(toGraphWorkspace ? 160 : 80);
+    m_d->editCustomWorkflow->setVisible(true);
+    if (toGraphWorkspace)
+        refreshCustomWorkflowParameterPanel();
 }
 
 void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()

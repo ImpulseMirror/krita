@@ -77,6 +77,22 @@ bool isStructural(const QString &mode);
 /// Default ControlNet filename for ComfyUI ControlNetLoader (first match from bundled models.json / Python search_paths).
 QString defaultControlNetFileName(Arch arch, const QString &mode);
 
+/// SetUnionControlNetType `type` input (Python comfy_workflow.set_controlnet_type).
+QString unionControlNetTypeForMode(const QString &mode);
+
+bool controlNetUsesUnionTypeNode(const QString &controlNetFileName, const QString &mode);
+
+bool isNunchakuCheckpointFilename(const QString &checkpointFile);
+
+struct DualClipLoadSpec {
+    QString clipName1;
+    QString clipName2;
+    QString type;
+};
+DualClipLoadSpec defaultDualClipLoadSpec(Arch arch);
+
+QString defaultZImageFunControlPatchFileName();
+
 QString defaultClipVisionFileName(Arch arch);
 QString defaultIpAdapterFileName(Arch arch, const QString &mode);
 QString defaultIpAdapterFaceFileName(Arch arch);

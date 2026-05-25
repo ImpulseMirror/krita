@@ -421,6 +421,15 @@ QStringList extractLayerPlaceholders(QString &prompt);
 // §13.103: Custom workflow validation — at most one node of type ETN_KritaStyleAndPrompt. Returns (true, "") if valid, else (false, localized error message).
 QPair<bool, QString> validateCustomWorkflowStyleAndPromptNodes(const QJsonObject &workflow);
 
+/// M8: API workflow shape + optional object_info class_type presence check.
+QPair<bool, QString> validateCustomWorkflowApiGraph(const QJsonObject &workflow,
+                                                    const QJsonObject &objectInfoRoot = QJsonObject());
+
+/// True when workflow contains an output node (SaveImage / ETN_ReturnImage / ETN_SendImage).
+bool validateCustomWorkflowHasOutputNode(const QJsonObject &workflow);
+
+bool settingsColorMatchEnabled();
+
 // §13.25: ETN_Parameter / ETN_KritaStyle — discover slots for UI; apply user values to API workflow (Parameter uses inputs["default"]).
 struct CustomWorkflowParamSlot {
     QString nodeId;

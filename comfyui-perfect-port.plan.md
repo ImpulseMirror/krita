@@ -133,7 +133,17 @@ Python centralizes graph construction for:
 
 **C++:** `ComfyWorkflowEngine` builders for text2img/refine/inpaint/live/animation/upscale + `applyGenerationConditioning` (IP/regional/control/reference) + `SamplerCustomAdvanced` on main paths via `finishWorkflowWithSamplerCustom`. `buildGenerate` / `buildControlPreview` APIs. Golden fixtures: SD1.5 + SDXL + Flux (`tests/data/golden/`). Dock generate uses `applyGenerationConditioning`.
 
-**Still broader than one PR (track separately):** full `load_checkpoint_with_lora` (Nunchaku/quantized), `refine_region`, `inpaint()` fill/grow/color_match chains, `scale_refine_and_decode`, complete `apply_control` (universal CN, Z-Image patch, line invert).
+**Remainder — workstream `GAP-A2` (§3.1.A, complete):**
+
+| Item | Python | C++ |
+|------|--------|-----|
+| `refine_region()` | Masked regional refine + color_match | `buildRefineRegion()` + dock refine-after-regions |
+| `apply_control()` | Line invert, universal CN, Z-Image patch | `applyControlNetLayers` |
+| `load_checkpoint_with_lora` | Nunchaku Flux + LoraLoader chain | `loadCheckpointWithLora()` |
+| `inpaint()` grow | `apply_grow_feather` / INPAINT_ExpandMask | `buildInpaint` + `buildRefineRegion` |
+| `scale_refine_and_decode` | Upscale refine pass | `buildUpscaleRefine` (existing) |
+
+**M8 (complete):** API validation + output node check; Graph workspace inline JSON editor + Generate; `ComfyPortM8Test`. Full graph UI (P3.3) still deferred.
 
 ---
 
@@ -337,7 +347,9 @@ Python `loras_to_upload` / `ComfyClient.upload_loras`: before prompt, PUT each e
 | P0.1 | Bundle `data/` + install + Android copy | P0 |
 | P0.2 | StyleCollection — 14 JSON presets | P0 |
 | P0.3 | ComfyTheme | P0 |
-| P0.4 | Spec traceability (optional) | P0 |
+| P0.4 | Spec traceability + CI checklist | P0 |
+| GAP-A2 | workflow.py remainder (§3.1.A) | P1 |
+| M8 | Custom workflow parity (manual M8) | P5 |
 | P1.1 | Port resources.py | P1 |
 | P1.2 | ComfyWorkflowEngine::build_generate | P1 |
 | P1.3 | Control + IP-Adapter injection | P1 |
@@ -396,7 +408,7 @@ Automated `QNetworkAccessManager` tests against `ComfyMockHttpServer` — see `t
 | M5 | Live record |
 | M6 | Upscale + refine |
 | M7 | Animation batch |
-| M8 | Custom workflow (partial — P3.3 deferred) |
+| M8 | Custom workflow — workstream **M8** (API JSON + validation; full graph UI still P3.3 deferred) |
 | M9 | History + ui.json roundtrip |
 | M10 | Settings roundtrip |
 | M11 | Cloud sign-in (N/A — P3.1 skipped) |
@@ -429,11 +441,10 @@ Managed server on Android: external wizard OK; **not** one-line placeholder.
 
 ## 8. Immediate next steps
 
-1. `P0.1` — vendor assets  
-2. `P0.2` — StyleCollection  
-3. `P1.1` + `P1.2` — workflow engine SD1.5  
-4. `C-control-layers` — model + persist  
-5. Remove “not available in this build” strings  
+1. **`P0.4`** — `docs/PORT_TRACEABILITY.md` + `scripts/port_ci_checklist.sh`  
+2. **`GAP-A2`** — `buildRefineRegion`, control line-invert + union CN type  
+3. **`M8`** — API workflow validation, Graph workspace Generate, tests  
+4. Continue **manual acceptance** M1–M10 (`MANUAL_ACCEPTANCE_RUN.md`)  
 
 ---
 
