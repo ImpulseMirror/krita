@@ -215,6 +215,133 @@ void ComfyUIRemoteDock::slotHistoryItemSelected()
     m_d->btnHistoryApply->setEnabled(hasSelection);
 }
 
+static QString historyEntryShortLabel(const ComfyUIRemoteDock::Private::HistoryEntry &e)
+{
+    // FAITHFUL_PORT: mirror the desktop ai-diffusion layer-name shape, which
+    // takes the first ~40 chars of the positive prompt (post-tag-strip) for
+    // both the "[Preview]" and "[Generated]" layer labels. Fall back to the
+    // style name, then "result", so we never end up with an empty bracket.
+    QString s = e.prompt;
+    s.replace(QRegularExpression(QStringLiteral("<lora:[^>]*>")), QString());
+    s.replace(QRegularExpression(QStringLiteral("<layer:[^>]*>")), QString());
+    s = s.trimmed();
+    if (s.isEmpty())
+        s = e.styleName.trimmed();
+    if (s.isEmpty())
+        s = QStringLiteral("result");
+    s.replace(QRegularExpression(QStringLiteral("[\r\n\t]+")), QStringLiteral(" "));
+    s = s.simplified();
+    if (s.size() > 40)
+        s = s.left(40).trimmed() + QStringLiteral("…");
+    return s;
+}
+
+static KisLayerSP findPreviewLayerByUuidString(KisImageSP image, const QString &layerId)
+{
+    if (!image || !image->rootLayer() || layerId.trimmed().isEmpty())
+        return KisLayerSP();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QUuid uid = QUuid::fromString(QStringView{layerId.trimmed()});
+#else
+    QString s = layerId.trimmed();
+    if (s.length() == 32 && !s.contains(QLatin1Char('-'))) {
+        s = QStringLiteral("{%1-%2-%3-%4-%5}")
+                .arg(s.mid(0, 8), s.mid(8, 4), s.mid(12, 4), s.mid(16, 4), s.mid(20, 12));
+    }
+    const QUuid uid(s);
+#endif
+    if (uid.isNull())
+        return KisLayerSP();
+    KisNodeSP node = KisLayerUtils::findNodeByUuid(image->rootLayer(), uid);
+    return KisLayerSP(qobject_cast<KisLayer *>(node.data()));
+}
+
+void ComfyUIRemoteDock::slotHistoryPreview()
+{
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotHistoryPreview ENTER currentRow="
+        << (m_d->listHistory ? m_d->listHistory->currentRow() : -1)
+        << " count=" << (m_d->listHistory ? m_d->listHistory->count() : -1)
+        << " workspace=" << (m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1)
+        << " currentPreviewLayerId=" << m_d->previewLayerId;
+    if (m_d->comboWorkspace) {
+        const int ws = m_d->comboWorkspace->currentIndex();
+        if (ws != 0 && ws != 2) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryPreview: workspace gate, ws=" << ws << "; aborting";
+            return;
+        }
+    }
+    if (!m_d->viewManager || !m_d->viewManager->imageManager()) {
+        setStatusMessage(ComfyTr::tr("Open a document first."), true);
+        return;
+    }
+    KisImageSP image = m_d->viewManager->image();
+    if (!image) {
+        setStatusMessage(ComfyTr::tr("Open a document first."), true);
+        return;
+    }
+    int entryIndex = -1;
+    int imageIndex = -1;
+    QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotHistoryPreview resolved entryIndex=" << entryIndex
+        << " imageIndex=" << imageIndex << " path=" << path
+        << " fileExists=" << (path.isEmpty() ? false : QFile::exists(path));
+    if (path.isEmpty() || !QFile::exists(path)) {
+        setStatusMessage(ComfyTr::tr("No result image to preview."), true);
+        return;
+    }
+
+    // Remove the previous in-place preview layer if there was one. This is
+    // what makes thumb-tap "swap the preview" instead of stacking layers.
+    if (!m_d->previewLayerId.isEmpty()) {
+        if (KisLayerSP prev = findPreviewLayerByUuidString(image, m_d->previewLayerId)) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryPreview: removing previous preview layer"
+                                          << prev->name();
+            image->removeNode(prev);
+        }
+        m_d->previewLayerId.clear();
+    }
+
+    // Import the new result as a paint layer.
+    const qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(path), QStringLiteral("KisPaintLayer"));
+    qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryPreview: importImage returned" << n;
+    if (n <= 0) {
+        setStatusMessage(ComfyTr::tr("Could not import preview image."), true);
+        return;
+    }
+    KisLayerSP imported = m_d->viewManager->activeLayer();
+    if (!imported) {
+        setStatusMessage(ComfyTr::tr("Could not locate imported preview layer."), true);
+        return;
+    }
+    // Move to the top of the stack so it actually previews on top of the canvas.
+    KisNodeSP root = image->rootLayer();
+    if (root) {
+        image->removeNode(imported);
+        KisNodeSP first = root->firstChild();
+        if (first)
+            image->addNode(imported, root, first);
+        else
+            image->addNode(imported, root, KisNodeSP());
+    }
+
+    QString label;
+    if (entryIndex >= 0 && entryIndex < m_d->historyEntries.size())
+        label = historyEntryShortLabel(m_d->historyEntries.at(entryIndex));
+    if (label.isEmpty())
+        label = QStringLiteral("result");
+    imported->setName(QStringLiteral("[Preview] ") + label);
+
+    const QString uidStr = imported->uuid().toString(QUuid::WithoutBraces);
+    m_d->previewLayerId = uidStr;
+    savePreviewLayerIdToDocument(uidStr);
+
+    if (m_d->canvas)
+        m_d->canvas->updateCanvas();
+    setStatusMessage(ComfyTr::tr("Previewing \"%1\". Tap Apply to keep, or tap another thumbnail.", label));
+}
+
 void ComfyUIRemoteDock::slotHistoryApply()
 {
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
@@ -223,7 +350,8 @@ void ComfyUIRemoteDock::slotHistoryApply()
         << " count=" << (m_d->listHistory ? m_d->listHistory->count() : -1)
         << " workspace=" << (m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1)
         << " btnHistoryApplyEnabled="
-        << (m_d->btnHistoryApply ? m_d->btnHistoryApply->isEnabled() : false);
+        << (m_d->btnHistoryApply ? m_d->btnHistoryApply->isEnabled() : false)
+        << " currentPreviewLayerId=" << m_d->previewLayerId;
     // §10.1: Apply action — only Generate (0) and Live (2) workspaces
     if (m_d->comboWorkspace) {
         const int ws = m_d->comboWorkspace->currentIndex();
@@ -233,7 +361,7 @@ void ComfyUIRemoteDock::slotHistoryApply()
         }
     }
     // FAITHFUL_PORT: when the user single-taps a thumbnail on Android the
-    // itemClicked → slotHistoryApply path can fire before itemSelectionChanged
+    // itemClicked → slotHistoryPreview path can fire before itemSelectionChanged
     // (or with a race where currentRow() is still -1). pathForCurrentHistoryRow
     // relies on currentRow(), so promote any tapped/highlighted item to the
     // current row first. Without this, the very first tap on a fresh history
@@ -260,6 +388,35 @@ void ComfyUIRemoteDock::slotHistoryApply()
         qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: viewManager / imageManager unavailable";
         setStatusMessage(ComfyTr::tr("Open a document first."), true);
         return;
+    }
+    // FAITHFUL_PORT: if a preview layer is currently showing this exact same
+    // result (i.e. the user tapped a thumb → then Apply), don't re-import a
+    // duplicate; just promote the preview to "[Generated] … (seed)" and drop
+    // the preview tracking. Mirrors the desktop "Apply" semantics.
+    KisImageSP image = m_d->viewManager->image();
+    if (image && !m_d->previewLayerId.isEmpty()) {
+        if (KisLayerSP previewLayer = findPreviewLayerByUuidString(image, m_d->previewLayerId)) {
+            QString label;
+            qint64 seed = 0;
+            if (entryIndex >= 0 && entryIndex < m_d->historyEntries.size()) {
+                label = historyEntryShortLabel(m_d->historyEntries.at(entryIndex));
+                seed = m_d->historyEntries.at(entryIndex).seed;
+                m_d->historyEntries[entryIndex].imageInUse.insert(imageIndex, true);
+            }
+            if (label.isEmpty())
+                label = QStringLiteral("result");
+            previewLayer->setName(QStringLiteral("[Generated] %1 (%2)").arg(label).arg(seed));
+            m_d->previewLayerId.clear();
+            savePreviewLayerIdToDocument(QString());
+            refreshHistoryList();
+            scheduleDocumentUiJsonSave();
+            if (m_d->canvas)
+                m_d->canvas->updateCanvas();
+            setStatusMessage(ComfyTr::tr("Applied result to the canvas."));
+            qCWarning(KIS_COMFYUI_REMOTE)
+                << "slotHistoryApply: committed preview layer to permanent" << previewLayer->name();
+            return;
+        }
     }
     // §13.184 / §3.5: apply_region_behavior vs apply_region_behavior_live when Live workspace is active
     if (entryIndex >= 0 && !m_d->historyEntries[entryIndex].regionLayerNames.isEmpty()) {

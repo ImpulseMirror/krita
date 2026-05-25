@@ -2140,16 +2140,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(m_d->listHistory, &QListWidget::customContextMenuRequested, this, &ComfyUIRemoteDock::slotHistoryContextMenu);
     connect(m_d->listHistory, &QListWidget::itemSelectionChanged, this, &ComfyUIRemoteDock::slotHistoryItemSelected);
     connect(m_d->listHistory, &QListWidget::doubleClicked, this, &ComfyUIRemoteDock::slotHistoryApply);
-    // FAITHFUL_PORT: on Android there is no reliable double-click gesture, so the
-    // spec doubleClicked-only binding meant tapping a history thumbnail did
-    // nothing visible. Mirror the desktop "click thumbnail → apply as preview
-    // layer" UX by routing single-click through slotHistoryApply too. The
-    // duplicate fire on desktop double-click is harmless because the second
-    // call is idempotent (it re-imports the same layer and marks the same
-    // imageInUse slot).
+    // FAITHFUL_PORT: on Android there is no reliable double-click gesture and
+    // the desktop ai-diffusion plugin uses single-click on a thumbnail to load
+    // it as a *transient* preview layer ("[Preview] <prompt>") that the user
+    // either accepts (Apply button → "[Generated] <prompt> (<seed>)") or
+    // replaces by tapping another thumbnail. The previous wiring routed
+    // single-click straight through slotHistoryApply, which stacked a fresh
+    // permanent layer on every tap. Switch single-tap to the preview path so
+    // tapping different thumbnails just swaps the in-place preview, and keep
+    // the Apply button bound to slotHistoryApply for the commit.
     connect(m_d->listHistory, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         if (!item) return;
-        slotHistoryApply();
+        m_d->listHistory->setCurrentItem(item);
+        slotHistoryPreview();
     });
     histLayout->addWidget(m_d->listHistory);
     QHBoxLayout *historyBtns = new QHBoxLayout();

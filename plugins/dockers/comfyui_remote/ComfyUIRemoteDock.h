@@ -174,6 +174,12 @@ private Q_SLOTS:
     void slotHistoryReRun();
     void slotHistoryItemSelected();
     void slotHistoryApply();
+    /// FAITHFUL_PORT: tap a history thumbnail on Android (or single-click on
+    /// desktop) → add the selected result as a transient "[Preview] …" layer
+    /// that gets replaced on every subsequent thumb tap. The user commits it
+    /// by clicking the Apply button (slotHistoryApply), which renames the
+    /// preview layer to "[Generated] … (seed)" and drops the preview tracking.
+    void slotHistoryPreview();
     void slotHistoryContextMenu(QPoint pos);
     void slotHistoryCopyPrompt();
     void slotHistoryCopyPromptEvaluated();

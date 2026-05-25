@@ -2120,22 +2120,38 @@ bool ComfyUIRemoteDock::tryStartRefineFromGenerate()
         << " editMode=" << editMode
         << " customWorkflowLen="
         << (m_d->editCustomWorkflow ? m_d->editCustomWorkflow->toPlainText().trimmed().size() : -1);
-    if (strengthPct >= 100 && !editMode) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "tryStartRefineFromGenerate: strength=100 && !editMode → returning false (normal Generate path)";
-        return false;
-    }
-    if (!m_d->editCustomWorkflow->toPlainText().trimmed().isEmpty()) {
+
+    // FAITHFUL_PORT: a partial selection means "operate on the selection",
+    // independent of strength. Spec / Python plugin: Generate with a marquee
+    // selection routes through the Fill (inpaint) pipeline so the result is
+    // masked back into the selected region instead of replacing the whole
+    // canvas. Previously we only honoured this when strength<100 || editMode,
+    // so on a 100% Generate the selection was silently ignored and the user
+    // got a full-canvas txt2img laid over their work. Custom-workflow path
+    // still bypasses (the user's JSON owns the layout).
+    if (m_d->editCustomWorkflow && !m_d->editCustomWorkflow->toPlainText().trimmed().isEmpty()) {
         qCWarning(KIS_COMFYUI_REMOTE) << "tryStartRefineFromGenerate: custom workflow present → returning false";
         return false;
     }
-
-    KisImageSP image = m_d->viewManager->image();
-    KisSelectionSP sel = m_d->viewManager->selection();
+    KisImageSP image = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
+    KisSelectionSP sel = m_d->viewManager ? m_d->viewManager->selection() : KisSelectionSP();
     const bool hasSelection =
         sel && sel->pixelSelection() && !sel->pixelSelection()->selectedExactRect().isEmpty();
-    if (hasSelection && !ComfyUIUtils::isSelectionEntireDocument(image, m_d->viewManager)) {
+    const bool partialSelection =
+        hasSelection && image && !ComfyUIUtils::isSelectionEntireDocument(image, m_d->viewManager);
+    if (partialSelection) {
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "tryStartRefineFromGenerate: partial selection detected, routing through slotInpaint()"
+            << " selectedExactRect=" << sel->pixelSelection()->selectedExactRect()
+            << " docBounds=" << image->bounds();
         slotInpaint();
         return true;
+    }
+
+    if (strengthPct >= 100 && !editMode) {
+        qCWarning(KIS_COMFYUI_REMOTE)
+            << "tryStartRefineFromGenerate: strength=100 && !editMode && no partial selection → normal Generate path";
+        return false;
     }
 
     uploadCanvasForRefineGenerate();
