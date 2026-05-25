@@ -21,6 +21,34 @@ namespace ComfyWorkflowEngine {
 
 namespace {
 
+struct PromptOutput {
+    QString positiveId;
+    QString negativeId;
+};
+
+void patchSamplerNode(QJsonObject *workflow,
+                      const QString &samplerNodeId,
+                      const QString &modelNodeId = QString(),
+                      const QString &positiveNodeId = QString(),
+                      const QString &negativeNodeId = QString());
+
+PromptOutput applyReferenceConditioningForTile(QJsonObject *workflow,
+                                               int *nextId,
+                                               const PromptOutput &prompt,
+                                               const QString &tileImageId,
+                                               const QString &latentId,
+                                               const QString &vaeId,
+                                               const QList<ComfyWorkflowEngine::IpAdapterLayerInput> &ipLayers,
+                                               bool editReference,
+                                               ComfyResources::Arch arch);
+
+void finishBuilderWithSamplerCustom(QJsonObject *workflow,
+                                    const QString &samplerNodeId,
+                                    ComfyResources::Arch arch,
+                                    int extentW,
+                                    int extentH,
+                                    double denoise);
+
 QJsonValue clipEncodeTextInput(const QString &prompt,
                                const QString &translationLang,
                                QJsonObject *workflow,
@@ -165,13 +193,13 @@ QList<CheckpointLoraWeight> checkpointLorasFromEnabledLibrary()
 {
     QList<CheckpointLoraWeight> out;
     ComfyFileLibrary::instance().init();
-    for (const ComfyFileRecord *rec : ComfyFileLibrary::instance().loras().files()) {
-        if (!rec || !rec->meta(QStringLiteral("enabled")).toBool(true))
+    for (const ComfyFileRecord &rec : ComfyFileLibrary::instance().loras().files()) {
+        if (!rec.meta(QStringLiteral("enabled")).toBool(true))
             continue;
-        const QString fn = QFileInfo(rec->id.trimmed()).fileName();
+        const QString fn = QFileInfo(rec.id.trimmed()).fileName();
         if (fn.isEmpty())
             continue;
-        const int pct = rec->meta(QStringLiteral("strength_percent")).toInt(100);
+        const int pct = rec.meta(QStringLiteral("strength_percent")).toInt(100);
         if (pct <= 0)
             continue;
         CheckpointLoraWeight w;
@@ -525,7 +553,7 @@ QJsonObject buildGenerate(const GenerateParams &params)
     WorkflowGraphContext ctx = discoverWorkflowGraphContext(workflow);
     ctx.extentWidth = qMax(64, params.width);
     ctx.extentHeight = qMax(64, params.height);
-    applyGenerationConditioning(workflow, params.conditioning, ctx, params.arch);
+    applyGenerationConditioning(&workflow, params.conditioning, ctx, params.arch);
     finishWorkflowWithSamplerCustom(
         &workflow, ctx.samplerNodeId, params.arch, ctx.extentWidth, ctx.extentHeight, params.denoise);
     return workflow;
@@ -973,9 +1001,9 @@ QString insertConditioningImageNode(QJsonObject *workflow,
 
 void patchSamplerNode(QJsonObject *workflow,
                       const QString &samplerNodeId,
-                      const QString &modelNodeId = QString(),
-                      const QString &positiveNodeId = QString(),
-                      const QString &negativeNodeId = QString())
+                      const QString &modelNodeId,
+                      const QString &positiveNodeId,
+                      const QString &negativeNodeId)
 {
     if (!workflow || samplerNodeId.isEmpty() || !workflow->contains(samplerNodeId))
         return;
@@ -990,11 +1018,6 @@ void patchSamplerNode(QJsonObject *workflow,
     sampler.insert(QStringLiteral("inputs"), samplerInputs);
     workflow->insert(samplerNodeId, sampler);
 }
-
-struct PromptOutput {
-    QString positiveId;
-    QString negativeId;
-};
 
 PromptOutput addReferenceLatentPair(QJsonObject *workflow,
                                     int *nextId,
@@ -1732,7 +1755,7 @@ bool applyControlNetLayers(QJsonObject *workflow,
                                              {QStringLiteral("inputs"),
                                               QJsonObject{{QStringLiteral("image"), layer.imageName}}}});
             }
-            QString vaeLink = QJsonArray{vaeSource, 2};
+            QJsonArray vaeLink = QJsonArray{vaeSource, 2};
             const QString decodeId = findNodeIdByClassType(*workflow, QStringLiteral("VAEDecode"));
             if (!decodeId.isEmpty()) {
                 const QJsonArray vaeArr = workflow->value(decodeId)

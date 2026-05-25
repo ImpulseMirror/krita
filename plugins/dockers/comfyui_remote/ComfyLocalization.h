@@ -51,30 +51,58 @@ private:
 
 /// Drop-in for Krita i18n() using JSON catalogs (English source strings as keys).
 namespace ComfyTr {
+
+namespace detail {
+inline QString toStr(const QString &s) { return s; }
+inline QString toStr(QLatin1String s) { return QString(s); }
+inline QString toStr(const char *s) { return QString::fromUtf8(s); }
+inline QString toStr(int v) { return QString::number(v); }
+inline QString toStr(unsigned int v) { return QString::number(v); }
+inline QString toStr(long v) { return QString::number(static_cast<qlonglong>(v)); }
+inline QString toStr(long long v) { return QString::number(static_cast<qlonglong>(v)); }
+inline QString toStr(unsigned long v) { return QString::number(static_cast<qulonglong>(v)); }
+inline QString toStr(unsigned long long v) { return QString::number(static_cast<qulonglong>(v)); }
+inline QString toStr(double v) { return QString::number(v); }
+inline QString toStr(float v) { return QString::number(static_cast<double>(v)); }
+} // namespace detail
+
 inline QString tr(const char *text)
 {
     return ComfyLocalization::instance().translate(QString::fromUtf8(text));
 }
-inline QString tr(const char *text, const QString &a1)
+
+template <typename A1>
+inline QString tr(const char *text, const A1 &a1)
 {
-    return ComfyLocalization::instance().translate(QString::fromUtf8(text), a1);
+    return ComfyLocalization::instance().translate(QString::fromUtf8(text), detail::toStr(a1));
 }
-inline QString tr(const char *text, const QString &a1, const QString &a2)
+
+template <typename A1, typename A2>
+inline QString tr(const char *text, const A1 &a1, const A2 &a2)
 {
-    return ComfyLocalization::instance().translate(QString::fromUtf8(text), a1, a2);
+    return ComfyLocalization::instance().translate(QString::fromUtf8(text), detail::toStr(a1), detail::toStr(a2));
 }
-inline QString tr(const char *text, const QString &a1, const QString &a2, const QString &a3)
+
+template <typename A1, typename A2, typename A3>
+inline QString tr(const char *text, const A1 &a1, const A2 &a2, const A3 &a3)
 {
-    return ComfyLocalization::instance().translate(QString::fromUtf8(text), a1, a2, a3);
+    return ComfyLocalization::instance().translate(QString::fromUtf8(text),
+                                                   detail::toStr(a1),
+                                                   detail::toStr(a2),
+                                                   detail::toStr(a3));
 }
-inline QString tr(const char *text, int a1)
+
+/// 4+ args: fall back to manual .arg() chaining since translate() only handles up to 3.
+template <typename A1, typename A2, typename A3, typename A4, typename... Rest>
+inline QString tr(const char *text, const A1 &a1, const A2 &a2, const A3 &a3, const A4 &a4, const Rest &...rest)
 {
-    return ComfyLocalization::instance().translate(QString::fromUtf8(text), QString::number(a1));
+    QString s = ComfyLocalization::instance().translate(QString::fromUtf8(text));
+    const QString args[] = {detail::toStr(a1), detail::toStr(a2), detail::toStr(a3), detail::toStr(a4), detail::toStr(rest)...};
+    for (const QString &a : args)
+        s = s.arg(a);
+    return s;
 }
-inline QString tr(const char *text, int a1, int a2)
-{
-    return ComfyLocalization::instance().translate(QString::fromUtf8(text), QString::number(a1), QString::number(a2));
-}
+
 /// i18nc(context, text) — context ignored; JSON keys match English \a text.
 inline QString trc(const char * /*context*/, const char *text)
 {

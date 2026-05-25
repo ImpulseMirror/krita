@@ -42,7 +42,6 @@ Q_SIGNALS:
 
 private:
     void rebuildRows();
-    void refreshLayerCombos();
 
     KisViewManager *m_viewManager = nullptr;
     std::function<QString()> m_archKeyProvider;

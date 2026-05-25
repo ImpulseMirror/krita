@@ -9,6 +9,7 @@
 #include "ComfyControlLayer.h"
 #include "ComfyControlLayerListWidget.h"
 #include "ComfyResources.h"
+#include "ComfyUIIntervalSlider.h"
 #include "ComfyUIPoseLayers.h"
 
 #include <QGroupBox>
@@ -19,6 +20,7 @@
 #include <KisViewManager.h>
 #include <kis_image.h>
 #include <kis_layer.h>
+#include <kis_group_layer.h>
 #include <kis_layer_utils.h>
 #include <kis_shape_layer.h>
 
@@ -35,39 +37,38 @@ QString currentArchKey(ComfyUIRemoteDock::Private *d)
         ComfyResources::archFromCheckpointName(d->comboCheckpoint->currentText().trimmed()));
 }
 
-void wireControlLayerList(ComfyUIRemoteDock *dock,
-                          ComfyUIRemoteDock::Private *d,
-                          ComfyControlLayerListWidget *list,
-                          QList<ComfyControlLayerEntry> *layers,
-                          bool forRegion)
+} // namespace
+
+void ComfyUIRemoteDock::wireControlLayerList(ComfyControlLayerListWidget *list,
+                                             QList<ComfyControlLayerEntry> *layers,
+                                             bool forRegion)
 {
-    if (!list || !dock || !d)
+    if (!list)
         return;
+    ComfyUIRemoteDock::Private *d = m_d.data();
     list->setViewManager(d->viewManager);
     list->setArchKeyProvider([d]() { return currentArchKey(d); });
     list->setLayers(layers);
-    QObject::connect(list, &ComfyControlLayerListWidget::entryEdited, dock, [dock]() {
-        dock->scheduleDocumentUiJsonSave();
+    connect(list, &ComfyControlLayerListWidget::entryEdited, this, [this]() {
+        scheduleDocumentUiJsonSave();
     });
-    QObject::connect(list, &ComfyControlLayerListWidget::addLayerRequested, dock, [dock, forRegion]() {
+    connect(list, &ComfyControlLayerListWidget::addLayerRequested, this, [this, forRegion]() {
         if (forRegion)
-            dock->slotAddRegionControlLayer();
+            slotAddRegionControlLayer();
         else
-            dock->slotAddControlLayer();
+            slotAddControlLayer();
     });
-    QObject::connect(list, &ComfyControlLayerListWidget::generateRequested, dock,
-                     [dock, forRegion](int index) { dock->beginControlLayerGenerateJob(forRegion, index); });
-    QObject::connect(list, &ComfyControlLayerListWidget::removeRequested, dock, [dock, forRegion](int index) {
+    connect(list, &ComfyControlLayerListWidget::generateRequested, this,
+            [this, forRegion](int index) { beginControlLayerGenerateJob(forRegion, index); });
+    connect(list, &ComfyControlLayerListWidget::removeRequested, this, [this, forRegion](int index) {
         if (forRegion)
-            dock->slotRemoveRegionControlLayerAt(index);
+            slotRemoveRegionControlLayerAt(index);
         else
-            dock->slotRemoveControlLayerAt(index);
+            slotRemoveControlLayerAt(index);
     });
-    QObject::connect(list, &ComfyControlLayerListWidget::addPoseCharacterRequested, dock,
-                     [dock, forRegion](int index) { dock->slotAddPoseForControlLayer(forRegion, index); });
+    connect(list, &ComfyControlLayerListWidget::addPoseCharacterRequested, this,
+            [this, forRegion](int index) { slotAddPoseForControlLayer(forRegion, index); });
 }
-
-} // namespace
 
 void ComfyUIRemoteDock::setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout)
 {
@@ -77,7 +78,7 @@ void ComfyUIRemoteDock::setupRootControlLayersUi(QWidget *parent, QVBoxLayout *l
     m_d->rootControlLayerList->setToolTip(
         ComfyTr::tr("Control layers for the whole image on Generate (ControlNet and IP-Adapter)."));
     clLay->addWidget(m_d->rootControlLayerList);
-    wireControlLayerList(this, m_d.data(), m_d->rootControlLayerList, &m_d->rootControlLayers, false);
+    wireControlLayerList(m_d->rootControlLayerList, &m_d->rootControlLayers, false);
     layout->addWidget(m_d->controlLayersGroupBox);
 }
 
@@ -104,9 +105,8 @@ void ComfyUIRemoteDock::slotAddControlLayer()
     ComfyControlLayerEntry e = ComfyControlLayer::makeDefaultForLayer(layerName, currentArchKey(m_d.data()));
     e.layerId = layerId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : layerId;
     if (m_d->controlPreviewRangeSlider) {
-        const QPair<int, int> iv = m_d->controlPreviewRangeSlider->interval();
-        e.start = iv.first / 100.0;
-        e.end = iv.second / 100.0;
+        e.start = m_d->controlPreviewRangeSlider->lowValue() / 100.0;
+        e.end = m_d->controlPreviewRangeSlider->highValue() / 100.0;
     }
     m_d->rootControlLayers.append(e);
     refreshRootControlLayersList();
@@ -141,7 +141,7 @@ void ComfyUIRemoteDock::setupRegionControlLayersUi(QWidget *parent, QVBoxLayout 
     m_d->regionControlLayerList->setToolTip(
         ComfyTr::tr("Control layers for the selected region only (merged with root controls on Generate)."));
     clLay->addWidget(m_d->regionControlLayerList);
-    wireControlLayerList(this, m_d.data(), m_d->regionControlLayerList, nullptr, true);
+    wireControlLayerList(m_d->regionControlLayerList, nullptr, true);
 }
 
 void ComfyUIRemoteDock::refreshRegionControlLayersList()
@@ -189,9 +189,8 @@ void ComfyUIRemoteDock::slotAddRegionControlLayer()
     ComfyControlLayerEntry e = ComfyControlLayer::makeDefaultForLayer(layerName, currentArchKey(m_d.data()));
     e.layerId = layerId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : layerId;
     if (m_d->controlPreviewRangeSlider) {
-        const QPair<int, int> iv = m_d->controlPreviewRangeSlider->interval();
-        e.start = iv.first / 100.0;
-        e.end = iv.second / 100.0;
+        e.start = m_d->controlPreviewRangeSlider->lowValue() / 100.0;
+        e.end = m_d->controlPreviewRangeSlider->highValue() / 100.0;
     }
     regs[row].controlLayers.append(e);
     refreshRegionControlLayersList();

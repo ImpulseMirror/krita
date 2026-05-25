@@ -9,10 +9,15 @@
 #include "ComfyResources.h"
 
 #include <QJsonObject>
+#include <QList>
 #include <QRect>
 #include <QString>
 
 namespace ComfyWorkflowEngine {
+
+struct ControlNetLayerInput;
+struct IpAdapterLayerInput;
+struct RegionalPromptInput;
 
 /// Parameters for basic text-to-image (WorkflowKind.generate, no regions/controls yet).
 struct TextToImageParams {

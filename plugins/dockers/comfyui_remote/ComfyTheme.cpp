@@ -8,7 +8,7 @@
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 
-#include <KisIconUtils.h>
+#include <kis_icon_utils.h>
 
 #include <QComboBox>
 #include <QDir>

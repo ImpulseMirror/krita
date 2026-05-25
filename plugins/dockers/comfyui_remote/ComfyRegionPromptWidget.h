@@ -38,7 +38,7 @@ public:
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
 
-signals:
+Q_SIGNALS:
     void activeIndexChanged(int index);
     void regionEdited();
     void removeRegionRequested();

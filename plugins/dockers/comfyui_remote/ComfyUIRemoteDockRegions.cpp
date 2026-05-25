@@ -8,6 +8,7 @@
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyRegionLink.h"
 #include "ComfyRegionProcess.h"
+#include "ComfyRegionPromptWidget.h"
 #include "ComfyResources.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyWorkflowEngine.h"

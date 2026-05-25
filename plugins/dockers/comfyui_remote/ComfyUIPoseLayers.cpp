@@ -5,6 +5,8 @@
 
 #include "ComfyUIPoseLayers.h"
 
+#include <kis_group_layer.h>
+
 #include <QBuffer>
 #include <QDomDocument>
 #include <QImage>

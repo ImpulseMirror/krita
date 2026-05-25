@@ -7,16 +7,19 @@
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyControlLayer.h"
+#include "ComfyControlLayerListWidget.h"
 #include "ComfyOpenPose.h"
 #include "ComfyUIPoseLayers.h"
 #include "ComfyUIUtils.h"
+
+#include <kis_image_manager.h>
 
 #if defined(COMFYUI_HAVE_QT_WEBSOCKETS)
 #include <QWebSocket>
 #endif
 
 #include <KisDocument.h>
-#include <kis_part.h>
+#include <KisPart.h>
 
 #include <QFile>
 #include <QHttpMultiPart>
@@ -34,6 +37,7 @@
 #include <KisViewManager.h>
 #include <kis_image.h>
 #include <kis_layer.h>
+#include <kis_group_layer.h>
 #include <kis_node.h>
 #include <kis_selection.h>
 #include <kis_shape_layer.h>
@@ -196,7 +200,7 @@ bool ComfyUIRemoteDock::importControlLayerFromOpenPoseJson(const QJsonValue &ope
     if (!doc) {
         const QList<QPointer<KisDocument>> docs = KisPart::instance()->documents();
         for (const QPointer<KisDocument> &d : docs) {
-            if (d && d->image() == image) {
+            if (d && KisImageSP(d->image()) == image) {
                 doc = d.data();
                 break;
             }

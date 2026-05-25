@@ -64,7 +64,9 @@ ComfyFileRecord ComfyFileRecord::remote(const QString &id, ComfyFileFormat forma
 {
     ComfyFileRecord f;
     f.id = id;
-    f.name = displayNameFromId(id.replace(QLatin1Char('\\'), QLatin1Char('/')));
+    QString normalized = id;
+    normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    f.name = displayNameFromId(normalized);
     f.source = ComfyFileSourceRemote;
     f.format = format;
     return f;

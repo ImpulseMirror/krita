@@ -10,10 +10,11 @@
 #include <QList>
 #include <QString>
 
-#include "ComfyUIRemoteDockPrivate.h"
+#include <kis_types.h>
+
+#include "ComfyRegionEntry.h"
 #include "ComfyWorkflowEngine.h"
 
-class KisImageSP;
 class KisViewManager;
 
 namespace ComfyRegionProcess {
@@ -32,7 +33,7 @@ struct ProcessRegionsResult {
 };
 
 /// Port of ai_diffusion/region.py process_regions() for dock RegionEntry list (layer order = top to bottom).
-ProcessRegionsResult processRegions(const QList<ComfyUIRemoteDock::Private::RegionEntry> &entries,
+ProcessRegionsResult processRegions(const QList<ComfyRegionEntry> &entries,
                                    KisImageSP image,
                                    KisViewManager *viewManager,
                                    const QString &rootPositive,

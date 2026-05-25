@@ -103,7 +103,7 @@ QRect maskNonZeroBounds(const QImage &maskGray)
     return bounds;
 }
 
-ProcessRegionsResult processRegions(const QList<ComfyUIRemoteDock::Private::RegionEntry> &entries,
+ProcessRegionsResult processRegions(const QList<ComfyRegionEntry> &entries,
                                     KisImageSP image,
                                     KisViewManager *viewManager,
                                     const QString &rootPositive,
@@ -118,13 +118,13 @@ ProcessRegionsResult processRegions(const QList<ComfyUIRemoteDock::Private::Regi
     const int docArea = qMax(1, docBounds.width() * docBounds.height());
 
     struct RawRegion {
-        ComfyUIRemoteDock::Private::RegionEntry entry;
+        ComfyRegionEntry entry;
         QImage originalMask;
         QString mergedPrompt;
     };
     QList<RawRegion> raw;
 
-    for (const ComfyUIRemoteDock::Private::RegionEntry &e : entries) {
+    for (const ComfyRegionEntry &e : entries) {
         const QString maskSrc = ComfyRegionLink::effectiveMaskSource(e, image);
         QImage maskImg = ComfyUIUtils::getMaskAsQImage(image, viewManager, maskSrc);
         if (maskImg.isNull())

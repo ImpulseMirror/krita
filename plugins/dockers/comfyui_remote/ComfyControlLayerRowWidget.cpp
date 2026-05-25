@@ -25,6 +25,7 @@
 #include <kis_node.h>
 #include <kis_layer_utils.h>
 #include <kis_paint_layer.h>
+#include <kis_group_layer.h>
 #include <kis_shape_layer.h>
 
 #include <kis_icon_utils.h>

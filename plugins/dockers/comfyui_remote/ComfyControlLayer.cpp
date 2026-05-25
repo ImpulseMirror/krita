@@ -130,36 +130,6 @@ double strengthAsFloat(int strengthPercent)
     return qBound(0, strengthPercent, 100) / static_cast<double>(strengthMultiplier);
 }
 
-QJsonObject ComfyControlLayerEntry::toJson() const
-{
-    QJsonObject o;
-    o.insert(QStringLiteral("mode"), mode);
-    if (!layerId.isEmpty())
-        o.insert(QStringLiteral("layer_id"), layerId);
-    if (!layerName.isEmpty())
-        o.insert(QStringLiteral("layer_name"), layerName);
-    o.insert(QStringLiteral("preset_value"), presetValue);
-    o.insert(QStringLiteral("strength"), strength);
-    o.insert(QStringLiteral("start"), start);
-    o.insert(QStringLiteral("end"), end);
-    o.insert(QStringLiteral("use_custom_strength"), useCustomStrength);
-    return o;
-}
-
-ComfyControlLayerEntry ComfyControlLayerEntry::fromJson(const QJsonObject &o)
-{
-    ComfyControlLayerEntry e;
-    e.mode = o.value(QStringLiteral("mode")).toString(e.mode);
-    e.layerId = o.value(QStringLiteral("layer_id")).toString();
-    e.layerName = o.value(QStringLiteral("layer_name")).toString();
-    e.presetValue = o.value(QStringLiteral("preset_value")).toInt(e.presetValue);
-    e.strength = o.value(QStringLiteral("strength")).toInt(e.strength);
-    e.start = o.value(QStringLiteral("start")).toDouble(e.start);
-    e.end = o.value(QStringLiteral("end")).toDouble(e.end);
-    e.useCustomStrength = o.value(QStringLiteral("use_custom_strength")).toBool(false);
-    return e;
-}
-
 QJsonArray toJsonArray(const QList<ComfyControlLayerEntry> &layers)
 {
     QJsonArray arr;
@@ -223,3 +193,33 @@ ComfyControlLayerEntry makeDefaultForLayer(const QString &layerName, const QStri
 }
 
 } // namespace ComfyControlLayer
+
+QJsonObject ComfyControlLayerEntry::toJson() const
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("mode"), mode);
+    if (!layerId.isEmpty())
+        o.insert(QStringLiteral("layer_id"), layerId);
+    if (!layerName.isEmpty())
+        o.insert(QStringLiteral("layer_name"), layerName);
+    o.insert(QStringLiteral("preset_value"), presetValue);
+    o.insert(QStringLiteral("strength"), strength);
+    o.insert(QStringLiteral("start"), start);
+    o.insert(QStringLiteral("end"), end);
+    o.insert(QStringLiteral("use_custom_strength"), useCustomStrength);
+    return o;
+}
+
+ComfyControlLayerEntry ComfyControlLayerEntry::fromJson(const QJsonObject &o)
+{
+    ComfyControlLayerEntry e;
+    e.mode = o.value(QStringLiteral("mode")).toString(e.mode);
+    e.layerId = o.value(QStringLiteral("layer_id")).toString();
+    e.layerName = o.value(QStringLiteral("layer_name")).toString();
+    e.presetValue = o.value(QStringLiteral("preset_value")).toInt(e.presetValue);
+    e.strength = o.value(QStringLiteral("strength")).toInt(e.strength);
+    e.start = o.value(QStringLiteral("start")).toDouble(e.start);
+    e.end = o.value(QStringLiteral("end")).toDouble(e.end);
+    e.useCustomStrength = o.value(QStringLiteral("use_custom_strength")).toBool(false);
+    return e;
+}

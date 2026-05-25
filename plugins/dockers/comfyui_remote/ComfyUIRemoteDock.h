@@ -13,8 +13,12 @@
 
 class QPlainTextEdit;
 class QComboBox;
+class QVBoxLayout;
+class ComfyControlLayerListWidget;
+struct ComfyControlLayerEntry;
 
 #include <kis_types.h>
+#include <QList>
 
 class ComfyUIRemoteDock : public QDockWidget, public KisMainwindowObserver
 {
@@ -42,6 +46,11 @@ public:
     void setCanvas(KoCanvasBase *canvas) override;
     void unsetCanvas() override;
 
+    // §13.27: ErrorBox-style status: red for error, yellow for warning, default for normal.
+    // Public so helper free functions in implementation TUs can surface validation errors
+    // without becoming friends of the dock.
+    void setStatusMessage(const QString &msg, bool isError = false, bool isWarning = false);
+
 private:
     void startPolling();
     void updateQueueStatus();
@@ -52,12 +61,13 @@ private:
     void refreshRegionsList();
     // §13.18: ProgressKind — upload = amber (progress_alt), generation = default
     void setProgressBarKind(bool isUpload);
-    // §13.27: ErrorBox-style status: red for error, yellow for warning, default for normal
-    void setStatusMessage(const QString &msg, bool isError = false, bool isWarning = false);
     void loadRegionsFromConfig();
     void saveRegionsToConfig();
     void setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout);
     void setupRegionControlLayersUi(QWidget *parent, QVBoxLayout *layout);
+    void wireControlLayerList(ComfyControlLayerListWidget *list,
+                              QList<ComfyControlLayerEntry> *layers,
+                              bool forRegion);
     void refreshRootControlLayersList();
 
     // §13.44: Persist preview layer ID to document annotation (call when user sets preview layer)

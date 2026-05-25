@@ -8,6 +8,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyControlLayer.h"
+#include "ComfyRegionEntry.h"
 #include "ComfyRegionProcess.h"
 #include "ComfyWorkflowEngine.h"
 
@@ -182,13 +183,7 @@ struct ComfyUIRemoteDock::Private
     // §13.44: Preview layer ID (QUuid string) from document annotation; restored on setCanvas
     QString previewLayerId;
 
-    struct RegionEntry {
-        QString name;
-        QString prompt;
-        QString maskSource; // "selection" or "layer:LayerName"
-        QString layerIds;   // comma-separated Krita layer UUIDs (Python layer_ids)
-        QList<ComfyControlLayerEntry> controlLayers;
-    };
+    using RegionEntry = ComfyRegionEntry;
 
     int activeRegionIndex = -1;
 

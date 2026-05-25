@@ -6,6 +6,7 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfySwitchWidget.h"
 #include "ComfyUIUtils.h"
 #include "ComfyWorkflowEngine.h"
 #include "ComfyStyleCollection.h"

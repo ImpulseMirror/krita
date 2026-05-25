@@ -1,5 +1,3 @@
-add_subdirectory(tests)
-
 # Static lib for dock (used by plugin and tests)
 set(kritacomfyuiremote_static_SOURCES
     ComfyControlLayer.cpp
@@ -77,3 +75,7 @@ target_link_libraries(kritacomfyuiremote PRIVATE kritacomfyuiremote_static krita
 install(TARGETS kritacomfyuiremote DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION ${KRITA_PLUGIN_INSTALL_DIR}/data)
 install(FILES ComfyUIRemote.action DESTINATION ${KDE_INSTALL_DATADIR}/krita/actions)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

@@ -703,7 +703,7 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
 
     KisPainter painter(dst);
     painter.setCompositeOpId(COMPOSITE_COPY);
-    painter.beginTransaction(kundo2_ComfyTr::tr("ComfyUI animation frame"));
+    painter.beginTransaction(kundo2_noi18n(ComfyTr::tr("ComfyUI animation frame")));
     painter.bitBlt(dstPt, tmp, srcRect);
     painter.endTransaction(kisImage->undoAdapter());
 

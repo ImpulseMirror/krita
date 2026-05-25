@@ -134,6 +134,19 @@
 
 namespace {
 
+void setComboCurrentItemData(QComboBox *c, const QString &data, int fallbackIndex)
+{
+    if (!c || c->count() <= 0)
+        return;
+    for (int i = 0; i < c->count(); ++i) {
+        if (c->itemData(i).toString() == data) {
+            c->setCurrentIndex(i);
+            return;
+        }
+    }
+    c->setCurrentIndex(qBound(0, fallbackIndex, c->count() - 1));
+}
+
 /// §13.196: while tag completer popup is visible, Tab must not move focus away from the prompt.
 class ComfyPromptPlainTextEdit : public QPlainTextEdit
 {
@@ -2248,23 +2261,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QTimer::singleShot(400, this, &ComfyUIRemoteDock::tryAutostartServerFallback);
 }
 
-namespace {
-
-void setComboCurrentItemData(QComboBox *c, const QString &data, int fallbackIndex)
-{
-    if (!c || c->count() <= 0)
-        return;
-    for (int i = 0; i < c->count(); ++i) {
-        if (c->itemData(i).toString() == data) {
-            c->setCurrentIndex(i);
-            return;
-        }
-    }
-    c->setCurrentIndex(qBound(0, fallbackIndex, c->count() - 1));
-}
-
-} // namespace
-
 void ComfyUIRemoteDock::persistOpenCustomWorkflowToDocument()
 {
     saveEmbeddedCustomWorkflowToDocument();
@@ -4122,6 +4118,12 @@ QJsonObject ComfyUIRemoteDock::animationWorkspaceToJson() const
     return o;
 }
 
+using ComfyUIUtils::ComfyRegionUiStateEntry;
+using ComfyUIUtils::regionUiStateEntriesFromJsonArray;
+using ComfyUIUtils::regionUiStateEntriesToJsonArray;
+using ComfyUIUtils::rootRegionUiWrapFromJson;
+using ComfyUIUtils::rootRegionUiWrapToJson;
+
 namespace {
 
 ComfyRegionUiStateEntry comfyRegionEntryToUi(const ComfyUIRemoteDock::Private::RegionEntry &e)
@@ -4919,7 +4921,8 @@ void ComfyUIRemoteDock::rebuildPresetComboItems()
     const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
     const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
     for (const ComfyStyleEntry *s : styles) {
-        const int idx = m_d->comboPreset->addItem(s->name);
+        m_d->comboPreset->addItem(s->name);
+        const int idx = m_d->comboPreset->count() - 1;
         m_d->comboPreset->setItemData(idx, s->styleId);
         const QString ckpt = s->checkpoints.isEmpty() ? QString() : s->checkpoints.first();
         m_d->comboPreset->setItemIcon(idx, ComfyTheme::checkpointIconForArchitectureKey(s->architecture, ckpt));
@@ -4929,8 +4932,9 @@ void ComfyUIRemoteDock::rebuildPresetComboItems()
     for (const QString &name : customNames) {
         if (name.isEmpty())
             continue;
-        const int idx = m_d->comboPreset->addItem(name);
-        m_d->comboPreset->setItemData(idx, QStringLiteral("custom:") + name);
+        m_d->comboPreset->addItem(name);
+        const int idx = m_d->comboPreset->count() - 1;
+        m_d->comboPreset->setItemData(idx, QString(QStringLiteral("custom:") + name));
     }
     int restoreIdx = 0;
     if (!prevStyleId.isEmpty() && prevStyleId != QLatin1String("none"))

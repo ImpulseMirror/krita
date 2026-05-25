@@ -37,7 +37,7 @@
 #include <kis_group_layer.h>
 #include <kis_paint_layer.h>
 #include <kis_node.h>
-#include <KisIconUtils.h>
+#include <kis_icon_utils.h>
 
 namespace {
 
@@ -527,7 +527,7 @@ void ComfyRegionPromptWidget::rebuildInactiveChips()
     if (!m_regions || !m_activeIndex)
         return;
 
-    KisImageSP image = m_viewManager ? m_viewManager->image() : KisImageSP();
+    KisImageSP image = m_viewManager ? KisImageSP(m_viewManager->image()) : KisImageSP();
     const int active = *m_activeIndex;
 
     auto placeChip = [this, active, image](InactiveRegionChip *chip, int index) {
@@ -583,7 +583,7 @@ void ComfyRegionPromptWidget::populateMaskCombo()
             KisNodeSP node = nodes.takeFirst();
             if (KisLayerSP layer = dynamic_cast<KisLayer *>(node.data())) {
                 if (!layer->name().isEmpty())
-                    m_comboMask->addItem(layer->name(), QStringLiteral("layer:") + layer->name());
+                    m_comboMask->addItem(layer->name(), QString(QStringLiteral("layer:") + layer->name()));
             }
             for (int c = 0; c < static_cast<int>(node->childCount()); ++c)
                 nodes.append(node->at(c));
@@ -639,7 +639,7 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
         syncRootPromptsFromDock();
     } else if (mode == EditorMode::Region && m_regions && m_activeIndex) {
         const ComfyUIRemoteDock::Private::RegionEntry &r = m_regions->at(*m_activeIndex);
-        KisImageSP image = m_viewManager ? m_viewManager->image() : KisImageSP();
+        KisImageSP image = m_viewManager ? KisImageSP(m_viewManager->image()) : KisImageSP();
         if (m_promptHeaderMode == 1) {
             m_headerIcon->setPixmap(
                 KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-prompt")))

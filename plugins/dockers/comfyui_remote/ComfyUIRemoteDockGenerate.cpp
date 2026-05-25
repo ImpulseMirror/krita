@@ -1588,7 +1588,7 @@ void ComfyUIRemoteDock::uploadNextGenerateControlImage()
         const QString fname =
             QStringLiteral("control_%1.png").arg(m_d->generateControlUploadedNames.size());
         part.setHeader(QNetworkRequest::ContentDispositionHeader,
-                       QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"%1\"").arg(fname));
+                       QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"%1\"").arg(fname)));
         part.setBodyDevice(tmp);
         tmp->setParent(multiPart);
         multiPart->append(part);
@@ -2045,7 +2045,7 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
     multiPart->setParent(reply);
     m_d->labelStatus->setText(ComfyTr::tr("Uploading canvas for refine…"));
     setProgressBarKind(true);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, image]() {
         reply->deleteLater();
         setProgressBarKind(false);
         if (reply->error() != QNetworkReply::NoError) {
@@ -2064,7 +2064,7 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
         const QJsonObject settingsRoot = ComfyUIUtils::loadSettingsJson();
         int genBatch = m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1;
         double genMul = m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier;
-        ComfyUIUtils::generationPerformanceBatchResolution(settingsRoot, m_d->lastComfySystemStats, genBatch, &genMul,
+        ComfyUIUtils::generationPerformanceBatchResolution(settingsRoot, m_d->lastComfySystemStats, genBatch, genMul,
                                                            &genBatch, &genMul);
         const int genBatchMax = m_d->spinBatchCount ? m_d->spinBatchCount->maximum() : 16;
         genBatch = qBound(1, genBatch, genBatchMax);
