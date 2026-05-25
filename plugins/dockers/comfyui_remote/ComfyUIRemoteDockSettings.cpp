@@ -115,107 +115,25 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         QStackedWidget *stack = new QStackedWidget(dlg);
         contentLayout->addWidget(stack, 1);
 
-        // §13.33 / §4.4: Connection tab — when ServerMode is undefined show InitialSetupWidget; else show mode selector + panels
+        // Connection tab: this native build only supports connecting to a user-managed ComfyUI URL.
         m_d->connectionStack = new QStackedWidget(dlg);
 
-        // Initial setup page (index 0): "Welcome to Image Generation in Krita", three options
-        QWidget *initialSetupPage = new QWidget(dlg);
-        QVBoxLayout *setupLayout = new QVBoxLayout(initialSetupPage);
-        QLabel *setupTitle = new QLabel(ComfyTr::tr("Welcome to Image Generation in Krita"), initialSetupPage);
-        QFont setupTitleFont = setupTitle->font();
-        setupTitleFont.setPointSize(setupTitleFont.pointSize() + 2);
-        setupTitleFont.setBold(true);
-        setupTitle->setFont(setupTitleFont);
-        setupLayout->addWidget(setupTitle);
-        QLabel *setupDesc = new QLabel(ComfyTr::tr("Choose how you want to connect to the image generation backend."), initialSetupPage);
-        setupDesc->setWordWrap(true);
-        setupLayout->addWidget(setupDesc);
-        setupLayout->addSpacing(16);
-
-        auto applyServerMode = [this](const QString &mode) {
-            KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("ServerMode", mode);
-            KSharedConfig::openConfig()->sync();
-            if (m_d->connectionStack) {
-                m_d->connectionStack->setCurrentIndex(1);
-            }
-            if (m_d->innerConnectionStack) {
-                int idx = (mode == QLatin1String("cloud")) ? 0 : (mode == QLatin1String("managed")) ? 1 : 2;
-                m_d->innerConnectionStack->setCurrentIndex(idx);
-            }
-            if (m_d->connectionModeGroup) {
-                QAbstractButton *btn = m_d->connectionModeGroup->button((mode == QLatin1String("cloud")) ? 0 : (mode == QLatin1String("managed")) ? 1 : 2);
-                if (btn) btn->setChecked(true);
-            }
-            refreshCloudAuthStatusLabel();
-        };
-
-        QPushButton *btnOnlineService = new QPushButton(ComfyTr::tr("Online Service — Login or Sign up"), initialSetupPage);
-        connect(btnOnlineService, &QPushButton::clicked, this, [applyServerMode](bool) { applyServerMode(QStringLiteral("cloud")); });
-        setupLayout->addWidget(btnOnlineService);
-        QPushButton *btnManagedServer = new QPushButton(ComfyTr::tr("Local Managed Server — Start Installation"), initialSetupPage);
-        connect(btnManagedServer, &QPushButton::clicked, this, [applyServerMode](bool) { applyServerMode(QStringLiteral("managed")); });
-        setupLayout->addWidget(btnManagedServer);
-        QPushButton *btnCustomComfy = new QPushButton(ComfyTr::tr("Custom ComfyUI — Connect via URL"), initialSetupPage);
-        connect(btnCustomComfy, &QPushButton::clicked, this, [applyServerMode](bool) { applyServerMode(QStringLiteral("external")); });
-        setupLayout->addWidget(btnCustomComfy);
-        setupLayout->addStretch();
-        m_d->connectionStack->addWidget(initialSetupPage);
-
-        // Mode-selected page (index 1): ServerModeSelect + inner stack (Cloud / Managed / Custom)
-        QWidget *modeSelectedPage = new QWidget(dlg);
-        QVBoxLayout *modeSelectedLayout = new QVBoxLayout(modeSelectedPage);
-        QLabel *connTabHeading = new QLabel(ComfyTr::tr("Server Configuration"), modeSelectedPage);
+        QWidget *connectionPage = new QWidget(dlg);
+        QVBoxLayout *connectionLayout = new QVBoxLayout(connectionPage);
+        QLabel *connTabHeading = new QLabel(ComfyTr::tr("Server Configuration"), connectionPage);
         QFont connTabHeadingFont = connTabHeading->font();
         connTabHeadingFont.setBold(true);
         connTabHeading->setFont(connTabHeadingFont);
-        modeSelectedLayout->addWidget(connTabHeading);
-        m_d->connectionModeGroup = new QButtonGroup(modeSelectedPage);
-        QHBoxLayout *modeButtonsRow = new QHBoxLayout();
-        QRadioButton *radioCloud = new QRadioButton(ComfyTr::tr("Online Service"), modeSelectedPage);
-        QRadioButton *radioManaged = new QRadioButton(ComfyTr::tr("Local Managed Server"), modeSelectedPage);
-        QRadioButton *radioCustom = new QRadioButton(ComfyTr::tr("Custom ComfyUI"), modeSelectedPage);
-        m_d->connectionModeGroup->addButton(radioCloud, 0);
-        m_d->connectionModeGroup->addButton(radioManaged, 1);
-        m_d->connectionModeGroup->addButton(radioCustom, 2);
-        modeButtonsRow->addWidget(radioCloud);
-        modeButtonsRow->addWidget(radioManaged);
-        modeButtonsRow->addWidget(radioCustom);
-        modeButtonsRow->addStretch();
-        modeSelectedLayout->addLayout(modeButtonsRow);
+        connectionLayout->addWidget(connTabHeading);
 
-        m_d->innerConnectionStack = new QStackedWidget(dlg);
-        // Cloud panel (index 0) — placeholder
-        QWidget *cloudPage = new QWidget(dlg);
-        QVBoxLayout *cloudLayout = new QVBoxLayout(cloudPage);
-        QLabel *cloudPlaceholder = new QLabel(ComfyTr::tr("Online Service is not available in this build. Use Custom ComfyUI to connect to your own server."), dlg);
-        cloudPlaceholder->setWordWrap(true);
-        cloudLayout->addWidget(cloudPlaceholder);
-        m_d->labelCloudAuthStatus = new QLabel(cloudPage);
-        refreshCloudAuthStatusLabel();
-        cloudLayout->addWidget(m_d->labelCloudAuthStatus);
-        cloudLayout->addStretch();
-        m_d->innerConnectionStack->addWidget(cloudPage);
-        // Managed panel (index 1) — placeholder
-        QWidget *managedPage = new QWidget(dlg);
-        QVBoxLayout *managedLayout = new QVBoxLayout(managedPage);
-        QLabel *managedPlaceholder = new QLabel(ComfyTr::tr("Local Managed Server is not available in this build. Use Custom ComfyUI to connect to your own server."), dlg);
-        managedPlaceholder->setWordWrap(true);
-        managedLayout->addWidget(managedPlaceholder);
-        managedLayout->addStretch();
-        m_d->innerConnectionStack->addWidget(managedPage);
-
-        // Custom ComfyUI panel (index 2) — per spec §4.4 (URL → Connect → status → View log files → models → help)
-        QWidget *connPage = new QWidget(dlg);
-        QVBoxLayout *connLayout = new QVBoxLayout(connPage);
-
-        QLabel *serverUrlDesc = new QLabel(ComfyTr::tr("URL used to connect to a running ComfyUI server. Default is 127.0.0.1:8188 (local)."), connPage);
+        QLabel *serverUrlDesc = new QLabel(ComfyTr::tr("URL used to connect to a running ComfyUI server. Default is 127.0.0.1:8188 (local)."), connectionPage);
         serverUrlDesc->setWordWrap(true);
-        connLayout->addWidget(serverUrlDesc);
+        connectionLayout->addWidget(serverUrlDesc);
         QFormLayout *connForm = new QFormLayout();
         connForm->addRow(ComfyTr::tr("Server URL:"), m_d->editServerUrl);
-        connLayout->addLayout(connForm);
+        connectionLayout->addLayout(connForm);
 
-        m_d->btnTest = new QPushButton(ComfyTr::tr("Connect"), connPage);
+        m_d->btnTest = new QPushButton(ComfyTr::tr("Connect"), connectionPage);
         m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
         connect(m_d->btnTest, &QPushButton::clicked, this, [this](bool) {
             if (m_d->isConnected)
@@ -223,29 +141,29 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             else
                 slotTestConnection();
         });
-        connLayout->addWidget(m_d->btnTest);
+        connectionLayout->addWidget(m_d->btnTest);
 
-        m_d->labelConnectionStatus = new QLabel(ComfyTr::tr("Disconnected"), connPage);
+        m_d->labelConnectionStatus = new QLabel(ComfyTr::tr("Disconnected"), connectionPage);
         m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
-        connLayout->addWidget(m_d->labelConnectionStatus);
+        connectionLayout->addWidget(m_d->labelConnectionStatus);
 
-        QPushButton *viewLogsButton = new QPushButton(ComfyTr::tr("View log files"), connPage);
+        QPushButton *viewLogsButton = new QPushButton(ComfyTr::tr("View log files"), connectionPage);
         connect(viewLogsButton, &QPushButton::clicked, this, [this](bool) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginLogDir()));
         });
-        connLayout->addWidget(viewLogsButton);
+        connectionLayout->addWidget(viewLogsButton);
         // §4.4 / §7.4: Detected base models — list of architectures with supported/missing status (populated when connected)
-        QLabel *detectedModelsHeading = new QLabel(ComfyTr::tr("Detected base models:"), connPage);
-        connLayout->addWidget(detectedModelsHeading);
-        m_d->labelDetectedModels = new QLabel(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."), connPage);
+        QLabel *detectedModelsHeading = new QLabel(ComfyTr::tr("Detected base models:"), connectionPage);
+        connectionLayout->addWidget(detectedModelsHeading);
+        m_d->labelDetectedModels = new QLabel(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."), connectionPage);
         m_d->labelDetectedModels->setWordWrap(true);
         m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
-        connLayout->addWidget(m_d->labelDetectedModels);
+        connectionLayout->addWidget(m_d->labelDetectedModels);
         // §4.4: Help text for required models; Custom ComfyUI Setup = link to docs
         QString connHelpMsg = ComfyTr::tr("See Custom ComfyUI Setup for required models. Check the client.log file for more details.");
         connHelpMsg.replace(QStringLiteral("Custom ComfyUI Setup"),
             QStringLiteral("<a href=\"https://docs.interstice.cloud\">Custom ComfyUI Setup</a>"));
-        QLabel *connHelp = new QLabel(connHelpMsg, connPage);
+        QLabel *connHelp = new QLabel(connHelpMsg, connectionPage);
         connHelp->setWordWrap(true);
         connHelp->setTextFormat(Qt::RichText);
         connHelp->setOpenExternalLinks(false);
@@ -253,37 +171,17 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         connect(connHelp, &QLabel::linkActivated, this, [](const QString &url) {
             QDesktopServices::openUrl(QUrl(url));
         });
-        connLayout->addWidget(connHelp);
-        connLayout->addStretch();
+        connectionLayout->addWidget(connHelp);
+        connectionLayout->addStretch();
 
-        m_d->innerConnectionStack->addWidget(connPage);
-        modeSelectedLayout->addWidget(m_d->innerConnectionStack, 1);
-
-        connect(m_d->connectionModeGroup, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked), this, [this](QAbstractButton *btn) {
-            if (!m_d->innerConnectionStack || !btn) return;
-            int id = m_d->connectionModeGroup->id(btn);
-            m_d->innerConnectionStack->setCurrentIndex(id);
-            QString mode = (id == 0) ? QStringLiteral("cloud") : (id == 1) ? QStringLiteral("managed") : QStringLiteral("external");
-            KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("ServerMode", mode);
-            KSharedConfig::openConfig()->sync();
-            refreshCloudAuthStatusLabel();
-        });
-
-        connect(m_d->innerConnectionStack, &QStackedWidget::currentChanged, this, [this](int) {
-            refreshCloudAuthStatusLabel();
-        });
-
-        m_d->connectionStack->addWidget(modeSelectedPage);
+        m_d->connectionStack->addWidget(connectionPage);
         stack->addWidget(m_d->connectionStack);
 
-        // §13.33: Initial state from config (user may have already chosen a server mode)
-        QString initialMode = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("ServerMode", QStringLiteral("undefined"));
-        if (initialMode != QLatin1String("undefined")) {
-            m_d->connectionStack->setCurrentIndex(1);
-            int idx = (initialMode == QLatin1String("cloud")) ? 0 : (initialMode == QLatin1String("managed")) ? 1 : 2;
-            m_d->innerConnectionStack->setCurrentIndex(idx);
-            QAbstractButton *modeBtn = m_d->connectionModeGroup->button(idx);
-            if (modeBtn) modeBtn->setChecked(true);
+        KConfigGroup connectionCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+        const QString initialMode = connectionCfg.readEntry("ServerMode", QStringLiteral("external"));
+        if (initialMode != QLatin1String("external")) {
+            connectionCfg.writeEntry("ServerMode", QStringLiteral("external"));
+            KSharedConfig::openConfig()->sync();
         }
 
         // Styles tab (index 1) — §4.5 Style Presets (mirrors dock; LoRA list + samplers.json presets partial / stub)
@@ -1811,7 +1709,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         comboPerfPreset->addItem(ComfyTr::tr("GPU low (up to 6GB)"), QStringLiteral("low"));
         comboPerfPreset->addItem(ComfyTr::tr("GPU medium (6GB to 12GB)"), QStringLiteral("medium"));
         comboPerfPreset->addItem(ComfyTr::tr("GPU high (more than 12GB)"), QStringLiteral("high"));
-        comboPerfPreset->addItem(ComfyTr::tr("Cloud"), QStringLiteral("cloud"));
         comboPerfPreset->addItem(ComfyTr::tr("Custom"), QStringLiteral("custom"));
         QString pp = perfSettings.value(QStringLiteral("performance_preset")).toString();
         if (pp.isEmpty()) pp = QStringLiteral("auto");
@@ -2039,10 +1936,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     } else if (key == QLatin1String("high")) {
                         batch = 6;
                         maxMp = 8;
-                        tiledMode = QStringLiteral("automatic");
-                    } else if (key == QLatin1String("cloud")) {
-                        batch = 8;
-                        maxMp = 6;
                         tiledMode = QStringLiteral("automatic");
                     } else {
                         savePerfSettings();
@@ -2285,7 +2178,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         connect(navList, &QListWidget::currentRowChanged, this, [this, syncStylesFromDock, syncPerfSlidersFromDock](int row) {
             if (row == 0) {
                 refreshConnectionActionButton();
-                refreshCloudAuthStatusLabel();
             }
             if (row == 1)
                 syncStylesFromDock();
@@ -2299,35 +2191,24 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         navList->setCurrentRow(0);
 
         refreshConnectionActionButton();
-        refreshCloudAuthStatusLabel();
         refreshCustomWorkflowParameterPanel();
     }
 
     if (m_d->settingsDialog) {
         if (m_d->checkConfirmDiscardImage)
             m_d->checkConfirmDiscardImage->setChecked(KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("ConfirmDiscardImage", true));
-        // §13.33: Restore Connection tab state from ServerMode (undefined → show initial setup; else show mode selector + panel)
+        // Only external ComfyUI URLs are supported in this build; normalize legacy modes.
         if (m_d->connectionStack) {
-            QString serverMode = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("ServerMode", QStringLiteral("undefined"));
-            if (serverMode == QLatin1String("undefined")) {
-                m_d->connectionStack->setCurrentIndex(0);
-            } else {
-                m_d->connectionStack->setCurrentIndex(1);
-                if (m_d->innerConnectionStack) {
-                    int idx = (serverMode == QLatin1String("cloud")) ? 0 : (serverMode == QLatin1String("managed")) ? 1 : 2;
-                    m_d->innerConnectionStack->setCurrentIndex(idx);
-                }
-                if (m_d->connectionModeGroup) {
-                    int id = (serverMode == QLatin1String("cloud")) ? 0 : (serverMode == QLatin1String("managed")) ? 1 : 2;
-                    QAbstractButton *btn = m_d->connectionModeGroup->button(id);
-                    if (btn) btn->setChecked(true);
-                }
+            KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+            if (cfg.readEntry("ServerMode", QStringLiteral("external")) != QLatin1String("external")) {
+                cfg.writeEntry("ServerMode", QStringLiteral("external"));
+                KSharedConfig::openConfig()->sync();
             }
+            m_d->connectionStack->setCurrentIndex(0);
         }
         refreshCustomWorkflowParameterPanel();
         syncPluginUpdateUi();
         refreshConnectionActionButton();
-        refreshCloudAuthStatusLabel();
         m_d->settingsDialog->show();
         m_d->settingsDialog->raise();
         m_d->settingsDialog->activateWindow();
@@ -2439,17 +2320,10 @@ void ComfyUIRemoteDock::slotRestoreDefaults()
     saveRegionsToConfig();
     refreshRegionsList();
 
-    // §13.16: Restore Defaults sets server_mode to managed (Local Managed Server), not undefined
-    cfg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("managed"));
+    cfg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("external"));
     cfgPtr->sync();
     if (m_d->connectionStack) {
-        m_d->connectionStack->setCurrentIndex(1);
-        if (m_d->innerConnectionStack)
-            m_d->innerConnectionStack->setCurrentIndex(1);
-        if (m_d->connectionModeGroup) {
-            if (QAbstractButton *btn = m_d->connectionModeGroup->button(1))
-                btn->setChecked(true);
-        }
+        m_d->connectionStack->setCurrentIndex(0);
     }
     syncPluginUpdateUi();
 }

@@ -108,7 +108,7 @@ struct ComfyUIRemoteDock::Private
     QSpinBox *spinBatchCount = nullptr;
     QLabel *labelQueueCount = nullptr;
     QPushButton *btnTest = nullptr;
-    /// §13.81: one-shot probe when ServerMode is undefined (settings URL then 127.0.0.1:8000)
+    /// §13.81: one-shot probe when ServerMode is undefined or a legacy skipped mode
     bool autostartServerProbeDone = false;
     QPushButton *btnGenerate = nullptr;
     QPushButton *btnCancelQueue = nullptr;
@@ -491,12 +491,8 @@ struct ComfyUIRemoteDock::Private
     // §7.4a: error_kind for retry/UI — "network" | "missing_resources" | "unknown"; used so autostart/retry can prefer fallback only for network
     QString connectionErrorKind;
 
-    // §13.33 InitialSetupWidget: first-time server choice (undefined → show setup; then show mode selector + panels)
-    QPointer<QStackedWidget> connectionStack;       // 0 = initial setup, 1 = mode selector + panels
-    QPointer<QStackedWidget> innerConnectionStack;  // 0 = cloud, 1 = managed, 2 = custom (external)
-    QButtonGroup *connectionModeGroup = nullptr;   // 3 options: Online Service, Local Managed Server, Custom ComfyUI
-    /// §13.89: Cloud panel — auth_missing when access_token empty (Online Service not fully implemented in this build)
-    QLabel *labelCloudAuthStatus = nullptr;
+    // Connection settings page for the supported external ComfyUI URL mode.
+    QPointer<QStackedWidget> connectionStack;
 };
 
 // §13.125: active_regions — edit_regions when Generate workspace + Edit mode, else root regions.

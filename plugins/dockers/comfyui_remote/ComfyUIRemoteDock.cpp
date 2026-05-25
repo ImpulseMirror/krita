@@ -2257,7 +2257,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     refreshAnimationTargetLayerCombo();
     updateAnimationTargetLayerRowVisibility();
 
-    // §13.81: deferred autostart probe (undefined server_mode only)
+    // §13.81: deferred autostart probe for unset or legacy skipped server modes
     QTimer::singleShot(400, this, &ComfyUIRemoteDock::tryAutostartServerFallback);
 }
 

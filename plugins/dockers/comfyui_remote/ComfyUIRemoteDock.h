@@ -145,12 +145,10 @@ private:
     void syncQueueSeedWidgetsFromMain();
     /// §5.7 / §13.92: Hide batch + enqueue mode in queue popup on Animation (supports_batch=False).
     void refreshQueuePopupSupportsBatch();
-    /// §13.81: When `server_mode` is undefined, probe `settings.server_url` then `127.0.0.1:8000`; set external or cloud.
+    /// §13.81: When `server_mode` is undefined, probe `settings.server_url` then `127.0.0.1:8000`.
     void tryAutostartServerFallback();
     /// §13.89: Connect vs Disconnect button label (Configure dialog).
     void refreshConnectionActionButton();
-    /// §13.89: Cloud panel — auth_missing when no access_token in settings.json.
-    void refreshCloudAuthStatusLabel();
 
 protected:
     // §13.196: Shift+Enter in prompt widget triggers Generate

@@ -3,7 +3,7 @@
 **Reference:** Python [krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) v1.49.0 (desktop)  
 **Target:** `plugins/dockers/comfyui_remote` on **Krita Android**  
 **Related:** [MANUAL_ACCEPTANCE_MATRIX.md](MANUAL_ACCEPTANCE_MATRIX.md), `port_progress.json` (P3.x skipped, M11 N/A)  
-**Updated:** 2026-05-24 (P5.4)
+**Updated:** 2026-05-25 (external-only connection UI)
 
 This document lists **intentional** differences between the Python desktop plugin and the native C++ plugin on Android. Items here are **not bugs** unless marked *known issue*. Anything not listed is expected to match Python behavior when using the same external ComfyUI server and models.
 
@@ -15,7 +15,7 @@ This document lists **intentional** differences between the Python desktop plugi
 |------|----------------|-------------|
 | Runtime | Embedded Python | Qt/C++ only — **no Python** |
 | ComfyUI server | Cloud, managed local, or custom URL | **Custom URL only** (user-run ComfyUI on PC/NAS/device) |
-| Cloud account / billing | Yes | **Not available** (explicit placeholder in Settings) |
+| Cloud account / billing | Yes | **Not available** (not exposed in Settings) |
 | Managed ComfyUI install | `server.py` lifecycle on desktop | **Not available** — external setup required |
 | Graph workflow editor | Full Custom Workflow UI | **Partial** — JSON/API path; full graph page deferred (P3.3) |
 | Core generation | Generate, inpaint, live, upscale, animation, regions, control | **Supported** (same HTTP/ETN contract) |
@@ -26,14 +26,14 @@ This document lists **intentional** differences between the Python desktop plugi
 
 ## 2. Intentional product deviations (P3 — skipped workstreams)
 
-These are tracked in `port_progress.json` as `skipped` with documented `skip_reason`. The UI must **not** fail silently: Settings → Connection shows clear messages when Cloud or Managed mode is selected.
+These are tracked in `port_progress.json` as `skipped` with documented `skip_reason`. The UI must **not** expose dead-end controls: Settings → Connection only shows the supported custom ComfyUI URL flow.
 
 ### 2.1 Cloud / Online Service (P3.1)
 
 | | |
 |--|--|
 | **Python** | OAuth sign-in, cloud API, cloud performance preset, hosted ComfyUI. |
-| **Android / C++** | No `ComfyCloudClient`. Connection mode **Online Service** shows: *"Online Service is not available in this build. Use Custom ComfyUI…"* |
+| **Android / C++** | No `ComfyCloudClient`. The **Online Service** connection mode and cloud performance preset are not shown. |
 | **Manual test** | M11 — `not_applicable` on Android. |
 | **Workaround** | Run ComfyUI elsewhere; set **Custom ComfyUI** URL (LAN). |
 
@@ -42,7 +42,7 @@ These are tracked in `port_progress.json` as `skipped` with documented `skip_rea
 | | |
 |--|--|
 | **Python** | Download/install/start ComfyUI + custom nodes from Krita. |
-| **Android / C++** | No managed installer or process supervisor. Mode **Local Managed Server** shows placeholder; same as desktop C++ build. |
+| **Android / C++** | No managed installer or process supervisor. The **Local Managed Server** connection mode is not shown. |
 | **Android expectation** | User installs ComfyUI + ETN nodes on a **reachable host** (PC, Mac, Linux box, cloud VM). Tablet/phone uses `http://<host-ip>:8188`. |
 | **Docs link** | Settings exposes [Custom ComfyUI Setup](https://docs.interstice.cloud) (same as Python external path). |
 | **Future** | Optional guided checklist wizard (nodes, URL test) — **not** a silent stub; tracked separately if product revives P3.2 for Android only. |
@@ -101,7 +101,7 @@ Without KArchive: update-ZIP install path is unavailable at runtime (compile-tim
 | **Memory** | Large upscale/refine tiles may OOM on low-RAM devices; reduce resolution or disable refine. |
 | **LAN latency** | Live mode and LoRA pre-upload (P4.6) sensitive to network; timeouts surface as connection errors. |
 | **Input** | Selection, mask, and dock layouts optimized for desktop; touch targets depend on Krita Android shell. |
-| **Performance preset "Cloud"** | May appear in settings JSON for compatibility; cloud **mode** still N/A — preset values apply only when connected to a capable custom server. |
+| **Performance preset "Cloud"** | Hidden from Settings. Existing settings JSON values remain tolerated for compatibility. |
 
 ---
 
@@ -121,14 +121,13 @@ Automated coverage: `tests/ComfyPortP51Test.cpp`, `ComfyPortP52Test.cpp` (deskto
 
 ---
 
-## 5. Settings UI: visible messages (not silent stubs)
+## 5. Settings UI: supported connection flow
 
-When user selects unavailable connection modes, C++ shows explicit copy (`ComfyUIRemoteDockSettings.cpp`):
+Settings exposes only the supported external ComfyUI flow (`ComfyUIRemoteDockSettings.cpp`):
 
-- **Online Service:** *"Online Service is not available in this build. Use Custom ComfyUI to connect to your own server."*
-- **Local Managed Server:** *"Local Managed Server is not available in this build. Use Custom ComfyUI to connect to your own server."*
-
-Default **Restore Defaults** may write `server_mode` = `managed` in KConfig; on Android user should switch to **Custom ComfyUI** after restore.
+- **Server URL:** enter a running ComfyUI endpoint such as `http://192.168.x.x:8188`.
+- **Connect:** tests the external server and populates model/resource status.
+- Legacy `cloud`, `managed`, or `undefined` `ServerMode` values are normalized to `external`; **Restore Defaults** also writes `external`.
 
 ---
 
@@ -148,7 +147,7 @@ Use `acceptance_manual[].notes` in `port_progress.json` for scenario-specific An
 2. Install native **ComfyUI Remote** docker on Krita Android (not the Python plugin).  
 3. Settings → Connection → **Custom ComfyUI** → enter LAN URL → Connect.  
 4. Open an existing `.kra` created with Python: verify history/regions (M9).  
-5. Ignore Cloud/Managed tabs; use [interstice.cloud docs](https://docs.interstice.cloud) for node install on the **host** ComfyUI.  
+5. Use [interstice.cloud docs](https://docs.interstice.cloud) for node install on the **host** ComfyUI.
 6. For custom workflows, prefer API-format JSON until graph UI (P3.3) ships.
 
 ---
@@ -162,4 +161,4 @@ Use `acceptance_manual[].notes` in `port_progress.json` for scenario-specific An
 | Progress / skips | `port_progress.json` → P3.1–P3.4, P5.3 `acceptance_manual` |
 | Build flags | `plugins/dockers/comfyui_remote/CMakeLists.txt` |
 
-*P5.4 — document only; implementation gaps remain tracked as workstreams, not hidden.*
+*P5.4 — intentional gaps remain tracked as workstreams; unsupported connection modes are hidden from Settings.*

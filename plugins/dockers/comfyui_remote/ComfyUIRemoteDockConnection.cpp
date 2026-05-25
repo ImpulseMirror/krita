@@ -254,25 +254,6 @@ static QString buildMissingResourcesDictFormatHtml(const QStringList &checkpoint
     return html;
 }
 
-void ComfyUIRemoteDock::refreshCloudAuthStatusLabel()
-{
-    if (!m_d->labelCloudAuthStatus)
-        return;
-    const QJsonObject s = ComfyUIUtils::loadSettingsJson();
-    const bool tokenEmpty = s.value(QStringLiteral("access_token")).toString().trimmed().isEmpty();
-    if (tokenEmpty) {
-        // §13.89: Cloud + empty token → auth_missing (no CloudClient in this build)
-        m_d->labelCloudAuthStatus->setText(
-            ComfyTr::tr("Authentication required: Online Service sign-in is not available in this build. Use Custom ComfyUI or the Python plugin."));
-        m_d->labelCloudAuthStatus->setStyleSheet(QStringLiteral("color: palette(highlight);"));
-    } else {
-        m_d->labelCloudAuthStatus->setText(
-            ComfyTr::tr("An access token is stored, but the Online Service API is not available in this build. Use Custom ComfyUI to connect to your own server."));
-        m_d->labelCloudAuthStatus->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    }
-    m_d->labelCloudAuthStatus->setWordWrap(true);
-}
-
 void ComfyUIRemoteDock::refreshConnectionActionButton()
 {
     if (!m_d->btnTest)
@@ -653,16 +634,21 @@ QString hostPortKey(const QString &hostOrUrl)
 }
 } // namespace
 
-// §13.81: When server_mode is undefined, try settings.server_url then 127.0.0.1:8000; on success set external + URL;
-// on total failure set cloud and clear connection error (Online Service path).
+// §13.81: When server_mode is undefined or a legacy skipped mode, try settings.server_url then
+// 127.0.0.1:8000. On success set external + URL; on failure keep the native external-URL mode selected.
 void ComfyUIRemoteDock::tryAutostartServerFallback()
 {
     if (!m_d->editServerUrl || !m_d->nam || m_d->autostartServerProbeDone)
         return;
 
     KConfigGroup modeCfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
-    if (modeCfg.readEntry(QStringLiteral("ServerMode"), QStringLiteral("undefined")) != QLatin1String("undefined"))
+    const QString mode = modeCfg.readEntry(QStringLiteral("ServerMode"), QStringLiteral("undefined"));
+    if (mode == QLatin1String("external"))
         return;
+    if (mode != QLatin1String("undefined")) {
+        modeCfg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("external"));
+        KSharedConfig::openConfig()->sync();
+    }
 
     m_d->autostartServerProbeDone = true;
 
@@ -677,9 +663,9 @@ void ComfyUIRemoteDock::tryAutostartServerFallback()
         primary = QStringLiteral("127.0.0.1:8188");
     const QString fallback = QStringLiteral("127.0.0.1:8000");
 
-    auto finishCloudFallback = [this]() {
+    auto finishExternalFallback = [this]() {
         KConfigGroup cg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
-        cg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("cloud"));
+        cg.writeEntry(QStringLiteral("ServerMode"), QStringLiteral("external"));
         KSharedConfig::openConfig()->sync();
         m_d->isConnected = false;
         m_d->connectionErrorOccurred = false;
@@ -712,7 +698,7 @@ void ComfyUIRemoteDock::tryAutostartServerFallback()
 
     const QUrl primaryStats = probeSystemStats(primary);
     if (!primaryStats.isValid()) {
-        finishCloudFallback();
+        finishExternalFallback();
         return;
     }
 
@@ -720,7 +706,7 @@ void ComfyUIRemoteDock::tryAutostartServerFallback()
     ComfyUIUtils::setComfyUIRequestHeaders(req1);
     QNetworkReply *reply1 = m_d->nam->get(req1);
     connect(reply1, &QNetworkReply::finished, this, [this, reply1, primary, fallback, applyExternalAndConnect,
-                                                      finishCloudFallback, probeSystemStats]() {
+                                                      finishExternalFallback, probeSystemStats]() {
         reply1->deleteLater();
         const int http1 = reply1->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool ok1 = reply1->error() == QNetworkReply::NoError && http1 == 200;
@@ -729,25 +715,25 @@ void ComfyUIRemoteDock::tryAutostartServerFallback()
             return;
         }
         if (hostPortKey(primary) == hostPortKey(fallback)) {
-            finishCloudFallback();
+            finishExternalFallback();
             return;
         }
         const QUrl fbStats = probeSystemStats(fallback);
         if (!fbStats.isValid()) {
-            finishCloudFallback();
+            finishExternalFallback();
             return;
         }
         QNetworkRequest req2(fbStats);
         ComfyUIUtils::setComfyUIRequestHeaders(req2);
         QNetworkReply *reply2 = m_d->nam->get(req2);
-        connect(reply2, &QNetworkReply::finished, this, [this, reply2, fallback, applyExternalAndConnect, finishCloudFallback]() {
+        connect(reply2, &QNetworkReply::finished, this, [this, reply2, fallback, applyExternalAndConnect, finishExternalFallback]() {
             reply2->deleteLater();
             const int http2 = reply2->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const bool ok2 = reply2->error() == QNetworkReply::NoError && http2 == 200;
             if (ok2)
                 applyExternalAndConnect(fallback);
             else
-                finishCloudFallback();
+                finishExternalFallback();
         });
     });
 }

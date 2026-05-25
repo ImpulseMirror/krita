@@ -265,7 +265,7 @@ Use this matrix before release or after large port changes. Record results in `p
 
 **C++**
 
-- Welcome/connection must not show dead “Sign in” that fails silently; cloud UI absent or disabled with explicit external-server messaging.
+- Welcome/connection must not show dead “Sign in” or cloud performance controls; cloud UI is absent and the settings flow is external-server only.
 
 ---
 
