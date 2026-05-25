@@ -16,6 +16,13 @@ Since 5.75.0.
 include(CheckCXXSourceCompiles)
 include(CheckLibraryExists)
 
+# Android cross-compiles use the NDK clang; host-style libatomic probes fail.
+if(ANDROID)
+	set(HAVE_CXX_ATOMICS_WITHOUT_LIB TRUE)
+	set(HAVE_CXX_ATOMICS64_WITHOUT_LIB TRUE)
+	return()
+endif()
+
 # Sometimes linking against libatomic is required for atomic ops, if
 # the platform doesn't support lock-free atomics.
 
