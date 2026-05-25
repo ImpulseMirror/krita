@@ -1144,7 +1144,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                              qMax(low, high)));
                 });
         connect(stylesPresetMirror, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this, stylesPresetMirror, updateStylePathLabel, updateStylesCkptWarning, syncStyleNameField, syncAdvCkptFromStyle](int) {
+            [this, stylesPresetMirror, updateStylePathLabel, updateStylesCkptWarning, syncStyleNameField,
+             syncAdvCkptFromStyle, syncStylesFromDock](int) {
                 int dataIdx = stylesPresetMirror->currentData().toInt();
                 if (m_d->comboPreset && dataIdx >= 0 && dataIdx < m_d->comboPreset->count())
                     m_d->comboPreset->setCurrentIndex(dataIdx);
@@ -1152,6 +1153,13 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 updateStylesCkptWarning();
                 syncStyleNameField();
                 syncAdvCkptFromStyle();
+                // FAITHFUL_PORT: after switching the dock-side preset, refresh the
+                // Styles-tab mirrors (especially stylesCkptMirror) from the new
+                // dock state. Without this, toggling between two custom styles
+                // with different checkpoints left the Styles tab showing the
+                // previous style's checkpoint even though m_d->comboCheckpoint
+                // had already been updated by slotPresetChanged().
+                syncStylesFromDock();
             });
         connect(stylesCkptMirror, &QComboBox::currentTextChanged, this,
                 [this, updateStylesCkptWarning, updateStyleAdvancedArchUi, persistStyleCheckpointOptions](const QString &t) {

@@ -2470,6 +2470,81 @@ QString formatServerErrorMessage(const QString &serverError)
     return serverError;
 }
 
+QString extractServerErrorFromBody(const QByteArray &responseBody)
+{
+    if (responseBody.isEmpty())
+        return QString();
+
+    QJsonParseError parseErr;
+    const QJsonDocument doc = QJsonDocument::fromJson(responseBody, &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
+        // Not JSON - return the body itself (trimmed and capped). Surfaces
+        // HTML error pages, plaintext errors from reverse proxies, etc.
+        QString raw = QString::fromUtf8(responseBody).trimmed();
+        if (raw.size() > 400)
+            raw = raw.left(400) + QLatin1String("…");
+        return raw;
+    }
+
+    const QJsonObject root = doc.object();
+    QStringList parts;
+
+    // Handle the structured form first: {"error": {"type":..., "message":..., "details":..., "extra_info":...}}
+    const QJsonValue errVal = root.value(QStringLiteral("error"));
+    if (errVal.isObject()) {
+        const QJsonObject errObj = errVal.toObject();
+        const QString type = errObj.value(QStringLiteral("type")).toString();
+        const QString message = errObj.value(QStringLiteral("message")).toString();
+        const QString details = errObj.value(QStringLiteral("details")).toString();
+        QString line;
+        if (!type.isEmpty())
+            line = type;
+        if (!message.isEmpty())
+            line = line.isEmpty() ? message : (line + QStringLiteral(": ") + message);
+        if (!details.isEmpty())
+            line = line.isEmpty() ? details : (line + QStringLiteral(" — ") + details);
+        if (line.isEmpty())
+            line = QString::fromUtf8(QJsonDocument(errObj).toJson(QJsonDocument::Compact));
+        parts << formatServerErrorMessage(line);
+    } else if (errVal.isString()) {
+        const QString s = errVal.toString().trimmed();
+        if (!s.isEmpty())
+            parts << formatServerErrorMessage(s);
+    }
+
+    // ComfyUI 0.3+ surfaces per-node errors here. Each entry is
+    // {"<node_id>": {"errors":[{"type":..., "message":..., "details":...}], "class_type": "..."}}.
+    // These are the most diagnostic part of a 400 response (e.g. missing checkpoint file,
+    // invalid input type) so we surface them prominently when present.
+    const QJsonObject nodeErrors = root.value(QStringLiteral("node_errors")).toObject();
+    for (auto it = nodeErrors.constBegin(); it != nodeErrors.constEnd(); ++it) {
+        const QJsonObject info = it.value().toObject();
+        const QString classType = info.value(QStringLiteral("class_type")).toString();
+        const QJsonArray errs = info.value(QStringLiteral("errors")).toArray();
+        for (const QJsonValue &ev : errs) {
+            const QJsonObject e = ev.toObject();
+            const QString message = e.value(QStringLiteral("message")).toString();
+            const QString details = e.value(QStringLiteral("details")).toString();
+            QString line = QStringLiteral("node %1 (%2): %3")
+                                .arg(it.key(), classType.isEmpty() ? QStringLiteral("?") : classType,
+                                     message.isEmpty() ? QStringLiteral("(no message)") : message);
+            if (!details.isEmpty())
+                line += QStringLiteral(" — ") + details;
+            parts << formatServerErrorMessage(line);
+        }
+    }
+
+    if (parts.isEmpty()) {
+        // Last-resort: stringify the JSON so something always reaches the user/log
+        // instead of an empty status message.
+        return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact)).left(400);
+    }
+    QString joined = parts.join(QStringLiteral("; "));
+    if (joined.size() > 600)
+        joined = joined.left(600) + QLatin1String("…");
+    return joined;
+}
+
 // §13.35: eval_wildcards — {option1|option2|...}, deterministic from seed, evaluated during workflow build
 QString evalWildcards(QString text, quint32 seed)
 {

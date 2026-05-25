@@ -952,20 +952,34 @@ void ComfyUIRemoteDock::dispatchBatchPromptRequest(QJsonObject workflow, int sub
             m_d->animationBatchGroupId.clear();
             m_d->batchNeedsPerFrameReference = false;
         };
+        // FAITHFUL_PORT: dump the raw body (truncated) so the actual ComfyUI
+        // rejection is visible in `adb logcat` even if the human-readable
+        // extractor fails to find a recognised shape.
+        {
+            const QByteArray preview = respBody.left(800);
+            qCWarning(KIS_COMFYUI_REMOTE).nospace()
+                << "slotBatchSubmitNext REPLY body preview (utf8, truncated to 800B): "
+                << QString::fromUtf8(preview);
+        }
         if (reply->error() != QNetworkReply::NoError) {
-            // §7.7 / §13.142: Prefer server error body (e.g. LCM message) when present
-            QJsonObject obj = QJsonDocument::fromJson(respBody).object();
-            if (obj.contains("error")) {
-                setStatusMessage(ComfyUIUtils::formatServerErrorMessage(obj["error"].toString()), true);
-            } else {
-                setStatusMessage(ComfyTr::tr("Submit error: %1", reply->errorString()), true);
-            }
+            // §7.7 / §13.142: Prefer server error body (e.g. LCM message) when present.
+            // ComfyUI 0.3+ returns the structured shape {error:{type,message,details},
+            // node_errors:{<id>:{errors:[...], class_type:...}}} on 400; the old
+            // `obj["error"].toString()` collapsed that to "" and the user saw a
+            // silent failure. extractServerErrorFromBody() handles both shapes.
+            QString serverMsg = ComfyUIUtils::extractServerErrorFromBody(respBody);
+            if (serverMsg.isEmpty())
+                serverMsg = reply->errorString();
+            setStatusMessage(ComfyTr::tr("Submit error: %1", serverMsg), true);
             abortBatchState();
             return;
         }
         QJsonObject obj = QJsonDocument::fromJson(respBody).object();
         if (obj.contains("error")) {
-            setStatusMessage(ComfyUIUtils::formatServerErrorMessage(obj["error"].toString()), true);
+            QString serverMsg = ComfyUIUtils::extractServerErrorFromBody(respBody);
+            if (serverMsg.isEmpty())
+                serverMsg = ComfyTr::tr("(empty error body)");
+            setStatusMessage(ComfyTr::tr("Submit error: %1", serverMsg), true);
             abortBatchState();
             return;
         }

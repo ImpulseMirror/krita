@@ -623,19 +623,20 @@ void ComfyUIRemoteDock::submitUpscaleWorkflow(const QJsonObject &workflow, bool 
         replyPrompt->deleteLater();
         const QByteArray body = replyPrompt->readAll();
         if (replyPrompt->error() != QNetworkReply::NoError) {
-            const QJsonObject obj = QJsonDocument::fromJson(body).object();
-            if (obj.contains(QStringLiteral("error")))
-                setStatusMessage(ComfyUIUtils::formatServerErrorMessage(obj.value(QStringLiteral("error")).toString()),
-                                 true);
-            else
-                setStatusMessage(ComfyTr::tr("Submit error: %1", replyPrompt->errorString()), true);
+            QString serverMsg = ComfyUIUtils::extractServerErrorFromBody(body);
+            if (serverMsg.isEmpty())
+                serverMsg = replyPrompt->errorString();
+            setStatusMessage(ComfyTr::tr("Submit error: %1", serverMsg), true);
             m_d->btnUpscale->setEnabled(true);
             m_d->progressBar->setValue(0);
             return;
         }
         const QJsonObject obj = QJsonDocument::fromJson(body).object();
         if (obj.contains(QStringLiteral("error"))) {
-            setStatusMessage(ComfyUIUtils::formatServerErrorMessage(obj.value(QStringLiteral("error")).toString()), true);
+            QString serverMsg = ComfyUIUtils::extractServerErrorFromBody(body);
+            if (serverMsg.isEmpty())
+                serverMsg = ComfyTr::tr("(empty error body)");
+            setStatusMessage(ComfyTr::tr("Submit error: %1", serverMsg), true);
             m_d->btnUpscale->setEnabled(true);
             m_d->progressBar->setValue(0);
             return;

@@ -404,6 +404,15 @@ QNetworkReply *tryUploadLoraFileViaEtnApi(QNetworkAccessManager *nam,
 // §13.142: When server error indicates LCM unsupported, return the spec message; otherwise return error as-is
 QString formatServerErrorMessage(const QString &serverError);
 
+// ComfyUI /prompt 400 responses return either {"error": "<string>"} or the more
+// common structured form {"error": {"type":..., "message":..., "details":...},
+// "node_errors": {"<id>": {"errors":[{...}], "class_type": "..."}}}. The plain
+// `obj["error"].toString()` we were using returned an empty string for the
+// structured form, which is what caused the "Generate did nothing — STATUS[ERROR] """
+// silent-failure on Android. Centralise the extraction so every reply handler
+// gives the user the actual server-side reason for the rejection.
+QString extractServerErrorFromBody(const QByteArray &responseBody);
+
 // §8.5/13.35: Wildcards {option1|option2|option3} — pick one option per occurrence using deterministic RNG(seed)
 QString evalWildcards(QString text, quint32 seed);
 
