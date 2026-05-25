@@ -80,6 +80,13 @@ struct ComfyUIRemoteDock::Private
     QWidget *negativeResizeHandle = nullptr; // §13.54
     QWidget *negativePromptBlock = nullptr;  // §4.7: label row + negative editor (hide when "Show negative" off)
     QWidget *stepsParametersWidget = nullptr;  // §4.7: Steps/CFG/Sampler row (hide when "Show steps" off)
+    // FAITHFUL_PORT: wrapper widgets for rows that are hidden by default to match
+    // upstream krita-ai-diffusion's compact docker layout (advanced controls live
+    // in the Settings dialog or per-style preset, not on the main docker).
+    QWidget *seedRowWidget = nullptr;
+    QWidget *sizeRowWidget = nullptr;
+    QWidget *actionsRowWidget = nullptr;
+    QWidget *presetRowWidget = nullptr;
     QLabel *labelNegativePromptAlert = nullptr;  // §13.143: alert icon when style does not use negative prompt
     QSpinBox *spinWidth = nullptr;
     QSpinBox *spinHeight = nullptr;

@@ -147,11 +147,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
         connectionLayout->addWidget(m_d->labelConnectionStatus);
 
-        QPushButton *viewLogsButton = new QPushButton(ComfyTr::tr("View log files"), connectionPage);
-        connect(viewLogsButton, &QPushButton::clicked, this, [this](bool) {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginLogDir()));
-        });
-        connectionLayout->addWidget(viewLogsButton);
         // §4.4 / §7.4: Detected base models — list of architectures with supported/missing status (populated when connected)
         QLabel *detectedModelsHeading = new QLabel(ComfyTr::tr("Detected base models:"), connectionPage);
         connectionLayout->addWidget(detectedModelsHeading);
@@ -2091,11 +2086,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             diagDlg->deleteLater();
         });
         pluginLayout->addWidget(collectDiagBtn);
-        QPushButton *viewLogsBtn = new QPushButton(ComfyTr::tr("View log files"), pluginPage);
-        connect(viewLogsBtn, &QPushButton::clicked, this, [this](bool) {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginLogDir()));
-        });
-        pluginLayout->addWidget(viewLogsBtn);
         pluginLayout->addStretch();
         syncPluginUpdateUi();
         stack->addWidget(pluginPage);

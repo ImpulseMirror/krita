@@ -2625,7 +2625,11 @@ QStringList vaeNamesFromObjectInfo(const QJsonObject &objectInfoRoot)
 
 QStringList specSection58NodesPresentInObjectInfo(const QJsonObject &objectInfoRoot)
 {
-    const QSet<QString> keys(objectInfoRoot.keys().begin(), objectInfoRoot.keys().end());
+    // NB: bind QStringList to a named local; .keys() returns by value so calling it
+    // twice (once for begin(), once for end()) yields iterators into two different
+    // temporaries — UB that crashes inside qHash on arm64.
+    const QStringList keyList = objectInfoRoot.keys();
+    const QSet<QString> keys(keyList.begin(), keyList.end());
     QStringList out;
     for (const QString &name : comfyUiSpecSection58NodeClassTypes()) {
         if (keys.contains(name))

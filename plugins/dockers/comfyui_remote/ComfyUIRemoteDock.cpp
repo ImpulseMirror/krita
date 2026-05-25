@@ -901,10 +901,21 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(btnSettings, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
     connLayout->addWidget(btnSettings);
     scrollLayout->addWidget(connGroup);
+    // FAITHFUL_PORT: Connection group is empty (server URL / checkpoint combo live in
+    // Settings dialog); hide the whole frame so the main docker matches upstream
+    // krita-ai-diffusion's compact layout (workspace + style picker at top, no
+    // preset/Settings buttons in the docker itself).
+    connGroup->setVisible(false);
 
-    QGroupBox *genGroup = new QGroupBox(ComfyTr::tr("Generate"));
+    // FAITHFUL_PORT: flatten the Generate groupbox into the scroll column so the
+    // visible UI matches upstream — no "Generate" title bar / frame around the
+    // prompt + strength + Generate button stack.
+    QGroupBox *genGroup = new QGroupBox();
     m_d->genGroupBox = genGroup;
+    genGroup->setFlat(true);
+    genGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
     QVBoxLayout *genLayout = new QVBoxLayout(genGroup);
+    genLayout->setContentsMargins(0, 0, 0, 0);
 
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     m_d->comboWorkspace = new QComboBox();
@@ -964,12 +975,23 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             loadInpaintWorkspaceFromDocument();
 
         if (m_d->btnGenerate) m_d->btnGenerate->setVisible(isGenerate || isGraph);
-        if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate);
-        if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(isGenerate);
-        if (m_d->comboFillMode) m_d->comboFillMode->setVisible(isGenerate);
-        if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(isGenerate);
-        if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(isGenerate);
-        if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(isGenerate);
+        // FAITHFUL_PORT: inpaint mode / fill / context / Seamless / Focus controls
+        // map to upstream's `CustomInpaintWidget`, which is only visible in
+        // Custom inpaint mode. Gate them behind settings.show_inpaint_controls
+        // (default false) so the compact docker matches the python reference.
+        // The standalone Inpaint button is folded into the Generate dropdown
+        // upstream; keep it hidden unless settings.show_inpaint_button is set.
+        {
+            const QJsonObject st = ComfyUIUtils::loadSettingsJson();
+            const bool showInpaintControls = st.value(QStringLiteral("show_inpaint_controls")).toBool(false);
+            const bool showInpaintBtn = st.value(QStringLiteral("show_inpaint_button")).toBool(false);
+            if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate && showInpaintBtn);
+            if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(isGenerate && showInpaintControls);
+            if (m_d->comboFillMode) m_d->comboFillMode->setVisible(isGenerate && showInpaintControls);
+            if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(isGenerate && showInpaintControls);
+            if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(isGenerate && showInpaintControls);
+            if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(isGenerate && showInpaintControls);
+        }
         if (m_d->btnUpscale) m_d->btnUpscale->setVisible(isUpscale);
         if (m_d->btnGenerateAnimation) m_d->btnGenerateAnimation->setVisible(isAnimation);
         if (m_d->checkLiveMode) m_d->checkLiveMode->setVisible(isLive);
@@ -1008,7 +1030,16 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         applyInterfaceAppearanceSettings(); // §3.5: prompt_line_count_live when Live workspace
     });
     updateAnimationButtonLabel();  // §5.7: initial label from persisted FullAnimation
-    genLayout->addWidget(m_d->comboWorkspace);
+    // FAITHFUL_PORT: top row mirrors python GenerationWidget — WorkspaceSelectWidget +
+    // StyleSelectWidget side-by-side. `comboPreset` is the style/model picker
+    // ("Nova XL ★" in upstream); without this row it was never displayed.
+    {
+        QHBoxLayout *topRow = new QHBoxLayout();
+        topRow->setContentsMargins(0, 0, 0, 0);
+        topRow->addWidget(m_d->comboWorkspace);
+        topRow->addWidget(m_d->comboPreset, 1);
+        genLayout->addLayout(topRow);
+    }
 
     m_d->genContentContainer = new QWidget(genGroup);
     QVBoxLayout *genContentLayout = new QVBoxLayout(m_d->genContentContainer);
@@ -1323,6 +1354,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         cfg.writeEntry("RegionOnly", checked);
     });
     genContentLayout->addWidget(m_d->checkRegionOnly);
+    // FAITHFUL_PORT: upstream exposes region-only via the region-mask icon button in
+    // the Generate-button row, not as a loose top-level checkbox. Hide here and
+    // keep the model state available to the rest of the code.
+    m_d->checkRegionOnly->setVisible(false);
 
     // §5.4: Edit mode toggle (instruction-based editing; uses linked_edit_style when set)
     m_d->checkEditMode = new QCheckBox(ComfyTr::tr("Edit"));
@@ -1338,6 +1373,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         refreshRegionsList();  // §13.125: switch between root and edit region lists
     });
     genContentLayout->addWidget(m_d->checkEditMode);
+    // FAITHFUL_PORT: upstream selects Edit via the Generate-button dropdown menu,
+    // not a loose checkbox in the docker. Hide here; the state is still wired.
+    m_d->checkEditMode->setVisible(false);
 
     // §5.4: Layer count (1–8); visible only when style architecture is Qwen Layered (Arch.qwen_l)
     m_d->layerCountRow = new QWidget(genGroup);
@@ -1371,12 +1409,17 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnRandomSeed->setToolTip(ComfyTr::tr("Pick a new random seed."));
     m_d->btnRandomSeed->setAccessibleName(ComfyTr::tr("Random seed"));
     connect(m_d->btnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
-    QHBoxLayout *seedRow = new QHBoxLayout();
-    seedRow->addWidget(new QLabel(ComfyTr::tr("Seed:")));
+    // FAITHFUL_PORT: wrap Seed row in a widget so it can be hidden as a unit. Upstream
+    // krita-ai-diffusion keeps seed controls in the Settings/Queue popup, not on
+    // the main docker; gated by settings.show_seed (default false).
+    m_d->seedRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *seedRow = new QHBoxLayout(m_d->seedRowWidget);
+    seedRow->setContentsMargins(0, 0, 0, 0);
+    seedRow->addWidget(new QLabel(ComfyTr::tr("Seed:"), m_d->seedRowWidget));
     seedRow->addWidget(m_d->checkFixedSeed);
     seedRow->addWidget(m_d->spinSeed);
     seedRow->addWidget(m_d->btnRandomSeed);
-    genContentLayout->addLayout(seedRow);
+    genContentLayout->addWidget(m_d->seedRowWidget);
 
     m_d->comboSizePreset = new QComboBox();
     m_d->comboSizePreset->addItem(ComfyTr::tr("512×512 (default)"), QSize(512, 512));
@@ -1398,14 +1441,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->spinHeight->setRange(64, 8192);
     m_d->spinHeight->setValue(512);
 
-    QHBoxLayout *sizeRow = new QHBoxLayout();
-    sizeRow->addWidget(new QLabel(ComfyTr::tr("Size:")));
+    // FAITHFUL_PORT: wrap Size row in a widget so it can be hidden as a unit. Upstream
+    // derives generation size from the document extent and the style preset, so the
+    // main docker has no Size/W/H controls. Gated by settings.show_size (default false).
+    m_d->sizeRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *sizeRow = new QHBoxLayout(m_d->sizeRowWidget);
+    sizeRow->setContentsMargins(0, 0, 0, 0);
+    sizeRow->addWidget(new QLabel(ComfyTr::tr("Size:"), m_d->sizeRowWidget));
     sizeRow->addWidget(m_d->comboSizePreset, 1);
-    sizeRow->addWidget(new QLabel(ComfyTr::tr("W:")));
+    sizeRow->addWidget(new QLabel(ComfyTr::tr("W:"), m_d->sizeRowWidget));
     sizeRow->addWidget(m_d->spinWidth);
-    sizeRow->addWidget(new QLabel(ComfyTr::tr("H:")));
+    sizeRow->addWidget(new QLabel(ComfyTr::tr("H:"), m_d->sizeRowWidget));
     sizeRow->addWidget(m_d->spinHeight);
-    genContentLayout->addLayout(sizeRow);
+    genContentLayout->addWidget(m_d->sizeRowWidget);
 
     m_d->btnGenerate = new QPushButton(ComfyTr::tr("Generate"));
     m_d->btnGenerate->setIcon(
@@ -1417,10 +1465,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnInpaint->setToolTip(ComfyTr::tr("Generate in selection."));
     connect(m_d->btnInpaint, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotInpaint);
     genContentLayout->addWidget(m_d->btnInpaint);
+    // FAITHFUL_PORT: upstream merges Inpaint into the Generate-button dropdown
+    // (inpaint_mode_button). Hide the standalone button; the slot stays available
+    // for the dropdown / actions.
+    m_d->btnInpaint->setVisible(false);
     // §13.29: Main action menu — switch Generate / Refine / Edit / region / custom without leaving Generate
     {
-        QHBoxLayout *opLayout = new QHBoxLayout();
-        opLayout->addWidget(new QLabel(ComfyTr::tr("Actions:"), genGroup));
+        // FAITHFUL_PORT: wrap the "Actions: Mode & operations" row in a widget so it
+        // can be hidden as a unit. Upstream surfaces these mode choices via the
+        // Generate-button dropdown menu, not a separate row.
+        m_d->actionsRowWidget = new QWidget(m_d->genContentContainer);
+        QHBoxLayout *opLayout = new QHBoxLayout(m_d->actionsRowWidget);
+        opLayout->setContentsMargins(0, 0, 0, 0);
+        opLayout->addWidget(new QLabel(ComfyTr::tr("Actions:"), m_d->actionsRowWidget));
         m_d->btnGenerateViewOperations = new QToolButton(genGroup);
         m_d->btnGenerateViewOperations->setText(ComfyTr::tr("Mode && operations"));
         m_d->btnGenerateViewOperations->setToolTip(ComfyTr::tr(
@@ -1490,7 +1547,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         m_d->btnGenerateViewOperations->setMenu(opMenu);
         opLayout->addWidget(m_d->btnGenerateViewOperations);
         opLayout->addStretch();
-        genContentLayout->addLayout(opLayout);
+        genContentLayout->addWidget(m_d->actionsRowWidget);
+        m_d->actionsRowWidget->setVisible(false);
     }
     // §13.206 / P4.1: InpaintMode — all seven Python modes with theme icons
     auto addInpaintComboItem = [](QComboBox *cb, const QString &label, const QString &data, const char *iconStem) {
@@ -4775,9 +4833,36 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
         m_d->promptResizeHandle->setVisible(showResizeHandle);
     if (m_d->negativeResizeHandle)
         m_d->negativeResizeHandle->setVisible(showNeg && showResizeHandle);
-    const bool showSt = s.value(QStringLiteral("show_steps")).toBool(true);
+    // FAITHFUL_PORT: gate advanced rows that upstream krita-ai-diffusion does NOT
+    // expose on the main docker. Defaults match the python reference (hidden);
+    // power users can flip these on in Settings → Interface.
+    const bool showSt = s.value(QStringLiteral("show_steps")).toBool(false);
     if (m_d->stepsParametersWidget)
         m_d->stepsParametersWidget->setVisible(showSt);
+    const bool showSeed = s.value(QStringLiteral("show_seed")).toBool(false);
+    if (m_d->seedRowWidget)
+        m_d->seedRowWidget->setVisible(showSeed);
+    const bool showSize = s.value(QStringLiteral("show_size")).toBool(false);
+    if (m_d->sizeRowWidget)
+        m_d->sizeRowWidget->setVisible(showSize);
+    const bool showActions = s.value(QStringLiteral("show_actions_row")).toBool(false);
+    if (m_d->actionsRowWidget)
+        m_d->actionsRowWidget->setVisible(showActions);
+    const bool showInpaintBtn = s.value(QStringLiteral("show_inpaint_button")).toBool(false);
+    if (m_d->btnInpaint)
+        m_d->btnInpaint->setVisible(showInpaintBtn
+            && m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0);
+    const bool showInpaintControls = s.value(QStringLiteral("show_inpaint_controls")).toBool(false);
+    const bool inGenerateWs = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0;
+    if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(showInpaintControls && inGenerateWs);
+    if (m_d->comboFillMode) m_d->comboFillMode->setVisible(showInpaintControls && inGenerateWs);
+    if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(showInpaintControls && inGenerateWs);
+    if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(showInpaintControls && inGenerateWs);
+    if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(showInpaintControls && inGenerateWs);
+    if (m_d->checkRegionOnly)
+        m_d->checkRegionOnly->setVisible(s.value(QStringLiteral("show_region_only_check")).toBool(false));
+    if (m_d->checkEditMode)
+        m_d->checkEditMode->setVisible(s.value(QStringLiteral("show_edit_check")).toBool(false));
 }
 
 void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
