@@ -783,26 +783,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connWidgetLayout->addWidget(m_d->welcomeErrorLabel);
     connWidgetLayout->addWidget(btnConfigure);
     welcomeLayout->addWidget(m_d->welcomeConnectionWidget);
-    // §5.2 Welcome layout: ConnectionWidget → 24pt spacing → footer links → stretch (fill below footer)
-    welcomeLayout->addSpacing(24);
-    QHBoxLayout *footerLinks = new QHBoxLayout();
-    footerLinks->addStretch();
-    QPushButton *linkInterstice = new QPushButton(QStringLiteral("Interstice.cloud"), m_d->welcomePage);
-    linkInterstice->setFlat(true);
-    linkInterstice->setCursor(Qt::PointingHandCursor);
-    connect(linkInterstice, &QPushButton::clicked, this, [](bool) {
-        QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
-    });
-    QPushButton *linkDiscord = new QPushButton(QStringLiteral("Discord"), m_d->welcomePage);
-    linkDiscord->setFlat(true);
-    linkDiscord->setCursor(Qt::PointingHandCursor);
-    connect(linkDiscord, &QPushButton::clicked, this, [](bool) {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));
-    });
-    footerLinks->addWidget(linkInterstice);
-    footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
-    footerLinks->addWidget(linkDiscord);
-    welcomeLayout->addLayout(footerLinks);
     welcomeLayout->addStretch();
     m_d->mainStack->addWidget(m_d->welcomePage);
 

@@ -133,7 +133,7 @@ struct RefineParams {
 
 QJsonObject buildRefine(const RefineParams &params);
 
-/// Regional refine with mask (Python refine_region subset — inpaint graph + sampler custom).
+/// Regional refine with mask (inpaint graph + sampler custom).
 struct RefineRegionParams {
     RefineParams refine;
     QString maskImageName;

@@ -74,7 +74,7 @@ bool isLines(const QString &mode);
 bool isStructural(const QString &mode);
 } // namespace ControlMode
 
-/// Default ControlNet filename for ComfyUI ControlNetLoader (first match from bundled models.json / Python search_paths).
+/// Default ControlNet filename for ComfyUI ControlNetLoader.
 QString defaultControlNetFileName(Arch arch, const QString &mode);
 
 /// SetUnionControlNetType `type` input (Python comfy_workflow.set_controlnet_type).

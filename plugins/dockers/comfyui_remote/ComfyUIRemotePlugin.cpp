@@ -19,7 +19,7 @@
 #include <QVersionNumber>
 
 namespace {
-// §13.30 / §13.40: optional runtime check (Python reference does not enforce; spec allows warning on older Krita).
+// §13.30 / §13.40: optional runtime check; spec allows warning on older Krita.
 void warnIfKritaBelowDocumentedMinimum()
 {
     const QString raw = QCoreApplication::applicationVersion().trimmed();

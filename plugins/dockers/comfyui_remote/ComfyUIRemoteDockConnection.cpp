@@ -250,7 +250,9 @@ static QString buildMissingResourcesDictFormatHtml(const QStringList &checkpoint
         html += QLatin1String("</li>");
     }
     html += QLatin1String("</ul>");
-    html += QLatin1String("<p>") + ComfyTr::tr("See <a href=\"https://docs.interstice.cloud\">Custom ComfyUI Setup</a> for required models. Check the client.log file for more details.") + QLatin1String("</p>");
+    html += QLatin1String("<p>")
+        + ComfyTr::tr("Install the required custom nodes and models on your ComfyUI server. Check the client.log file for more details.")
+        + QLatin1String("</p>");
     return html;
 }
 

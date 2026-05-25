@@ -22,9 +22,3 @@ COMFY_WRITE_GOLDEN=1 ./ComfyWorkflowEngineGoldenTest
 `ComfyWorkflowEngineGoldenTest` builds each workflow with fixed parameters,
 normalizes node IDs (sort by `class_type` + inputs, renumber 1..N), and compares
 to the matching `*.api.json`.
-
-## Python reference (optional)
-
-Pass `--reference /path/to/krita-ai-diffusion` to also write `python/*.api.json`
-when the reference package imports cleanly (release install with dependencies).
-Full `workflow.py` generate graphs differ from the C++ templates until GAP-A parity.

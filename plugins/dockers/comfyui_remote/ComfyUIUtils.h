@@ -169,8 +169,6 @@ UpscaleTiledLayoutSpec computeUpscaleTiledLayoutSpec(int imageWidth,
 QString pluginVersion();
 // §13.159 / §13.160: INTERSTICE_URL overrides; default https://api.interstice.cloud (plugin/latest, plugin/news).
 QString intersticeApiBaseUrl();
-// §13.159: INTERSTICE_WEB_URL for sign-in / account / website links; default https://www.interstice.cloud
-QString intersticeWebBaseUrl();
 
 // §13.14 / §13.152 / §13.69 / §13.79: Document annotations — name = ai_diffusion/ + key, description = "AI Diffusion Plugin: " + key
 inline QString documentAnnotationKey(const QString &logicalKey) {

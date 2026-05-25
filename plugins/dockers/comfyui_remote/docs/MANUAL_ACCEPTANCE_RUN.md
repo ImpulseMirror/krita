@@ -7,9 +7,9 @@
 
 ## Prerequisites
 
-1. ComfyUI + ETN / AI Diffusion custom nodes (same as Python plugin docs).
+1. ComfyUI + ETN / AI Diffusion custom nodes.
 2. SDXL checkpoint on server (M2).
-3. Krita built from this branch with `comfyui_remote` docker (disable Python AI Diffusion for C++-only run).
+3. Krita built from this branch with `comfyui_remote` docker.
 4. Preflight: `COMFY_URL=http://127.0.0.1:8188 ./scripts/manual_acceptance_preflight.sh`
 
 ## Automated subset (before GUI)
@@ -21,19 +21,18 @@
 
 ## Run order
 
-| # | ID | C++ desktop | C++ Android | Python ref | Result | Notes |
-|---|-----|-------------|-------------|------------|--------|-------|
-| 1 | M1 | ☐ | ☐ | ☐ | | Connect URL, models, disconnect |
-| 2 | M2 | ☐ | ☐ | ☐ | | SDXL style, generate, history |
-| 3 | M3 | ☐ | ☐ | ☐ | | Inpaint modes + save/reload |
-| 4 | M4 | ☐ | ☐ | ☐ | | Regions + control generate |
-| 5 | M5 | ☐ | ☐ | ☐ | | Live record + ui.json |
-| 6 | M6 | ☐ | ☐ | ☐ | | Upscale + refine/tiled |
-| 7 | M7 | ☐ | ☐ | ☐ | | Animation batch |
-| 8 | M8 | ☐ | ☐ | ☐ | partial | Custom JSON workflow |
-| 9 | M9 | ☐ | ☐ | ☐ | | History + .kra roundtrip |
-| 10 | M10 | ☐ | ☐ | ☐ | | Settings + language restart |
-| — | M11 | N/A | N/A | — | n/a | Cloud skipped |
+| # | ID | Desktop | Android | Result | Notes |
+|---|-----|---------|---------|--------|-------|
+| 1 | M1 | ☐ | ☐ | | Connect URL, models, disconnect |
+| 2 | M2 | ☐ | ☐ | | SDXL style, generate, history |
+| 3 | M3 | ☐ | ☐ | | Inpaint modes + save/reload |
+| 4 | M4 | ☐ | ☐ | | Regions + control generate |
+| 5 | M5 | ☐ | ☐ | | Live record + ui.json |
+| 6 | M6 | ☐ | ☐ | | Upscale + refine/tiled |
+| 7 | M7 | ☐ | ☐ | | Animation batch |
+| 8 | M8 | ☐ | ☐ | partial | Custom JSON workflow |
+| 9 | M9 | ☐ | ☐ | | History + .kra roundtrip |
+| 10 | M10 | ☐ | ☐ | | Settings + language restart |
 
 After each scenario, set `manual_status` / `tested_on` / `notes` in `port_progress.json`.
 

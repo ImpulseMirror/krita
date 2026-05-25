@@ -1,8 +1,8 @@
 {
   "plan_file": "comfyui-perfect-port.plan.md",
-  "reference_repo": "https://github.com/Acly/krita-ai-diffusion",
+  "reference_repo": "",
   "reference_version": "1.49.0",
-  "reference_path": "/Users/ackeejag/Source/krita-ai-diffusion",
+  "reference_path": "",
   "target_path": "plugins/dockers/comfyui_remote",
   "branch": "comfyui-perfect-port",
   "updated": "2026-05-24",
@@ -276,7 +276,7 @@
       "cpp_targets": ["tests/ComfyPortP52Test.cpp", "tests/ComfyMockHttpServer.cpp", "ComfyUIUtils.cpp"]
     },
     "P5.3": {
-      "title": "Manual matrix — Android APK vs Python plugin",
+      "title": "Manual matrix — Android APK",
       "phase": "P5",
       "status": "complete",
       "evidence": "plugins/dockers/comfyui_remote/docs/MANUAL_ACCEPTANCE_MATRIX.md; acceptance_manual[] enriched (M1–M11, cpp_ready, android_applicable, manual_status pending)",

@@ -13,7 +13,7 @@
 | P1.2 / GAP-A | `ComfyWorkflowEngineGoldenTest`, `ComfyPortP51Test::testBuildGenerateUsesSamplerCustom` | Golden + sampler |
 | P1.3 | `ComfyUIRemoteDockTest` control/inpaint builders | ControlNet chain |
 | P1.4 | `ComfyRegionProcess`, regional generate tests | ETN regions |
-| P1.8 | `ComfyWorkflowNormalize`, `export_workflow_fixture.py` | Python/C++ parity |
+| P1.8 | `ComfyWorkflowNormalize`, `export_workflow_fixture.py` | Golden workflow fixtures |
 | P2.3 | `ComfyUIRemoteDockTest::testDocumentUiJsonRegionControlRoundtrip` | ui.json |
 | P4.5 / P4.6 | `ComfyPortP51Test` loras / missing | FileLibrary |
 | P5.2 | `ComfyPortP52Test` | Mock HTTP (M1 subset) |

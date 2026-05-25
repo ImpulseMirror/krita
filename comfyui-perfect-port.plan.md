@@ -2,9 +2,9 @@
 title: ComfyUI Remote Perfect Port
 type: perfect-port
 progress_file: port_progress.json
-reference_repo: https://github.com/Acly/krita-ai-diffusion
+reference_repo:
 reference_version: "1.49.0"
-reference_path: /Users/ackeejag/Source/krita-ai-diffusion
+reference_path:
 target_path: plugins/dockers/comfyui_remote
 branch: comfyui-perfect-port
 baseline_commit: c229af157e
@@ -21,18 +21,18 @@ no_stubs: true
 
 1. Pick a workstream with `status: "not_started"` whose `depends_on` are all `complete` (or empty).
 2. Set its status to `in_progress` in `port_progress.json`.
-3. Read `python_refs` in that workstream against `reference_path`.
+3. Read the workstream context and related implementation targets.
 4. Implement in `cpp_targets`; match Python behavior — **no placeholders**, **no “not available in this build”** unless `not_applicable` with documented reason.
 5. Mark `complete` with evidence (test name, manual scenario id from `acceptance_manual`, or commit hash).
 6. Prefer one workstream per session; respect `critical_path` order when unsure.
 
 ### Rules
 
-- **Source of truth:** [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) `ai_diffusion/` v1.49.0
+- **Source of truth:** ComfyUI Remote product requirements and tracked workstreams.
 - **Target:** `plugins/dockers/comfyui_remote/` (C++, no Python at runtime)
-- **Contract:** `settings.json`, `ui.json` v1, `ai_diffusion/*` annotations must round-trip with Python plugin
+- **Contract:** `settings.json`, `ui.json` v1, and document annotations must round-trip.
 - **Android:** Enable Qt WebSockets + KArchive in build; ship `data/` assets
-- **Perfect port — nothing skipped:** If Python exposes a behavior, control, or UI affordance on the reference path for a workstream, it is **in scope** for that workstream (or a named child workstream). Do **not** mark a workstream `complete` for an MVP subset. Do **not** defer required parity to “later” without a **new** tracked workstream id and an entry in `port_progress.json`. “Good enough” / “close enough” is not done.
+- **Complete implementation — nothing skipped:** If a behavior, control, or UI affordance is required for a workstream, it is **in scope** for that workstream (or a named child workstream). Do **not** mark a workstream `complete` for an MVP subset. Do **not** defer required behavior to “later” without a **new** tracked workstream id and an entry in `port_progress.json`. “Good enough” / “close enough” is not done.
 
 ### Quick pick (critical path)
 
@@ -40,11 +40,10 @@ no_stubs: true
 
 ---
 
-**Goal:** Native C++ plugin (`plugins/dockers/comfyui_remote`) must match [Acly/krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) in behavior, UI, styling, persistence, and server integration — with **no stubs** and **no “MVP” shortcuts**. Android cannot run Python; this port is the only path to AI Diffusion on Krita Android.
+**Goal:** Native C++ plugin (`plugins/dockers/comfyui_remote`) must provide complete behavior, UI, styling, persistence, and server integration — with **no stubs** and **no “MVP” shortcuts**.
 
-**Baseline (Python):** `ai_diffusion` v1.49.0 @ `/Users/ackeejag/Source/krita-ai-diffusion`  
 **Baseline (C++):** branch `comfyui-plugin` @ `c229af157e`, ~29 files, ~19k LOC  
-**Primary reference:** upstream repo + [interstice.cloud docs](https://docs.interstice.cloud)
+**Primary reference:** tracked product requirements and acceptance scenarios
 
 ---
 
@@ -65,7 +64,7 @@ The C++ port has substantial surface area: welcome screen, five workspaces, sett
 | Inpaint modes | 7 modes incl. add/remove object, replace background, custom | 3 modes (automatic, fill, expand) | **High** |
 | UI chrome | `theme.py` palette-aware colors, custom switch, flat combos, plugin icons | Sparse `setStyleSheet`; standard widgets | **Medium** |
 
-**Definition of done:** A user migrating from desktop Python plugin to Android native plugin can perform the same workflows with the same defaults, document round-trips, and visual affordances — modulo platform limits explicitly documented in §7 **Non-goals** only (e.g. managed ComfyUI install may remain external-only on Android if impractical, but **must not** be a silent stub). Anything outside §7 that exists in Python v1.49.0 remains **required** until implemented and tracked.
+**Definition of done:** A user can perform supported workflows with consistent defaults, document round-trips, and visual affordances — modulo platform limits explicitly documented in §7 **Non-goals** only (e.g. managed ComfyUI install may remain external-only on Android if impractical, but **must not** be a silent stub). Anything outside §7 remains **required** until implemented and tracked.
 
 ---
 
@@ -191,7 +190,7 @@ Python centralizes graph construction for:
 
 **Work — all required for perfect port (P2.2 not done until every box checked):**
 
-| # | Requirement | Python reference |
+| # | Requirement | Reference behavior |
 |---|-------------|------------------|
 | D1 | Inline `RegionPromptWidget` layout: inactive above + active + inactive below | `RegionPromptWidget` |
 | D2 | `ActiveRegionWidget`: positive + negative prompts (root = both; region = positive only when style hides negative) | `ActiveRegionWidget` |
@@ -413,7 +412,7 @@ Automated `QNetworkAccessManager` tests against `ComfyMockHttpServer` — see `t
 | M10 | Settings roundtrip |
 | M11 | Cloud sign-in (N/A — P3.1 skipped) |
 
-Run on **Python desktop** (reference), **C++ desktop**, and **C++ Android** (external ComfyUI URL). Set `manual_status` to `pass` / `fail` / `blocked` after each run.
+Run on **desktop** and **Android** (external ComfyUI URL). Set `manual_status` to `pass` / `fail` / `blocked` after each run.
 
 ---
 

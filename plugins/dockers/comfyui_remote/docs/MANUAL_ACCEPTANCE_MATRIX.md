@@ -1,10 +1,9 @@
-# Manual acceptance matrix — C++ ComfyUI Remote vs Python plugin
+# Manual acceptance matrix — ComfyUI Remote
 
-**Reference:** [krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) v1.49.0 (Python `ai_diffusion` plugin, desktop)  
 **Target:** `plugins/dockers/comfyui_remote` (native C++, desktop + Android APK)  
 **Tracking:** `port_progress.json` → `acceptance_manual[]`  
 **Android deviations:** [ANDROID_DEVIATIONS.md](ANDROID_DEVIATIONS.md)  
-**Updated:** 2026-05-24 (P5.3)
+**Updated:** 2026-05-25
 
 Use this matrix before release or after large port changes. Record results in `port_progress.json` (`manual_status`, `tested_on`, `notes` per scenario).
 
@@ -14,16 +13,15 @@ Use this matrix before release or after large port changes. Record results in `p
 
 | Column | Meaning |
 |--------|---------|
-| **Python desktop** | Baseline on Krita desktop with official Python AI Diffusion plugin + same ComfyUI server |
-| **C++ desktop** | Krita desktop build with `comfyui_remote` docker only (Python plugin disabled or uninstalled) |
-| **C++ Android** | Krita Android APK with bundled `data/`; ComfyUI runs **externally** (LAN URL — no managed installer in port) |
+| **Desktop** | Krita desktop build with `comfyui_remote` docker |
+| **Android** | Krita Android APK with bundled `data/`; ComfyUI runs **externally** (LAN URL — no managed installer) |
 
 **Shared setup**
 
 1. ComfyUI server reachable (default `http://127.0.0.1:8188` desktop; LAN IP on Android).  
-2. ETN / AI Diffusion custom nodes installed (same set as Python plugin docs).  
+2. ETN / AI Diffusion custom nodes installed on the ComfyUI server.
 3. At least one SDXL checkpoint + VAE on server for **M2**; inpaint model for **M3** if testing fill/inpaint modes.  
-4. New empty `.kra` or test document; reset dock settings if comparing parity.
+4. New empty `.kra` or test document; reset dock settings if needed.
 
 **Status values** (set in JSON): `pending` | `pass` | `fail` | `blocked` | `not_applicable`
 
@@ -31,19 +29,18 @@ Use this matrix before release or after large port changes. Record results in `p
 
 ## Summary matrix
 
-| ID | Scenario | Python desktop | C++ desktop | C++ Android | C++ impl ready | Blockers / notes |
-|----|----------|----------------|-------------|-------------|----------------|------------------|
-| M1 | Connect custom ComfyUI | Reference | Test | Test | Yes | — |
-| M2 | Generate SDXL | Reference | Test | Test | Yes | Needs SDXL ckpt on server |
-| M3 | Inpaint modes | Reference | Test | Test | Yes | Touch + selection UX differs on Android |
-| M4 | Regions + control | Reference | Test | Test | Yes | Per-region control generate: verify on device |
-| M5 | Live record | Reference | Test | Test | Yes | LoRA pre-upload + WS optional |
-| M6 | Upscale + refine | Reference | Test | Test | Yes | Large images: memory on Android |
-| M7 | Animation batch | Reference | Test | Test | Yes | Frame files beside `.kra` |
-| M8 | Custom workflow | Reference | Partial test | Partial | Partial | Full graph UI deferred (P3.3); JSON/API path exists |
-| M9 | History + ui.json | Reference | Test | Test | Yes | `.kra` open/save round-trip |
-| M10 | Settings roundtrip | Reference | Test | Test | Yes | Restart after language change |
-| M11 | Cloud sign-in | Reference | N/A | N/A | No | P3.1 skipped — external server only |
+| ID | Scenario | Desktop | Android | Impl ready | Blockers / notes |
+|----|----------|---------|---------|------------|------------------|
+| M1 | Connect custom ComfyUI | Test | Test | Yes | — |
+| M2 | Generate SDXL | Test | Test | Yes | Needs SDXL ckpt on server |
+| M3 | Inpaint modes | Test | Test | Yes | Touch + selection UX differs on Android |
+| M4 | Regions + control | Test | Test | Yes | Per-region control generate: verify on device |
+| M5 | Live record | Test | Test | Yes | LoRA pre-upload + WS optional |
+| M6 | Upscale + refine | Test | Test | Yes | Large images: memory on Android |
+| M7 | Animation batch | Test | Test | Yes | Frame files beside `.kra` |
+| M8 | Custom workflow | Partial test | Partial | Partial | JSON/API path exists |
+| M9 | History + ui.json | Test | Test | Yes | `.kra` open/save round-trip |
+| M10 | Settings roundtrip | Test | Test | Yes | Restart after language change |
 
 ---
 
@@ -62,7 +59,7 @@ Use this matrix before release or after large port changes. Record results in `p
 
 **Pass**
 
-- Same URL works on Python and C++ within normal network limits.  
+- Server URL connects within normal network limits.
 - Checkpoint list non-empty when server has models; ETN `model_info` filter does not empty list incorrectly.
 
 **Android**
@@ -85,7 +82,7 @@ Use this matrix before release or after large port changes. Record results in `p
 
 **Pass**
 
-- Image quality/composition comparable to Python (same ckpt, seed, steps).  
+- Image generation completes with expected checkpoint, seed, and step settings.
 - No silent failure; queue/history shows prompt id.
 
 **Android**
@@ -107,7 +104,7 @@ Use this matrix before release or after large port changes. Record results in `p
 
 **Pass**
 
-- Each mode produces distinct, sensible mask/fill behavior vs Python for same inputs.  
+- Each mode produces distinct, sensible mask/fill behavior for the same inputs.
 - Labels match (Seamless / Focus, etc.).
 
 **Android**
@@ -162,7 +159,7 @@ Use this matrix before release or after large port changes. Record results in `p
 
 1. Upscale workspace: factor upscale; optional refine (denoise, tile if large).  
 2. Output layer / history entry.  
-3. Compare tile overlap behavior on image &gt; 2k edge with Python.
+3. Compare tile overlap behavior on image &gt; 2k edge.
 
 **Pass**
 
@@ -207,11 +204,11 @@ Use this matrix before release or after large port changes. Record results in `p
 
 **Known gap**
 
-- Full graph editor / WebSocket publish (P3.3, P3.4) not required for **pass** here; document **partial** in matrix.
+- Full graph editor / WebSocket publish is not required for **pass** here; document **partial** in matrix.
 
 **Android**
 
-- Same JSON path; no graph page parity expected until P3.3.
+- Same JSON path.
 
 ---
 
@@ -227,8 +224,7 @@ Use this matrix before release or after large port changes. Record results in `p
 
 **Pass**
 
-- `ai_diffusion/ui.json` (or equivalent annotation) readable by Python plugin on desktop swap test (optional cross-plugin check).  
-- C++ reload shows same slot count and prompts.
+- Reload shows same slot count and prompts.
 
 ---
 
@@ -240,11 +236,11 @@ Use this matrix before release or after large port changes. Record results in `p
 
 1. Change server URL, performance preset, language, sampler defaults, control defaults.  
 2. Restart Krita.  
-3. Values restored from `settings.json` under user data dir (`ai_diffusion` / `krita-ai-diffusion`).
+3. Values restored from `settings.json` under user data dir.
 
 **Pass**
 
-- No loss of keys Python also persists.  
+- No loss of persisted keys.
 - Language change shows restart notice; after restart, UI strings from selected `data/language/*.json`.
 
 **Android**
@@ -253,34 +249,18 @@ Use this matrix before release or after large port changes. Record results in `p
 
 ---
 
-### M11 — Cloud sign-in
+## Android platform checklist
 
-**Workstreams:** P3.1 skipped
-
-**Status:** `not_applicable` for C++ port — use custom ComfyUI URL only.
-
-**Steps (Python reference only)**
-
-1. Cloud account sign-in, billing display, cloud performance preset.
-
-**C++**
-
-- Welcome/connection must not show dead “Sign in” or cloud performance controls; cloud UI is absent and the settings flow is external-server only.
-
----
-
-## Android vs Python — platform checklist
-
-| Topic | Python desktop | C++ Android |
-|-------|----------------|-------------|
-| Runtime | Python + PyQt | Native Qt only |
-| Plugin `data/` | Install dir | APK + `pluginInstallDataDir()` / first-run copy |
-| ComfyUI install | Managed option | External URL only (P3.2 skipped) |
-| Cloud | Yes | No (P3.1 skipped) |
-| WebSockets | Yes | Build flag `COMFYUI_HAVE_QT_WEBSOCKETS` |
-| KArchive (plugin ZIP) | Optional | Enable in Android build |
-| LoRA upload | HTTP PUT | Same ETN path (P4.6) |
-| Document contract | `ui.json` v1 | Same keys (P2.x) |
+| Topic | C++ Android |
+|-------|-------------|
+| Runtime | Native Qt only |
+| Plugin `data/` | APK + `pluginInstallDataDir()` / first-run copy |
+| ComfyUI install | External URL only |
+| Cloud | Not exposed |
+| WebSockets | Build flag `COMFYUI_HAVE_QT_WEBSOCKETS` |
+| KArchive (plugin ZIP) | Enable in Android build |
+| LoRA upload | HTTP PUT ETN path |
+| Document contract | `ui.json` v1 keys |
 
 ---
 
@@ -291,7 +271,7 @@ Edit `port_progress.json` for each scenario:
 ```json
 "manual_status": "pass",
 "tested_on": { "cpp_desktop": "2026-05-24", "cpp_android": null },
-"notes": "M2: seed 42, dreamshaper XL, matched Python."
+"notes": "M2: seed 42, dreamshaper XL."
 ```
 
 When all applicable rows are `pass` or `not_applicable`, P5.3 manual campaign can be marked done in release notes (implementation of the matrix is P5.3; executing every row is ongoing QA).

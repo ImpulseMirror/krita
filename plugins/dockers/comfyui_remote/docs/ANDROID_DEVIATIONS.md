@@ -1,67 +1,59 @@
-# Android deviations — ComfyUI Remote (native C++)
+# Android notes — ComfyUI Remote (native C++)
 
-**Reference:** Python [krita-ai-diffusion](https://github.com/Acly/krita-ai-diffusion) v1.49.0 (desktop)  
 **Target:** `plugins/dockers/comfyui_remote` on **Krita Android**  
-**Related:** [MANUAL_ACCEPTANCE_MATRIX.md](MANUAL_ACCEPTANCE_MATRIX.md), `port_progress.json` (P3.x skipped, M11 N/A)  
-**Updated:** 2026-05-25 (external-only connection UI)
+**Related:** [MANUAL_ACCEPTANCE_MATRIX.md](MANUAL_ACCEPTANCE_MATRIX.md)
+**Updated:** 2026-05-25
 
-This document lists **intentional** differences between the Python desktop plugin and the native C++ plugin on Android. Items here are **not bugs** unless marked *known issue*. Anything not listed is expected to match Python behavior when using the same external ComfyUI server and models.
+This document lists Android-specific behavior for the native ComfyUI Remote docker.
 
 ---
 
 ## 1. Summary
 
-| Area | Python desktop | C++ Android |
-|------|----------------|-------------|
-| Runtime | Embedded Python | Qt/C++ only — **no Python** |
-| ComfyUI server | Cloud, managed local, or custom URL | **Custom URL only** (user-run ComfyUI on PC/NAS/device) |
-| Cloud account / billing | Yes | **Not available** (not exposed in Settings) |
-| Managed ComfyUI install | `server.py` lifecycle on desktop | **Not available** — external setup required |
-| Graph workflow editor | Full Custom Workflow UI | **Partial** — JSON/API path; full graph page deferred (P3.3) |
-| Core generation | Generate, inpaint, live, upscale, animation, regions, control | **Supported** (same HTTP/ETN contract) |
-| Document contract | `ui.json` v1, annotations | **Same** |
-| Plugin assets | Installed with plugin | **Bundled in APK** (`data/`) + optional copy to user dir |
+| Area | C++ Android |
+|------|-------------|
+| Runtime | Qt/C++ only |
+| ComfyUI server | **Custom URL only** (user-run ComfyUI on PC/NAS/device) |
+| Cloud account / billing | **Not available** (not exposed in Settings) |
+| Managed ComfyUI install | **Not available** — external setup required |
+| Graph workflow editor | JSON/API workflow path |
+| Core generation | Generate, inpaint, live, upscale, animation, regions, control |
+| Document contract | `ui.json` v1, annotations |
+| Plugin assets | **Bundled in APK** (`data/`) + optional copy to user dir |
 
 ---
 
-## 2. Intentional product deviations (P3 — skipped workstreams)
+## 2. Unavailable connection modes
 
-These are tracked in `port_progress.json` as `skipped` with documented `skip_reason`. The UI must **not** expose dead-end controls: Settings → Connection only shows the supported custom ComfyUI URL flow.
+Settings → Connection only shows the supported custom ComfyUI URL flow.
 
 ### 2.1 Cloud / Online Service (P3.1)
 
 | | |
 |--|--|
-| **Python** | OAuth sign-in, cloud API, cloud performance preset, hosted ComfyUI. |
-| **Android / C++** | No `ComfyCloudClient`. The **Online Service** connection mode and cloud performance preset are not shown. |
-| **Manual test** | M11 — `not_applicable` on Android. |
-| **Workaround** | Run ComfyUI elsewhere; set **Custom ComfyUI** URL (LAN). |
+| **Android / C++** | The **Online Service** connection mode and cloud performance preset are not shown. |
+| **Workaround** | Run ComfyUI elsewhere; set the server URL in Settings → Connection. |
 
 ### 2.2 Managed local server (P3.2)
 
 | | |
 |--|--|
-| **Python** | Download/install/start ComfyUI + custom nodes from Krita. |
 | **Android / C++** | No managed installer or process supervisor. The **Local Managed Server** connection mode is not shown. |
 | **Android expectation** | User installs ComfyUI + ETN nodes on a **reachable host** (PC, Mac, Linux box, cloud VM). Tablet/phone uses `http://<host-ip>:8188`. |
-| **Docs link** | Settings exposes [Custom ComfyUI Setup](https://docs.interstice.cloud) (same as Python external path). |
-| **Future** | Optional guided checklist wizard (nodes, URL test) — **not** a silent stub; tracked separately if product revives P3.2 for Android only. |
+| **Future** | Optional guided checklist wizard (nodes, URL test). |
 
-### 2.3 Graph workspace UI (P3.3)
-
-| | |
-|--|--|
-| **Python** | Visual graph editor, `WorkflowCollection`, parameter widgets. |
-| **Android / C++** | Custom workflow via **JSON file** / document-embedded workflow + `convertComfyUiWorkflowUiToApi` when `object_info` is loaded. No full node-graph page parity. |
-| **Manual test** | M8 — `cpp_ready: partial`. |
-
-### 2.4 WebSocket workflow publish (P3.4)
+### 2.3 Graph workspace UI
 
 | | |
 |--|--|
-| **Python** | `workflow_published` over `/ws?clientId=…` for live graph sync. |
-| **Android / C++** | Compiled only if `COMFYUI_HAVE_QT_WEBSOCKETS` (CMake links Qt WebSockets). Code paths in `ComfyUIRemoteDockWebWorkflow.cpp` / control generate are `#if defined(COMFYUI_HAVE_QT_WEBSOCKETS)`. **Android builds should enable WebSockets** per plan §6, but publish parity still depends on P3.3 graph UI. |
-| **Impact** | Live/control flows that rely on WS publish may differ from Python until graph workstream completes. |
+| **Android / C++** | Custom workflow via **JSON file** / document-embedded workflow + `convertComfyUiWorkflowUiToApi` when `object_info` is loaded. |
+
+### 2.4 WebSocket workflow publish
+
+| | |
+|--|--|
+| **Android / C++** | Compiled only if `COMFYUI_HAVE_QT_WEBSOCKETS` (CMake links Qt WebSockets). Code paths in `ComfyUIRemoteDockWebWorkflow.cpp` / control generate are `#if defined(COMFYUI_HAVE_QT_WEBSOCKETS)`. |
+| **Impact** | Live/control flows that rely on WS publish require Qt WebSockets in the Android build. |
 
 ---
 
@@ -79,8 +71,8 @@ These are tracked in `port_progress.json` as `skipped` with documented `skip_rea
 |------|----------|
 | `pluginInstallDataDir()` | Resolves `…/data` next to plugin `.so` in APK layout (or dev `COMFYUI_PLUGIN_SOURCE_DATA_DIR`). |
 | `ensureBundledPluginDataInstalled()` | First use: copies missing presets/tags from install dir → `pluginUserDataDir()`. |
-| `pluginUserDataDir()` | Under Qt `AppDataLocation` → `…/ai_diffusion` when path contains `krita` (see `ComfyUIUtils.cpp` §13.66). |
-| User styles / LoRAs / workflows | Same layout as desktop C++ (`styles/`, `database/loras.json`, `workflows/`). |
+| `pluginUserDataDir()` | Under Qt `AppDataLocation` / `GenericDataLocation` → `…/comfyui_remote` (see `ComfyUIUtils.cpp` §13.66). |
+| User styles / LoRAs / workflows | Stored under `styles/`, `database/loras.json`, `workflows/`. |
 
 **CMake:** `install(DIRECTORY data/ …)` — Android packaging must include `data/` in the plugin install tree (P0.1).
 
@@ -105,13 +97,13 @@ Without KArchive: update-ZIP install path is unavailable at runtime (compile-tim
 
 ---
 
-## 4. Parity retained on Android (no deviation)
+## 4. Supported on Android
 
-The following match Python when using **custom ComfyUI** + same models/nodes:
+The following are supported when using **custom ComfyUI** + required models/nodes:
 
 - Workspaces: Generate, Inpaint, Live, Upscale, Animation, Regions, Control layers  
 - `settings.json` persistence and §3.1 settings keys  
-- Document `ui.json` / annotation parity (history, regions, inpaint, upscale, custom workflow blob)  
+- Document `ui.json` / annotations (history, regions, inpaint, upscale, custom workflow blob)
 - HTTP: `object_info`, `system_stats`, `/prompt`, `/history`, `/upload/image`, `/models/loras`  
 - ETN: `api/etn/model_info/checkpoints`, `api/etn/upload/loras/…`, `api/etn/translate/…`  
 - Style collection (14 bundled presets), sampler/control presets, tag CSVs, localization JSON  
@@ -141,14 +133,12 @@ Use `acceptance_manual[].notes` in `port_progress.json` for scenario-specific An
 
 ---
 
-## 7. Migration guide (Python desktop → C++ Android)
+## 7. Setup guide
 
 1. Export or note ComfyUI URL, checkpoints, and custom nodes on the host machine.  
-2. Install native **ComfyUI Remote** docker on Krita Android (not the Python plugin).  
+2. Install native **ComfyUI Remote** docker on Krita Android.
 3. Settings → Connection → **Custom ComfyUI** → enter LAN URL → Connect.  
-4. Open an existing `.kra` created with Python: verify history/regions (M9).  
-5. Use [interstice.cloud docs](https://docs.interstice.cloud) for node install on the **host** ComfyUI.
-6. For custom workflows, prefer API-format JSON until graph UI (P3.3) ships.
+4. For custom workflows, prefer API-format JSON.
 
 ---
 
@@ -156,9 +146,7 @@ Use `acceptance_manual[].notes` in `port_progress.json` for scenario-specific An
 
 | Resource | Location |
 |----------|----------|
-| Perfect port plan | `comfyui-perfect-port.plan.md` §6–§7 |
 | Manual matrix | `MANUAL_ACCEPTANCE_MATRIX.md` |
-| Progress / skips | `port_progress.json` → P3.1–P3.4, P5.3 `acceptance_manual` |
 | Build flags | `plugins/dockers/comfyui_remote/CMakeLists.txt` |
 
-*P5.4 — intentional gaps remain tracked as workstreams; unsupported connection modes are hidden from Settings.*
+*Unsupported connection modes are hidden from Settings.*

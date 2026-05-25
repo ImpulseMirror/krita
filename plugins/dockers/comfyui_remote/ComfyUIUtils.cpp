@@ -988,16 +988,6 @@ QString intersticeApiBaseUrl()
     return base;
 }
 
-QString intersticeWebBaseUrl()
-{
-    QString base = QString::fromUtf8(qgetenv("INTERSTICE_WEB_URL")).trimmed();
-    if (base.isEmpty())
-        return QStringLiteral("https://www.interstice.cloud");
-    while (base.endsWith(QLatin1Char('/')))
-        base.chop(1);
-    return base;
-}
-
 // §13.191: Same contract and message format as document.check_color_mode()
 std::pair<bool, QString> checkColorMode(KisImageSP image)
 {
@@ -1032,33 +1022,45 @@ QString g_pluginUserDataDirTestOverride;
 QString resolvePluginUserDataDir()
 {
     const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const QString legacyBase = appData.isEmpty() ? QDir::tempPath() : appData;
-    const QString legacyPath = legacyBase + QStringLiteral("/krita/comfyui_remote");
     const QString settingsFile = QStringLiteral("/settings.json");
 
     QString resolved;
     if (!appData.isEmpty() && appData.contains(QLatin1String("krita"), Qt::CaseInsensitive)) {
-        resolved = appData + QStringLiteral("/ai_diffusion");
+        resolved = appData + QStringLiteral("/comfyui_remote");
     } else {
         QString gen = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
         if (gen.isEmpty())
             gen = QDir::homePath();
-        resolved = gen + QStringLiteral("/krita-ai-diffusion");
+        resolved = gen + QStringLiteral("/comfyui_remote");
     }
 
     const QString newSettings = resolved + settingsFile;
-    const QString oldSettings = legacyPath + settingsFile;
-    if (!QFile::exists(newSettings) && QFile::exists(oldSettings)) {
-        QFileInfo ri(resolved);
-        if (ri.exists()) {
-            QDir rd(resolved);
-            if (rd.exists() && rd.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).isEmpty())
-                rd.rmdir(resolved);
-        }
-        QDir().mkpath(QFileInfo(resolved).path());
-        if (!QFile::rename(legacyPath, resolved)) {
-            QDir().mkpath(legacyPath);
-            return legacyPath;
+    QStringList migrationCandidates;
+    if (!appData.isEmpty()) {
+        migrationCandidates << appData + QStringLiteral("/ai_diffusion");
+        migrationCandidates << appData + QStringLiteral("/krita/comfyui_remote");
+    } else {
+        migrationCandidates << QDir::tempPath() + QStringLiteral("/krita/comfyui_remote");
+    }
+    QString gen = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (gen.isEmpty())
+        gen = QDir::homePath();
+    if (!QFile::exists(newSettings)) {
+        for (const QString &oldPath : qAsConst(migrationCandidates)) {
+            if (oldPath == resolved || !QFile::exists(oldPath + settingsFile))
+                continue;
+            QFileInfo ri(resolved);
+            if (ri.exists()) {
+                QDir rd(resolved);
+                if (rd.exists() && rd.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).isEmpty())
+                    rd.rmdir(resolved);
+            }
+            QDir().mkpath(QFileInfo(resolved).path());
+            if (!QFile::rename(oldPath, resolved)) {
+                QDir().mkpath(oldPath);
+                return oldPath;
+            }
+            break;
         }
     }
 
@@ -1084,8 +1086,8 @@ void clearPluginUserDataDirOverride()
 } // namespace ComfyUITestHooks
 #endif
 
-// §13.66: user_data_dir — AppDataLocation + "ai_diffusion" when path contains "krita"; else GenericDataLocation + "krita-ai-diffusion".
-// Migrates legacy C++ path …/krita/comfyui_remote → resolved dir when only legacy has settings.json.
+// §13.66: user_data_dir — AppDataLocation/GenericDataLocation + "comfyui_remote".
+// Migrates previous storage dirs when only the previous location has settings.json.
 QString pluginUserDataDir()
 {
 #ifdef COMFYUI_ENABLE_TEST_HOOKS
@@ -1099,7 +1101,7 @@ QString pluginUserDataDir()
 
 namespace {
 
-// Directory containing this plugin's shared library (Python plugin_dir equivalent for §13.66).
+// Directory containing this plugin's shared library.
 QString pluginBinaryDirectory()
 {
 #if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
@@ -1206,8 +1208,6 @@ void ensureBundledPluginDataInstalled()
                       user + QStringLiteral("/presets/samplers.json"));
     copyFileIfMissing(install + QStringLiteral("/presets/control.json"),
                       user + QStringLiteral("/presets/control.json"));
-    copyFileIfMissing(install + QStringLiteral("/presets/models.json"),
-                      user + QStringLiteral("/presets/models.json"));
     const QDir tagSrc(install + QStringLiteral("/tags"));
     if (tagSrc.exists()) {
         const QString tagDst = tagsStorageDir();
@@ -3302,7 +3302,7 @@ QString collectDiagnostics(const QString &pluginVersion, bool redactUser, const 
         s << "  " << key << " = " << val << "\n";
     }
 
-    // §13.171: Diagnostics — last 300 lines of client.log from log_dir (same as Python plugin)
+    // §13.171: Diagnostics — last 300 lines of client.log from log_dir
     QString logPath = pluginLogDir() + QStringLiteral("/client.log");
     if (!QFile::exists(logPath)) {
         QDir logDir(pluginLogDir());

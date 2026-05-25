@@ -159,18 +159,10 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         m_d->labelDetectedModels->setWordWrap(true);
         m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
         connectionLayout->addWidget(m_d->labelDetectedModels);
-        // §4.4: Help text for required models; Custom ComfyUI Setup = link to docs
-        QString connHelpMsg = ComfyTr::tr("See Custom ComfyUI Setup for required models. Check the client.log file for more details.");
-        connHelpMsg.replace(QStringLiteral("Custom ComfyUI Setup"),
-            QStringLiteral("<a href=\"https://docs.interstice.cloud\">Custom ComfyUI Setup</a>"));
-        QLabel *connHelp = new QLabel(connHelpMsg, connectionPage);
+        QLabel *connHelp = new QLabel(
+            ComfyTr::tr("Install the required custom nodes and models on your ComfyUI server. Check the client.log file for more details."),
+            connectionPage);
         connHelp->setWordWrap(true);
-        connHelp->setTextFormat(Qt::RichText);
-        connHelp->setOpenExternalLinks(false);
-        connHelp->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        connect(connHelp, &QLabel::linkActivated, this, [](const QString &url) {
-            QDesktopServices::openUrl(QUrl(url));
-        });
         connectionLayout->addWidget(connHelp);
         connectionLayout->addStretch();
 
@@ -2104,24 +2096,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginLogDir()));
         });
         pluginLayout->addWidget(viewLogsBtn);
-        QLabel *supportHeading = new QLabel(ComfyTr::tr("Documentation and Support"), pluginPage);
-        supportHeading->setStyleSheet(QStringLiteral("font-weight: bold;"));
-        pluginLayout->addWidget(supportHeading);
-        QPushButton *websiteButton = new QPushButton(ComfyTr::tr("Website"), pluginPage);
-        connect(websiteButton, &QPushButton::clicked, this, [](bool) {
-            QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
-        });
-        pluginLayout->addWidget(websiteButton);
-        QPushButton *handbookButton = new QPushButton(ComfyTr::tr("Handbook: Guides and Tips"), pluginPage);
-        connect(handbookButton, &QPushButton::clicked, this, [](bool) {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://docs.interstice.cloud")));
-        });
-        pluginLayout->addWidget(handbookButton);
-        QPushButton *discordButton = new QPushButton(ComfyTr::tr("Discord"), pluginPage);
-        connect(discordButton, &QPushButton::clicked, this, [](bool) {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));
-        });
-        pluginLayout->addWidget(discordButton);
         pluginLayout->addStretch();
         syncPluginUpdateUi();
         stack->addWidget(pluginPage);
