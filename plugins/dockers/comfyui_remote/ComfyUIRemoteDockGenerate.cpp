@@ -2133,8 +2133,12 @@ bool ComfyUIRemoteDock::tryStartRefineFromGenerate()
         qCWarning(KIS_COMFYUI_REMOTE) << "tryStartRefineFromGenerate: custom workflow present → returning false";
         return false;
     }
-    KisImageSP image = m_d->viewManager ? m_d->viewManager->image() : KisImageSP();
-    KisSelectionSP sel = m_d->viewManager ? m_d->viewManager->selection() : KisSelectionSP();
+    KisImageSP image;
+    KisSelectionSP sel;
+    if (m_d->viewManager) {
+        image = m_d->viewManager->image();
+        sel = m_d->viewManager->selection();
+    }
     const bool hasSelection =
         sel && sel->pixelSelection() && !sel->pixelSelection()->selectedExactRect().isEmpty();
     const bool partialSelection =
