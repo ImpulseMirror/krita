@@ -93,6 +93,7 @@ struct ComfyUIRemoteDock::Private
     // when the user clicked the Styles nav tab after the function returned.
     bool stylesTabSyncing = false;
     QString stylesTabPresetNameBaselineMember;
+    bool stylesTabPersistingAdvanced = false;
     // FAITHFUL_PORT: wrap the Seamless/Focus/Frames rows so their orphan labels
     // are hidden together with the controls in compact view.
     QWidget *seamlessRowWidget = nullptr;

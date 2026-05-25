@@ -751,7 +751,16 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             }
             editStyleName->blockSignals(false);
         };
-        bool persistingStyleAdvanced = false;
+        // FAITHFUL_PORT/CRASH FIX: this guard flag was a stack-local captured by
+        // reference into syncAdvCkptFromStyle() and persistStyleCheckpointOptions(),
+        // both connected to long-lived signals on widgets owned by the persistent
+        // Settings dialog. After slotConfigureHelp() returned, the reference
+        // dangled — opening the Styles nav tab later invoked the lambdas which
+        // then read/wrote freed stack memory, corrupting the link register and
+        // crashing in <unknown> with `lr == pc` style SIGSEGV. Bind to a d-pointer
+        // member so the storage outlives the dialog.
+        m_d->stylesTabPersistingAdvanced = false;
+        bool &persistingStyleAdvanced = m_d->stylesTabPersistingAdvanced;
         auto effectiveStyleArch = [this]() -> ComfyResources::Arch {
             const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
             if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId)) {
