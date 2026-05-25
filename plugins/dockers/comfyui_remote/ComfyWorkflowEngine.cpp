@@ -173,6 +173,7 @@ static void appendColorMatchAfterDecode(QJsonObject *workflow,
                                         const QString &decodeNodeId,
                                         const QString &referenceImageNodeId,
                                         const QString &maskNodeId,
+                                        int maskNodeSlot,
                                         int *nextId)
 {
     const QString matchId = QString::number((*nextId)++);
@@ -180,7 +181,7 @@ static void appendColorMatchAfterDecode(QJsonObject *workflow,
                        {QStringLiteral("reference"), QJsonArray{referenceImageNodeId, 0}},
                        {QStringLiteral("strength"), 1.0}};
     if (!maskNodeId.isEmpty())
-        inputs.insert(QStringLiteral("exclude_mask"), QJsonArray{maskNodeId, 1});
+        inputs.insert(QStringLiteral("exclude_mask"), QJsonArray{maskNodeId, maskNodeSlot});
     workflow->insert(matchId,
                      QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_ColorMatch")},
                                  {QStringLiteral("inputs"), inputs}});
@@ -679,16 +680,28 @@ QJsonObject buildRefineRegion(const RefineRegionParams &params)
 
     int nextId = ckptRefs.nextNodeId;
 
+    // FAITHFUL_PORT/BUG: previously this passed `QJsonArray{processedMask, 1}`
+    // to VAEEncodeForInpaint.mask. That works when processedMask is the raw
+    // LoadImage ("2") because LoadImage exposes IMAGE on slot 0 and MASK on
+    // slot 1, but when growMaskBy>0 we wrap it in INPAINT_ExpandMask which
+    // only outputs MASK on slot 0. ComfyUI then rejected /prompt with
+    // "node 7 (VAEEncodeForInpaint): Exception when validating inner node —
+    // list index out of range" because slot 1 doesn't exist on ExpandMask.
+    // Track the (id, slot) pair explicitly so every downstream consumer wires
+    // to the correct output slot regardless of which mask node is in use.
     const QString maskLoadId = QStringLiteral("2");
-    QString processedMask = maskLoadId;
-    if (params.growMaskBy > 0)
-        processedMask = insertInpaintExpandMask(&workflow, &nextId, maskLoadId, params.growMaskBy, 0);
+    QString processedMaskId = maskLoadId;
+    int processedMaskSlot = 1;  // LoadImage → MASK on slot 1
+    if (params.growMaskBy > 0) {
+        processedMaskId = insertInpaintExpandMask(&workflow, &nextId, maskLoadId, params.growMaskBy, 0);
+        processedMaskSlot = 0;  // INPAINT_ExpandMask → MASK on slot 0
+    }
 
     const QString vaeEncodeId = QStringLiteral("7");
     if (workflow.contains(vaeEncodeId)) {
         QJsonObject n7 = workflow.value(vaeEncodeId).toObject();
         QJsonObject i7 = n7.value(QStringLiteral("inputs")).toObject();
-        i7.insert(QStringLiteral("mask"), QJsonArray{processedMask, 1});
+        i7.insert(QStringLiteral("mask"), QJsonArray{processedMaskId, processedMaskSlot});
         i7.insert(QStringLiteral("grow_mask_by"), 0);
         n7.insert(QStringLiteral("inputs"), i7);
         workflow.insert(vaeEncodeId, n7);
@@ -705,7 +718,8 @@ QJsonObject buildRefineRegion(const RefineRegionParams &params)
 
     if (params.colorMatch) {
         const QString decodeId = QStringLiteral("9");
-        appendColorMatchAfterDecode(&workflow, decodeId, QStringLiteral("1"), processedMask, &nextId);
+        appendColorMatchAfterDecode(&workflow, decodeId, QStringLiteral("1"),
+                                    processedMaskId, processedMaskSlot, &nextId);
     }
 
     finishWorkflowWithSamplerCustom(
@@ -816,15 +830,22 @@ QJsonObject buildInpaint(const InpaintBuildParams &params)
     patchClipTextEncodeNode(workflow, QStringLiteral("6"), params.negativePrompt, params.promptTranslationLanguage,
                             &injectId);
     {
-        QString maskForEncode = QStringLiteral("2");
+        // FAITHFUL_PORT/BUG: same fix as buildInpaintParamsObj() — wiring the
+        // VAEEncodeForInpaint.mask input to slot 1 of an INPAINT_ExpandMask
+        // node triggered "list index out of range" on the server because
+        // ExpandMask only outputs MASK on slot 0. Track id+slot together.
+        QString maskForEncodeId = QStringLiteral("2");
+        int maskForEncodeSlot = 1;  // LoadImage MASK
         int growNext = 400;
         while (workflow.contains(QString::number(growNext)))
             ++growNext;
-        if (params.growMaskBy > 0)
-            maskForEncode = insertInpaintExpandMask(&workflow, &growNext, QStringLiteral("2"), params.growMaskBy, 0);
+        if (params.growMaskBy > 0) {
+            maskForEncodeId = insertInpaintExpandMask(&workflow, &growNext, QStringLiteral("2"), params.growMaskBy, 0);
+            maskForEncodeSlot = 0;  // ExpandMask MASK
+        }
         QJsonObject n7 = workflow.value(QStringLiteral("7")).toObject();
         QJsonObject i7 = n7.value(QStringLiteral("inputs")).toObject();
-        i7.insert(QStringLiteral("mask"), QJsonArray{maskForEncode, 1});
+        i7.insert(QStringLiteral("mask"), QJsonArray{maskForEncodeId, maskForEncodeSlot});
         i7.insert(QStringLiteral("grow_mask_by"), 0);
         n7.insert(QStringLiteral("inputs"), i7);
         workflow.insert(QStringLiteral("7"), n7);
