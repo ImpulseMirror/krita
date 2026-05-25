@@ -977,21 +977,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (m_d->btnGenerate) m_d->btnGenerate->setVisible(isGenerate || isGraph);
         // FAITHFUL_PORT: inpaint mode / fill / context / Seamless / Focus controls
         // map to upstream's `CustomInpaintWidget`, which is only visible in
-        // Custom inpaint mode. Gate them behind settings.show_inpaint_controls
-        // (default false) so the compact docker matches the python reference.
-        // The standalone Inpaint button is folded into the Generate dropdown
-        // upstream; keep it hidden unless settings.show_inpaint_button is set.
-        {
-            const QJsonObject st = ComfyUIUtils::loadSettingsJson();
-            const bool showInpaintControls = st.value(QStringLiteral("show_inpaint_controls")).toBool(false);
-            const bool showInpaintBtn = st.value(QStringLiteral("show_inpaint_button")).toBool(false);
-            if (m_d->btnInpaint) m_d->btnInpaint->setVisible(isGenerate && showInpaintBtn);
-            if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(isGenerate && showInpaintControls);
-            if (m_d->comboFillMode) m_d->comboFillMode->setVisible(isGenerate && showInpaintControls);
-            if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(isGenerate && showInpaintControls);
-            if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(isGenerate && showInpaintControls);
-            if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(isGenerate && showInpaintControls);
-        }
+        // Custom inpaint mode. In the compact view we keep them hidden; final
+        // visibility is enforced by applyInterfaceAppearanceSettings() below.
+        if (m_d->btnInpaint) m_d->btnInpaint->setVisible(false);
+        if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(false);
+        if (m_d->comboFillMode) m_d->comboFillMode->setVisible(false);
+        if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(false);
+        if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(false);
+        if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(false);
         if (m_d->btnUpscale) m_d->btnUpscale->setVisible(isUpscale);
         if (m_d->btnGenerateAnimation) m_d->btnGenerateAnimation->setVisible(isAnimation);
         if (m_d->checkLiveMode) m_d->checkLiveMode->setVisible(isLive);
@@ -1032,12 +1025,23 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     updateAnimationButtonLabel();  // §5.7: initial label from persisted FullAnimation
     // FAITHFUL_PORT: top row mirrors python GenerationWidget — WorkspaceSelectWidget +
     // StyleSelectWidget side-by-side. `comboPreset` is the style/model picker
-    // ("Nova XL ★" in upstream); without this row it was never displayed.
+    // ("Nova XL ★" in upstream); without this row it was never displayed. We
+    // also tuck a small gear button on the right so the user can still reach
+    // the Settings dialog after first-time setup (hiding the Connection group
+    // removed the only previous entry point).
     {
         QHBoxLayout *topRow = new QHBoxLayout();
         topRow->setContentsMargins(0, 0, 0, 0);
         topRow->addWidget(m_d->comboWorkspace);
         topRow->addWidget(m_d->comboPreset, 1);
+        QToolButton *btnTopSettings = new QToolButton(genGroup);
+        btnTopSettings->setIcon(KisIconUtils::loadIcon(
+            ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("settings"))));
+        btnTopSettings->setToolTip(ComfyTr::tr("Settings…"));
+        btnTopSettings->setAutoRaise(true);
+        connect(btnTopSettings, &QToolButton::clicked,
+                this, &ComfyUIRemoteDock::slotConfigureHelp);
+        topRow->addWidget(btnTopSettings);
         genLayout->addLayout(topRow);
     }
 
@@ -2615,8 +2619,8 @@ void ComfyUIRemoteDock::updateInpaintControlsForArch()
     const bool editUi = m_d->checkEditMode && m_d->checkEditMode->isChecked();
     if (m_d->checkInpaintUseModel)
         m_d->checkInpaintUseModel->setEnabled(ComfyResources::isSdxlLike(arch) || ComfyResources::hasControlnetInpaint(arch));
-    if (m_d->checkInpaintUsePromptFocus)
-        m_d->checkInpaintUsePromptFocus->setVisible(arch == ComfyResources::Arch::Sd15 || ComfyResources::isSdxlLike(arch));
+    // FAITHFUL_PORT: visibility is owned by applyInterfaceAppearanceSettings() in
+    // the compact view; do NOT re-show the Focus switch based on architecture.
     if (m_d->comboFillMode) {
         const bool strengthFull = m_d->spinStrength && m_d->spinStrength->value() >= 100;
         m_d->comboFillMode->setEnabled(strengthFull && !editArch && !editUi);
@@ -4833,36 +4837,34 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
         m_d->promptResizeHandle->setVisible(showResizeHandle);
     if (m_d->negativeResizeHandle)
         m_d->negativeResizeHandle->setVisible(showNeg && showResizeHandle);
-    // FAITHFUL_PORT: gate advanced rows that upstream krita-ai-diffusion does NOT
-    // expose on the main docker. Defaults match the python reference (hidden);
-    // power users can flip these on in Settings → Interface.
-    const bool showSt = s.value(QStringLiteral("show_steps")).toBool(false);
-    if (m_d->stepsParametersWidget)
-        m_d->stepsParametersWidget->setVisible(showSt);
-    const bool showSeed = s.value(QStringLiteral("show_seed")).toBool(false);
-    if (m_d->seedRowWidget)
-        m_d->seedRowWidget->setVisible(showSeed);
-    const bool showSize = s.value(QStringLiteral("show_size")).toBool(false);
-    if (m_d->sizeRowWidget)
-        m_d->sizeRowWidget->setVisible(showSize);
-    const bool showActions = s.value(QStringLiteral("show_actions_row")).toBool(false);
-    if (m_d->actionsRowWidget)
-        m_d->actionsRowWidget->setVisible(showActions);
-    const bool showInpaintBtn = s.value(QStringLiteral("show_inpaint_button")).toBool(false);
-    if (m_d->btnInpaint)
-        m_d->btnInpaint->setVisible(showInpaintBtn
-            && m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0);
-    const bool showInpaintControls = s.value(QStringLiteral("show_inpaint_controls")).toBool(false);
-    const bool inGenerateWs = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0;
-    if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(showInpaintControls && inGenerateWs);
-    if (m_d->comboFillMode) m_d->comboFillMode->setVisible(showInpaintControls && inGenerateWs);
-    if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(showInpaintControls && inGenerateWs);
-    if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(showInpaintControls && inGenerateWs);
-    if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(showInpaintControls && inGenerateWs);
-    if (m_d->checkRegionOnly)
-        m_d->checkRegionOnly->setVisible(s.value(QStringLiteral("show_region_only_check")).toBool(false));
-    if (m_d->checkEditMode)
-        m_d->checkEditMode->setVisible(s.value(QStringLiteral("show_edit_check")).toBool(false));
+    // FAITHFUL_PORT: forcibly hide every advanced row that upstream krita-ai-diffusion
+    // does not expose on the main docker. We deliberately ignore any stale value
+    // already in settings.json (older builds defaulted `show_steps` to true and
+    // saved it on first Settings → OK, which leaked through to the compact view).
+    // If/when a "Power user view" toggle ships, swap these back to settings reads.
+    if (m_d->stepsParametersWidget) m_d->stepsParametersWidget->setVisible(false);
+    if (m_d->seedRowWidget) m_d->seedRowWidget->setVisible(false);
+    if (m_d->sizeRowWidget) m_d->sizeRowWidget->setVisible(false);
+    if (m_d->actionsRowWidget) m_d->actionsRowWidget->setVisible(false);
+    if (m_d->btnInpaint) m_d->btnInpaint->setVisible(false);
+    if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(false);
+    if (m_d->comboFillMode) m_d->comboFillMode->setVisible(false);
+    if (m_d->comboInpaintContext) m_d->comboInpaintContext->setVisible(false);
+    if (m_d->checkInpaintUseModel) m_d->checkInpaintUseModel->setVisible(false);
+    if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(false);
+    if (m_d->checkRegionOnly) m_d->checkRegionOnly->setVisible(false);
+    if (m_d->checkEditMode) m_d->checkEditMode->setVisible(false);
+    if (m_d->btnGenerateViewOperations) m_d->btnGenerateViewOperations->setVisible(false);
+    if (m_d->btnRefreshSamplers) m_d->btnRefreshSamplers->setVisible(false);
+    if (m_d->btnRefreshCheckpoints) m_d->btnRefreshCheckpoints->setVisible(false);
+    // FAITHFUL_PORT: "Control preprocessor preview" groupbox is not part of the
+    // upstream docker; advanced control-layer preview lives under Settings.
+    if (m_d->controlPreviewGroupBox) m_d->controlPreviewGroupBox->setVisible(false);
+    // FAITHFUL_PORT: the "Header:" combo above the region prompt widget is debug
+    // chrome (Full/Icon/None) — upstream doesn't expose it. Hide along with the
+    // verbose region heading label so the regions block reads cleanly.
+    if (m_d->regionHeaderCombo) m_d->regionHeaderCombo->setVisible(false);
+    if (m_d->regionHeaderLabel) m_d->regionHeaderLabel->setVisible(false);
 }
 
 void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
