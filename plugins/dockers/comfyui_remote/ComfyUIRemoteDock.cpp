@@ -21,6 +21,16 @@
 #include "ComfyRegionLink.h"
 #include "ComfyPromptResizeHandle.h"
 
+#include <QLoggingCategory>
+#include <QToolTip>
+#include <QCursor>
+// FAITHFUL_PORT: dedicated Android-visible category so `adb logcat -s
+// org.krita.debug:V` shows every status change and generate-path decision.
+// All comfyui_remote slots/lambdas funnel through setStatusMessage() and
+// slotGenerate(); both emit on this category at qWarning level so they show
+// in logcat without enabling QT_LOGGING_RULES on the device.
+Q_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE, "krita.comfyui_remote")
+
 #include <kis_shape_layer.h>
 
 #include <QWidget>
@@ -4701,11 +4711,31 @@ void ComfyUIRemoteDock::stopLiveSpinner()
 
 void ComfyUIRemoteDock::setStatusMessage(const QString &msg, bool isError, bool isWarning)
 {
+    // FAITHFUL_PORT: every status change goes to logcat too so silent early
+    // returns in slotGenerate() / slotInpaint() / etc. are visible without
+    // having to see the on-dock label (which can scroll out of view on tablet).
+    if (isError)
+        qCWarning(KIS_COMFYUI_REMOTE) << "STATUS[ERROR]" << msg;
+    else if (isWarning)
+        qCWarning(KIS_COMFYUI_REMOTE) << "STATUS[WARN]" << msg;
+    else
+        qCWarning(KIS_COMFYUI_REMOTE) << "STATUS" << msg;
     if (!m_d->labelStatus) return;
     m_d->labelStatus->setText(msg);
     // §13.27: theme colors — red for error, yellow for warning
     if (isError) {
         m_d->labelStatus->setStyleSheet(QStringLiteral("color: #dc2626;"));
+        // FAITHFUL_PORT: on Android the dock's status label is at the bottom
+        // of a scroll area and frequently sits below the visible viewport, so
+        // error-class messages were invisible — the user would click Generate,
+        // hit a silent early-return path, and see "nothing happen". Scroll the
+        // status label into view AND show a transient tooltip at the cursor so
+        // the user gets an immediate visual signal regardless of scroll state.
+        if (m_d->labelStatus->parentWidget()) {
+            if (QScrollArea *sa = m_d->labelStatus->parentWidget()->findChild<QScrollArea *>())
+                sa->ensureWidgetVisible(m_d->labelStatus);
+        }
+        QToolTip::showText(QCursor::pos(), msg, m_d->labelStatus, QRect(), 4000);
     } else if (isWarning) {
         m_d->labelStatus->setStyleSheet(QStringLiteral("color: #b58900;"));
     } else {

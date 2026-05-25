@@ -24,6 +24,7 @@
 #include <QHttpPart>
 #include <QUuid>
 #include <QRandomGenerator>
+#include <QLoggingCategory>
 #include <klocalizedstring.h>
 #include <kis_icon_utils.h>
 #include <kis_types.h>
@@ -48,6 +49,11 @@
 
 #include <KSharedConfig>
 #include <KConfigGroup>
+
+// Defined in ComfyUIRemoteDock.cpp - shared logging category for the comfyui_remote
+// docker. Brought in via `extern` so slotGenerate() can log to the same "krita.comfyui_remote"
+// channel and the entire generate path is traceable via `adb logcat`.
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 #include "ComfyUIIntervalSlider.h"
 #include "ComfyUIPoseLayers.h"
@@ -199,14 +205,61 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
 // §13.126: End-to-end flow — user action → workflow build (check_color_mode) → queue per QueueMode → POST prompt → poll result → history + UI → Apply
 void ComfyUIRemoteDock::slotGenerate()
 {
-    QString urlStr = m_d->editServerUrl->text().trimmed();
+    // FAITHFUL_PORT/DEBUG: snapshot every decision input at the top so logcat
+    // shows exactly which precondition tripped when "nothing happens" on click.
+    const QString dbgUrl = m_d->editServerUrl ? m_d->editServerUrl->text().trimmed() : QStringLiteral("<null editServerUrl>");
+    const int dbgStrength = m_d->spinStrength ? m_d->spinStrength->value() : -1;
+    const bool dbgEditMode = m_d->checkEditMode && m_d->checkEditMode->isChecked();
+    const int dbgWorkspace = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1;
+    const int dbgCustomLen = m_d->editCustomWorkflow ? m_d->editCustomWorkflow->toPlainText().trimmed().size() : -1;
+    const bool dbgHasImage = m_d->viewManager && m_d->viewManager->image();
+    const bool dbgBtnEnabled = m_d->btnGenerate && m_d->btnGenerate->isEnabled();
+    const int dbgQueueDepth = m_d->jobQueue.size();
+    const QString dbgCurrent = m_d->currentPromptId;
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotGenerate ENTER url=" << dbgUrl
+        << " strength=" << dbgStrength
+        << " editMode=" << dbgEditMode
+        << " workspace=" << dbgWorkspace
+        << " customWorkflowLen=" << dbgCustomLen
+        << " hasImage=" << dbgHasImage
+        << " btnGenerateEnabled=" << dbgBtnEnabled
+        << " queueDepth=" << dbgQueueDepth
+        << " currentPromptId=" << dbgCurrent;
+
+    // FAITHFUL_PORT/CRASH-FREE FIX #3: recover from a stuck-disabled Generate
+    // button. Previously, if a previous upload reply was dropped mid-flight
+    // (e.g. the device sleeping during canvas upload to an unreachable
+    // 127.0.0.1:8188), the button stayed disabled forever and every subsequent
+    // click was eaten by Qt with no log / no status. The compact UI hides the
+    // disabled state, so the user only sees "nothing happens". Detect the
+    // wedge — disabled button with no current prompt and no jobs queued — and
+    // forcibly re-enable before processing the click.
+    if (m_d->btnGenerate && !m_d->btnGenerate->isEnabled()
+        && m_d->currentPromptId.isEmpty() && m_d->jobQueue.isEmpty()) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "slotGenerate: btnGenerate was stuck-disabled with no in-flight job; re-enabling";
+        m_d->btnGenerate->setEnabled(true);
+    }
+
+    QString urlStr = m_d->editServerUrl ? m_d->editServerUrl->text().trimmed() : QString();
     if (urlStr.isEmpty()) {
-        setStatusMessage(ComfyTr::tr("Enter a server URL."), true);
+        setStatusMessage(ComfyTr::tr("Enter a server URL in Settings → Connection."), true);
         return;
     }
     QUrl baseUrl(urlStr);
     if (!baseUrl.isValid()) {
-        setStatusMessage(ComfyTr::tr("Invalid URL."), true);
+        setStatusMessage(ComfyTr::tr("Invalid server URL: %1", urlStr), true);
+        return;
+    }
+    // FAITHFUL_PORT: on Android the device-local 127.0.0.1 is the tablet
+    // itself, not the dev machine. Catch the common misconfiguration here
+    // instead of letting the request silently time out and look like
+    // "nothing happens".
+    if (baseUrl.host() == QLatin1String("127.0.0.1") || baseUrl.host() == QLatin1String("localhost")) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "slotGenerate: server URL points at device loopback" << baseUrl.toString();
+        setStatusMessage(
+            ComfyTr::tr("Server URL is localhost (%1) — this is the tablet itself. Use your computer's LAN IP in Settings → Connection.",
+                        baseUrl.host()), true);
         return;
     }
     if (!m_d->viewManager || !m_d->viewManager->image()) {
@@ -491,8 +544,10 @@ void ComfyUIRemoteDock::slotGenerate()
                 ComfyTr::tr("Graph workspace requires a custom workflow JSON in Settings → Workflow."), true);
             return;
         }
-        if (tryStartRefineFromGenerate())
+        if (tryStartRefineFromGenerate()) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotGenerate: tryStartRefineFromGenerate took over (Refine path); returning";
             return;
+        }
         qint64 seed = m_d->checkFixedSeed->isChecked()
             ? static_cast<qint64>(m_d->spinSeed->value())
             : static_cast<qint64>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
@@ -570,6 +625,9 @@ void ComfyUIRemoteDock::slotGenerate()
 
         if (processed.mode == ComfyRegionProcess::ProcessRegionsResult::Mode::MultiRegion
             && ComfyResources::supportsRegions(genParams.arch)) {
+            qCWarning(KIS_COMFYUI_REMOTE).nospace()
+                << "slotGenerate: MultiRegion path, regions=" << processed.regions.size()
+                << " arch=" << static_cast<int>(genParams.arch);
             m_d->generateProcessedRegions = processed.regions;
             m_d->generateRegionalInputs = ComfyRegionProcess::toRegionalWorkflowInputs(
                 m_d->generateProcessedRegions, genParams.promptTranslationLanguage);
@@ -580,6 +638,13 @@ void ComfyUIRemoteDock::slotGenerate()
             return;
         }
 
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "slotGenerate: SingleRegion / no-region path, dispatching upload pipeline w=" << genParams.width
+            << " h=" << genParams.height
+            << " steps=" << genParams.steps
+            << " arch=" << static_cast<int>(genParams.arch)
+            << " posLen=" << genParams.positivePrompt.size()
+            << " negLen=" << genParams.negativePrompt.size();
         m_d->btnGenerate->setEnabled(false);
         beginGenerateUploadPipeline();
         return;
@@ -642,6 +707,11 @@ void ComfyUIRemoteDock::slotGenerate()
     if (m_d->clientId.isEmpty())
         m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotGenerate: dispatching batch submitIndex=0/" << m_d->batchCountTarget
+        << " queueMode=" << m_d->batchQueueMode
+        << " baseUrl=" << m_d->batchBaseUrl.toString()
+        << " useCustomWorkflow=" << m_d->batchUseCustomWorkflow;
     m_d->labelStatus->setText(ComfyTr::tr("Submitting…"));
     m_d->progressBar->setValue(0);
     m_d->btnGenerate->setEnabled(false);
@@ -650,6 +720,11 @@ void ComfyUIRemoteDock::slotGenerate()
 
 void ComfyUIRemoteDock::slotBatchSubmitNext()
 {
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotBatchSubmitNext: index=" << m_d->batchSubmitIndex
+        << "/" << m_d->batchCountTarget
+        << " useCustomWorkflow=" << m_d->batchUseCustomWorkflow
+        << " needsPerFrameRef=" << m_d->batchNeedsPerFrameReference;
     if (m_d->batchSubmitIndex >= m_d->batchCountTarget) {
         if (m_d->batchQueueMode == 0) // Back
             m_d->jobQueue.append(m_d->batchCollectIds);
@@ -851,10 +926,21 @@ void ComfyUIRemoteDock::dispatchBatchPromptRequest(QJsonObject workflow, int sub
     QNetworkRequest req(m_d->batchBaseUrl);
     ComfyUIUtils::setComfyUIRequestHeaders(req);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotBatchSubmitNext POST url=" << m_d->batchBaseUrl.toString()
+        << " bodyBytes=" << body.size()
+        << " submitIndex=" << submitIndex
+        << " expectedPromptId=" << expectedPromptId;
     QNetworkReply *reply = m_d->nam->post(req, body);
     connect(reply, &QNetworkReply::finished, this, [this, reply, submitIndex, expectedPromptId]() {
         reply->deleteLater();
         const QByteArray respBody = reply->readAll();
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "slotBatchSubmitNext REPLY submitIndex=" << submitIndex
+            << " httpStatus=" << reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()
+            << " err=" << reply->error()
+            << " errStr=" << (reply->error() == QNetworkReply::NoError ? QString() : reply->errorString())
+            << " bodyBytes=" << respBody.size();
         auto abortBatchState = [this]() {
             m_d->btnGenerate->setEnabled(true);
             m_d->progressBar->setValue(0);
@@ -1741,6 +1827,9 @@ void ComfyUIRemoteDock::uploadNextGenerateRegionMask()
 
 void ComfyUIRemoteDock::beginGenerateUploadPipeline()
 {
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "beginGenerateUploadPipeline ENTER isConnected=" << m_d->isConnected
+        << " hasNam=" << (m_d->nam != nullptr);
     m_d->generateLoraUploadPaths.clear();
     if (m_d->isConnected && m_d->nam) {
         ComfyFileLibrary::instance().init();
@@ -1983,10 +2072,19 @@ bool ComfyUIRemoteDock::tryStartRefineFromGenerate()
 {
     const int strengthPct = m_d->spinStrength ? m_d->spinStrength->value() : 100;
     const bool editMode = m_d->checkEditMode && m_d->checkEditMode->isChecked();
-    if (strengthPct >= 100 && !editMode)
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "tryStartRefineFromGenerate strengthPct=" << strengthPct
+        << " editMode=" << editMode
+        << " customWorkflowLen="
+        << (m_d->editCustomWorkflow ? m_d->editCustomWorkflow->toPlainText().trimmed().size() : -1);
+    if (strengthPct >= 100 && !editMode) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "tryStartRefineFromGenerate: strength=100 && !editMode → returning false (normal Generate path)";
         return false;
-    if (!m_d->editCustomWorkflow->toPlainText().trimmed().isEmpty())
+    }
+    if (!m_d->editCustomWorkflow->toPlainText().trimmed().isEmpty()) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "tryStartRefineFromGenerate: custom workflow present → returning false";
         return false;
+    }
 
     KisImageSP image = m_d->viewManager->image();
     KisSelectionSP sel = m_d->viewManager->selection();
