@@ -701,8 +701,17 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     persistLoraList();
                 });
 
-        QString stylesTabPresetNameBaseline;
-        bool syncingStylesTab = false;
+        // FAITHFUL_PORT/CRASH FIX: these were stack-locals, captured by reference by
+        // syncStylesFromDock() / editStyles{Positive,Negative}::textChanged /
+        // editStyleName::editingFinished. The Settings dialog is non-modal and
+        // outlives slotConfigureHelp(), so once this function returned the
+        // captured references dangled and clicking the Styles nav tab on
+        // Android crashed in QListWidget::_q_emitCurrentItemChanged (stack
+        // canary check failed on epilogue). Bind to d-pointer members instead.
+        m_d->stylesTabPresetNameBaselineMember.clear();
+        m_d->stylesTabSyncing = false;
+        QString &stylesTabPresetNameBaseline = m_d->stylesTabPresetNameBaselineMember;
+        bool &syncingStylesTab = m_d->stylesTabSyncing;
         auto repopulateLinkedEditStyleCombo = [comboLinkedEditStyle]() {
             const QJsonObject settings = ComfyUIUtils::loadSettingsJson();
             const QString saved = settings.value(QStringLiteral("linked_edit_style")).toString().trimmed();

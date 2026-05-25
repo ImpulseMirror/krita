@@ -87,11 +87,18 @@ struct ComfyUIRemoteDock::Private
     QWidget *sizeRowWidget = nullptr;
     QWidget *actionsRowWidget = nullptr;
     QWidget *presetRowWidget = nullptr;
+    // Settings dialog Styles tab — must outlive slotConfigureHelp() because
+    // the dialog (and its long-lived signal/slot lambdas) keep references to
+    // these. Previously stack-locals → dangling-reference SIGSEGV on Android
+    // when the user clicked the Styles nav tab after the function returned.
+    bool stylesTabSyncing = false;
+    QString stylesTabPresetNameBaselineMember;
     // FAITHFUL_PORT: wrap the Seamless/Focus/Frames rows so their orphan labels
     // are hidden together with the controls in compact view.
     QWidget *seamlessRowWidget = nullptr;
     QWidget *focusRowWidget = nullptr;
     QWidget *animFramesRowWidget = nullptr;
+    // (Settings-dialog Styles tab locals lifted to members above.)
     QLabel *labelNegativePromptAlert = nullptr;  // §13.143: alert icon when style does not use negative prompt
     QSpinBox *spinWidth = nullptr;
     QSpinBox *spinHeight = nullptr;
