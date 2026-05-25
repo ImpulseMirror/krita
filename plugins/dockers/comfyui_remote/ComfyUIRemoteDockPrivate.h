@@ -87,6 +87,11 @@ struct ComfyUIRemoteDock::Private
     QWidget *sizeRowWidget = nullptr;
     QWidget *actionsRowWidget = nullptr;
     QWidget *presetRowWidget = nullptr;
+    // FAITHFUL_PORT: wrap the Seamless/Focus/Frames rows so their orphan labels
+    // are hidden together with the controls in compact view.
+    QWidget *seamlessRowWidget = nullptr;
+    QWidget *focusRowWidget = nullptr;
+    QWidget *animFramesRowWidget = nullptr;
     QLabel *labelNegativePromptAlert = nullptr;  // §13.143: alert icon when style does not use negative prompt
     QSpinBox *spinWidth = nullptr;
     QSpinBox *spinHeight = nullptr;

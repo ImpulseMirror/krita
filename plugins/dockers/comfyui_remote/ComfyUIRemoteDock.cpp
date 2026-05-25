@@ -987,6 +987,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(false);
         if (m_d->btnUpscale) m_d->btnUpscale->setVisible(isUpscale);
         if (m_d->btnGenerateAnimation) m_d->btnGenerateAnimation->setVisible(isAnimation);
+        if (m_d->animFramesRowWidget) m_d->animFramesRowWidget->setVisible(isAnimation);
         if (m_d->checkLiveMode) m_d->checkLiveMode->setVisible(isLive);
         if (m_d->checkLiveRecord) m_d->checkLiveRecord->setVisible(isLive);
         if (!isLive) stopLiveSpinner();
@@ -1637,12 +1638,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     // §13.107 / §13.169: CustomInpaint toggles (Python: Seamless / Focus)
     m_d->checkInpaintUseModel = new ComfySwitchWidget(genGroup);
     {
-        QLabel *seamlessLabel = new QLabel(ComfyTr::tr("Seamless"), genGroup);
-        QHBoxLayout *seamlessRow = new QHBoxLayout();
+        m_d->seamlessRowWidget = new QWidget(m_d->genContentContainer);
+        QHBoxLayout *seamlessRow = new QHBoxLayout(m_d->seamlessRowWidget);
         seamlessRow->setContentsMargins(0, 0, 0, 0);
+        QLabel *seamlessLabel = new QLabel(ComfyTr::tr("Seamless"), m_d->seamlessRowWidget);
         seamlessRow->addWidget(m_d->checkInpaintUseModel);
         seamlessRow->addWidget(seamlessLabel, 1);
-        genContentLayout->addLayout(seamlessRow);
+        genContentLayout->addWidget(m_d->seamlessRowWidget);
+        m_d->seamlessRowWidget->setVisible(false);
     }
     m_d->checkInpaintUseModel->setToolTip(ComfyTr::tr("Generate content which blends into the surroundings"));
     m_d->checkInpaintUseModel->setChecked(
@@ -1657,12 +1660,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     });
     m_d->checkInpaintUsePromptFocus = new ComfySwitchWidget(genGroup);
     {
-        QLabel *focusLabel = new QLabel(ComfyTr::tr("Focus"), genGroup);
-        QHBoxLayout *focusRow = new QHBoxLayout();
+        m_d->focusRowWidget = new QWidget(m_d->genContentContainer);
+        QHBoxLayout *focusRow = new QHBoxLayout(m_d->focusRowWidget);
         focusRow->setContentsMargins(0, 0, 0, 0);
+        QLabel *focusLabel = new QLabel(ComfyTr::tr("Focus"), m_d->focusRowWidget);
         focusRow->addWidget(m_d->checkInpaintUsePromptFocus);
         focusRow->addWidget(focusLabel, 1);
-        genContentLayout->addLayout(focusRow);
+        genContentLayout->addWidget(m_d->focusRowWidget);
+        m_d->focusRowWidget->setVisible(false);
     }
     m_d->checkInpaintUsePromptFocus->setToolTip(
         ComfyTr::tr("Focus generation on the masked area using prompt conditioning (SD 1.5 / SDXL)."));
@@ -1709,6 +1714,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         "Upscale the canvas at the scale factor above (ComfyUI ImageScale). With \"Refine upscaled image\" enabled, runs a diffusion pass after scaling."));
     connect(m_d->btnUpscale, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotUpscale);
     genContentLayout->addWidget(m_d->btnUpscale);
+    // FAITHFUL_PORT: only visible inside the Upscale workspace; without this the
+    // button leaked into the Generate compact view because the workspace lambda
+    // doesn't fire on the initial setCurrentIndex().
+    m_d->btnUpscale->setVisible(false);
 
     // §5.6 Live / §5.7 Animation: Full Animation / Single Frame radio (batch_mode); visible when workspace is Live or Animation
     m_d->batchModeRow = new QWidget(genGroup);
@@ -1776,18 +1785,24 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             scheduleDocumentUiJsonSave();
     });
 
-    QHBoxLayout *animRow = new QHBoxLayout();
-    m_d->spinAnimationFrames = new QSpinBox();
+    // FAITHFUL_PORT: wrap the Animation Frames row in a QWidget so the orphan
+    // "Frames:" label hides as a unit alongside btnGenerateAnimation; the row
+    // only appears in the Animation workspace.
+    m_d->animFramesRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *animRow = new QHBoxLayout(m_d->animFramesRowWidget);
+    animRow->setContentsMargins(0, 0, 0, 0);
+    m_d->spinAnimationFrames = new QSpinBox(m_d->animFramesRowWidget);
     m_d->spinAnimationFrames->setRange(2, 16);
     m_d->spinAnimationFrames->setValue(4);
     m_d->spinAnimationFrames->setToolTip(ComfyTr::tr("Number of frames (seeds: seed, seed+1, …)"));
-    m_d->btnGenerateAnimation = new QPushButton(ComfyTr::tr("Generate animation"));
+    m_d->btnGenerateAnimation = new QPushButton(ComfyTr::tr("Generate animation"), m_d->animFramesRowWidget);
     m_d->btnGenerateAnimation->setToolTip(ComfyTr::tr("Generate N images with sequential seeds as new layers."));
     connect(m_d->btnGenerateAnimation, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerateAnimation);
-    animRow->addWidget(new QLabel(ComfyTr::tr("Frames:")));
+    animRow->addWidget(new QLabel(ComfyTr::tr("Frames:"), m_d->animFramesRowWidget));
     animRow->addWidget(m_d->spinAnimationFrames);
     animRow->addWidget(m_d->btnGenerateAnimation);
-    genContentLayout->addLayout(animRow);
+    genContentLayout->addWidget(m_d->animFramesRowWidget);
+    m_d->animFramesRowWidget->setVisible(false);
 
     // §13.45: Import Animation — import frames from .animation or .live-frames into document
     m_d->btnImportAnimation = new QPushButton(ComfyTr::tr("Import Animation"), genGroup);
@@ -1803,6 +1818,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         else { m_d->liveTimer->stop(); m_d->livePollTimer->stop(); stopLiveSpinner(); }
     });
     genContentLayout->addWidget(m_d->checkLiveMode);
+    // FAITHFUL_PORT: Live-only checkbox; default-hide so it doesn't leak into the
+    // Generate compact view (workspace lambda re-enables when switching to Live).
+    m_d->checkLiveMode->setVisible(false);
     // §13.45: Record — save each live result to .live-frames/frame-N.webp for later Import Animation
     m_d->checkLiveRecord = new QCheckBox(ComfyTr::tr("Record (save frames to .live-frames)"));
     m_d->checkLiveRecord->setToolTip(ComfyTr::tr("When enabled, each live result is saved to the document's .live-frames folder as frame-N.webp. Use Import Animation to add them to the document."));
@@ -1815,6 +1833,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         }
     });
     genContentLayout->addWidget(m_d->checkLiveRecord);
+    // FAITHFUL_PORT: Record is Live-only too; default-hide.
+    m_d->checkLiveRecord->setVisible(false);
     // §13.105: compact progress indicator for Live view (next to live checkbox)
     m_d->liveSpinner = new LiveSpinnerWidget(this);
     m_d->liveSpinner->hide();
@@ -4865,6 +4885,16 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     // verbose region heading label so the regions block reads cleanly.
     if (m_d->regionHeaderCombo) m_d->regionHeaderCombo->setVisible(false);
     if (m_d->regionHeaderLabel) m_d->regionHeaderLabel->setVisible(false);
+    // FAITHFUL_PORT: the root "Control layers" groupbox (with "Add control layer"
+    // button) is an advanced control-net workflow; upstream surfaces it via the
+    // strength row's "Add control layer" icon, not a full groupbox on the home.
+    if (m_d->controlLayersGroupBox) m_d->controlLayersGroupBox->setVisible(false);
+    // FAITHFUL_PORT: hide Seamless/Focus row wrappers so their orphan labels
+    // disappear alongside the inpaint switches in compact view.
+    if (m_d->seamlessRowWidget) m_d->seamlessRowWidget->setVisible(false);
+    if (m_d->focusRowWidget) m_d->focusRowWidget->setVisible(false);
+    // animFramesRowWidget visibility is owned by the workspace lambda — only the
+    // Animation workspace shows it, every other workspace hides it.
 }
 
 void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
