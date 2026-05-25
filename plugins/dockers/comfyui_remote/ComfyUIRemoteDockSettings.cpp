@@ -414,7 +414,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         lblSamplerMerge->setWordWrap(true);
         stylesLayout->addWidget(lblSamplerMerge);
         QLabel *lblControlPresets = new QLabel(
-            ComfyTr::tr("Optional %1 defines default strength and range presets for control layers (same structure as the reference plugin). "
+            ComfyTr::tr("Optional %1 defines default strength and range presets for control layers. "
                  "Reloaded when you open this tab.",
                  ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/control.json")),
             stylesInner);
@@ -1685,7 +1685,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         spinStoredHistoryMb->setSingleStep(5);
         spinStoredHistoryMb->setSuffix(ComfyTr::tr(" MB"));
         spinStoredHistoryMb->setValue(qBound(5, perfSettings.value(QStringLiteral("history_document_storage_mb")).toInt(20), 2000));
-        spinStoredHistoryMb->setToolTip(ComfyTr::tr("Reserved for document-embedded history quota (parity with Python plugin)."));
+        spinStoredHistoryMb->setToolTip(ComfyTr::tr("Reserved for document-embedded history quota."));
         QHBoxLayout *storedHistRow = new QHBoxLayout();
         storedHistRow->addWidget(spinStoredHistoryMb);
         storedHistRow->addWidget(labelStoredKraMb, 1);
@@ -2117,22 +2117,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://docs.interstice.cloud")));
         });
         pluginLayout->addWidget(handbookButton);
-        QPushButton *githubButton = new QPushButton(ComfyTr::tr("GitHub"), pluginPage);
-        connect(githubButton, &QPushButton::clicked, this, [](bool) {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion")));
-        });
-        pluginLayout->addWidget(githubButton);
-        // §4.9 / §13.200: same heading — Issues, Discussions, Discord
-        QPushButton *issuesButton = new QPushButton(ComfyTr::tr("Issues"), pluginPage);
-        connect(issuesButton, &QPushButton::clicked, this, [](bool) {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/issues")));
-        });
-        pluginLayout->addWidget(issuesButton);
-        QPushButton *discussionsButton = new QPushButton(ComfyTr::tr("Discussions"), pluginPage);
-        connect(discussionsButton, &QPushButton::clicked, this, [](bool) {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion/discussions")));
-        });
-        pluginLayout->addWidget(discussionsButton);
         QPushButton *discordButton = new QPushButton(ComfyTr::tr("Discord"), pluginPage);
         connect(discordButton, &QPushButton::clicked, this, [](bool) {
             QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));

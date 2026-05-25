@@ -793,12 +793,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(linkInterstice, &QPushButton::clicked, this, [](bool) {
         QDesktopServices::openUrl(QUrl(ComfyUIUtils::intersticeWebBaseUrl()));
     });
-    QPushButton *linkGitHub = new QPushButton(ComfyTr::tr("GitHub Project"), m_d->welcomePage);
-    linkGitHub->setFlat(true);
-    linkGitHub->setCursor(Qt::PointingHandCursor);
-    connect(linkGitHub, &QPushButton::clicked, this, [](bool) {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/Acly/krita-ai-diffusion")));
-    });
     QPushButton *linkDiscord = new QPushButton(QStringLiteral("Discord"), m_d->welcomePage);
     linkDiscord->setFlat(true);
     linkDiscord->setCursor(Qt::PointingHandCursor);
@@ -806,8 +800,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://discord.gg/pWyzHfHHhU")));
     });
     footerLinks->addWidget(linkInterstice);
-    footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
-    footerLinks->addWidget(linkGitHub);
     footerLinks->addWidget(new QLabel(QStringLiteral("|"), m_d->welcomePage));
     footerLinks->addWidget(linkDiscord);
     welcomeLayout->addLayout(footerLinks);
@@ -2000,7 +1992,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         poseRow->addWidget(m_d->spinPoseGuidePeopleCount);
         m_d->btnAddPoseGuide = new QPushButton(ComfyTr::tr("Add pose guide (vector layer)"), m_d->controlPreviewGroupBox);
         m_d->btnAddPoseGuide->setToolTip(
-            ComfyTr::tr("Adds default stick-figure skeleton(s) to the selected vector layer and refreshes pose data from its SVG every 500 ms (same idea as the reference PoseLayers singleton)."));
+            ComfyTr::tr("Adds default stick-figure skeleton(s) to the selected vector layer and refreshes pose data from its SVG every 500 ms."));
         connect(m_d->btnAddPoseGuide, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotAddPoseGuideToVectorLayer);
         poseRow->addWidget(m_d->btnAddPoseGuide);
         poseRow->addStretch();
@@ -2557,7 +2549,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::Unsupported:
         default: {
             auto *lb = new QLabel(
-                ComfyTr::tr("Unsupported parameter type in this port: %1", sl.paramName), m_d->customWorkflowParamsGroup);
+                ComfyTr::tr("Unsupported parameter type: %1", sl.paramName), m_d->customWorkflowParamsGroup);
             lb->setWordWrap(true);
             m_d->customWorkflowParamsForm->addRow(new QLabel(labelText, m_d->customWorkflowParamsGroup), lb);
             break;
