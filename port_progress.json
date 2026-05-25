@@ -7,6 +7,17 @@
   "branch": "comfyui-perfect-port",
   "updated": "2026-05-24",
   "last_completed": "GAP-A",
+  "manual_acceptance": {
+    "status": "in_progress",
+    "started": "2026-05-24",
+    "branch_commit": "6a1dc7837d",
+    "run_log": "plugins/dockers/comfyui_remote/docs/MANUAL_ACCEPTANCE_RUN.md",
+    "preflight_script": "plugins/dockers/comfyui_remote/scripts/manual_acceptance_preflight.sh",
+    "blockers": [
+      "ComfyUI not running at http://127.0.0.1:8188 (preflight 2026-05-24)",
+      "Krita _build stale path (/krita/_build); reconfigure on this host before ctest"
+    ]
+  },
   "critical_path": ["P0.1", "P0.2", "P1.1", "P1.2", "P1.3", "P1.4", "P2.1", "P2.2", "P2.3", "P1.5", "P1.6", "P1.7", "P1.8", "C-control-layers"],
   "workstreams": {
     "P0.1": {
@@ -389,7 +400,7 @@
     {
       "id": "M1-connect-custom-comfyui",
       "title": "Connect custom ComfyUI",
-      "manual_status": "pending",
+      "manual_status": "in_progress",
       "cpp_ready": true,
       "android_applicable": true,
       "python_reference": true,
