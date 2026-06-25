@@ -8,6 +8,7 @@
 
 #include "ComfyControlLayer.h"
 #include "ComfyResources.h"
+#include "ComfyTheme.h"
 #include "ComfyUIIntervalSlider.h"
 
 #include <QCheckBox>
@@ -64,7 +65,7 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     m_modeCombo = new QComboBox(this);
     for (const QString &key : ComfyControlLayer::uiModeKeys()) {
         const QString iconStem = QStringLiteral("control-") + key;
-        m_modeCombo->addItem(KisIconUtils::loadIcon(iconStem), ComfyControlLayer::modeLabel(key), key);
+        m_modeCombo->addItem(ComfyTheme::icon(iconStem), ComfyControlLayer::modeLabel(key), key);
     }
     const int modeIx = m_modeCombo->findData(m_entry->mode);
     if (modeIx >= 0)
@@ -83,24 +84,24 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
 
     m_btnGenerate = new QToolButton(this);
     m_btnGenerate->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnGenerate->setIcon(KisIconUtils::loadIcon(QStringLiteral("control-generate")));
+    m_btnGenerate->setIcon(ComfyTheme::icon(QStringLiteral("control-generate")));
     m_btnGenerate->setToolTip(ComfyTr::tr("Generate control layer from current image"));
 
     m_btnAddPose = new QToolButton(this);
     m_btnAddPose->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnAddPose->setIcon(KisIconUtils::loadIcon(QStringLiteral("add-pose")));
+    m_btnAddPose->setIcon(ComfyTheme::icon(QStringLiteral("add-pose")));
     m_btnAddPose->setToolTip(ComfyTr::tr("Add new character pose to selected layer"));
 
     m_btnExpand = new QToolButton(this);
     m_btnExpand->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnExpand->setIcon(KisIconUtils::loadIcon(QStringLiteral("more")));
+    m_btnExpand->setIcon(ComfyTheme::icon(QStringLiteral("more")));
     m_btnExpand->setCheckable(true);
     m_btnExpand->setAutoRaise(true);
     m_btnExpand->setToolTip(ComfyTr::tr("Show/hide advanced settings"));
 
     m_btnRemove = new QToolButton(this);
     m_btnRemove->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    m_btnRemove->setIcon(KisIconUtils::loadIcon(QStringLiteral("remove")));
+    m_btnRemove->setIcon(ComfyTheme::icon(QStringLiteral("remove")));
     m_btnRemove->setAutoRaise(true);
     m_btnRemove->setToolTip(ComfyTr::tr("Remove control layer"));
 

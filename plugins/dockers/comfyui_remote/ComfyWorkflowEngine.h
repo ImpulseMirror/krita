@@ -8,6 +8,7 @@
 
 #include "ComfyResources.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QRect>
@@ -36,6 +37,8 @@ struct TextToImageParams {
     double cfg = 7.0;
     double denoise = 1.0;
     ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+    /// Enabled LoRAs from the active style preset (Python Style.get_models → CheckpointInput.loras).
+    QJsonArray styleLoras;
 };
 
 /// Build ComfyUI API workflow JSON (CheckpointLoaderSimple + EmptyLatent + sampler path).
@@ -129,6 +132,7 @@ struct RefineParams {
     double cfg = 7.0;
     double denoise = 0.75;
     ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+    QJsonArray styleLoras;
 };
 
 QJsonObject buildRefine(const RefineParams &params);
@@ -167,7 +171,8 @@ struct CheckpointGraphRefs {
 /// Replace/patch checkpoint node: CheckpointLoaderSimple, Nunchaku*, UNET+DualCLIP, + LoraLoader chain.
 bool loadCheckpointWithLora(QJsonObject *workflow, const CheckpointLoadParams &params, CheckpointGraphRefs *out = nullptr);
 
-QList<CheckpointLoraWeight> checkpointLorasFromEnabledLibrary();
+/// Enabled entries from style JSON `loras` array (Python LoraInput.from_dict + enabled filter).
+QList<CheckpointLoraWeight> checkpointLorasFromStyle(const QJsonArray &styleLoras);
 
 /// Inpaint (selection mask uploaded): LoadImage + VAEEncodeForInpaint + KSampler path.
 struct InpaintBuildParams {
@@ -186,6 +191,7 @@ struct InpaintBuildParams {
     double denoise = 1.0;
     int growMaskBy = 6;
     ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
+    QJsonArray styleLoras;
 };
 
 QJsonObject buildInpaint(const InpaintBuildParams &params);

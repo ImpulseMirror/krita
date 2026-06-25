@@ -40,6 +40,9 @@ QString iconFilePath(const QString &stem)
     const QString svgPlain = base + stem + QStringLiteral(".svg");
     if (QFileInfo::exists(svgPlain))
         return svgPlain;
+    const QString pngPlain = base + stem + QStringLiteral(".png");
+    if (QFileInfo::exists(pngPlain))
+        return pngPlain;
     return QString();
 }
 
@@ -124,6 +127,7 @@ QString kritaIconNameForThemeStem(const QString &stem)
             {"upload", "upload"},
             {"import", "document-import"},
             {"reset", "view-refresh"},
+            {"edit", "edit-copy"},
             {"remove", "list-remove"},
             {"filter", "view-filter"},
             {"more", "overflow-menu"},
@@ -199,6 +203,8 @@ QString kritaIconNameForThemeStem(const QString &stem)
             {"sd-version-chroma", "applications-graphics"},
             {"sd-version-qwen", "applications-graphics"},
             {"sd-version-z-image", "applications-graphics"},
+            {"sd-version-anima", "applications-graphics"},
+            {"sd-version-ernie", "applications-graphics"},
         };
         for (const auto &r : rows)
             h.insert(QString::fromLatin1(r.stem), QString::fromLatin1(r.kritaIcon));

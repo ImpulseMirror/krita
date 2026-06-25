@@ -7,6 +7,7 @@
 #define COMFY_RESOURCES_H_
 
 #include <QString>
+#include <QVector>
 
 namespace ComfyResources {
 
@@ -32,12 +33,18 @@ enum class Arch {
 
 QString archToKey(Arch arch);
 Arch archFromKey(const QString &key);
+/// Human-readable architecture label (matches ai_diffusion/resources.py Arch enum values).
+QString archDisplayName(Arch arch);
+QString architectureKeyDisplayName(const QString &key);
+/// Valid architecture keys for the Styles tab advanced dropdown (always includes "auto").
+QVector<QString> validArchitectureKeysForResolvedArch(Arch resolved);
 Arch archFromCheckpointName(const QString &checkpoint);
 bool archFromCheckpointFilename(const QString &filename, Arch *outArch);
 
 bool supportsCfg(Arch arch);
 bool isEditArch(Arch arch);
 bool isFluxLike(Arch arch);
+bool isFlux2(Arch arch);
 bool isSdxlLike(Arch arch);
 bool isQwenLike(Arch arch);
 /// Python Arch.supports_edit — edit models + Flux2 can use inpaint instruction prefixes.

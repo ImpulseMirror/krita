@@ -38,6 +38,10 @@ struct ComfyStyleEntry {
     bool usesNegativePrompt() const { return !negativePrompt.trimmed().isEmpty(); }
 };
 
+/// Defaults from ai_diffusion/style.py StyleSettings (new user styles).
+QString comfyDefaultStylePrompt();
+QString comfyDefaultNegativeStylePrompt();
+
 class ComfyStyleCollection
 {
 public:
@@ -56,6 +60,12 @@ public:
     QJsonObject entryToJson(const ComfyStyleEntry &entry) const;
     /// Writes JSON to user styles dir (built-in → user override copy). Returns path or empty on failure.
     QString saveEntryToUserStyles(const ComfyStyleEntry &entry);
+
+    static QString comboDisplayName(const ComfyStyleEntry &entry);
+    /// Create user style JSON; returns styleId or empty. copyFromStyleId optional.
+    QString createStyle(const QString &checkpoint = QString(), const QString &copyFromStyleId = QString());
+    bool deleteUserStyle(const QString &styleId);
+    bool renameStyle(const QString &styleId, const QString &newName);
 
 private:
     ComfyStyleCollection();

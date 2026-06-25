@@ -215,8 +215,9 @@ void ComfyUIRemoteDock::uploadLiveCanvasAndPrompt()
         QString livePos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
         livePos = ComfyUIUtils::evalWildcards(livePos, liveSeed);
         ComfyUIUtils::extractLayerPlaceholders(livePos);
-        livePos = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(livePos);
+        livePos = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(livePos, currentStyleLoras());
         const ComfyUIUtils::ResolvedSamplerInputs si = ComfyUIUtils::resolveSamplerForLive(
+            currentJsonStyleEntry(),
             ComfyUIUtils::loadSettingsJson(),
             m_d->comboSampler ? m_d->comboSampler->currentText() : QString(),
             m_d->spinSteps ? m_d->spinSteps->value() : 20,
@@ -226,6 +227,7 @@ void ComfyUIRemoteDock::uploadLiveCanvasAndPrompt()
         lp.imageName = m_d->liveUploadedImageName;
         lp.arch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
         lp.seed = static_cast<qint64>(liveSeed);
+        lp.styleLoras = currentStyleLoras();
         lp.positivePrompt = livePos;
         lp.negativePrompt =
             ComfyUIUtils::evalWildcards(ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed(),

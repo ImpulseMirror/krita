@@ -190,34 +190,30 @@ static void appendColorMatchAfterDecode(QJsonObject *workflow,
         replaceAllLinksFromNode(workflow, decodeNodeId, 0, matchId, 0);
 }
 
-QList<CheckpointLoraWeight> checkpointLorasFromEnabledLibrary()
+QList<CheckpointLoraWeight> checkpointLorasFromStyle(const QJsonArray &styleLoras)
 {
     QList<CheckpointLoraWeight> out;
-    ComfyFileLibrary::instance().init();
-    for (const ComfyFileRecord &rec : ComfyFileLibrary::instance().loras().files()) {
-        // FAITHFUL_PORT/BUG: defaulting `enabled` to true here meant every LoRA
-        // the server advertised was auto-attached to every Generate workflow.
-        // On a server with Wan 2.1/2.2 video LoRAs that produced HTTP 400
-        // `prompt_outputs_failed_validation` because the wrong-arch LoRA was
-        // attached to an SDXL checkpoint. Spec (Python plugin) treats LoRAs
-        // as opt-in — the user enables them in Settings → Files explicitly.
-        if (!rec.meta(QStringLiteral("enabled")).toBool(false))
+    for (const QJsonValue &v : styleLoras) {
+        if (!v.isObject())
             continue;
-        // FAITHFUL_PORT/BUG: ComfyUI's LoraLoader.lora_name input is the path
-        // relative to the loras directory (e.g. "Video Loras/wan 2.1/foo.safetensors"),
-        // not just the basename. QFileInfo(...).fileName() stripped the folder
-        // and the server then rejected with "value_not_in_list". Use the full
-        // normalised id so it matches the LoraLoader.lora_name enum the server
-        // returned from /object_info.
-        const QString fn = rec.id.trimmed();
-        if (fn.isEmpty())
+        const QJsonObject o = v.toObject();
+        if (!o.value(QStringLiteral("enabled")).toBool(true))
             continue;
-        const int pct = rec.meta(QStringLiteral("strength_percent")).toInt(100);
-        if (pct <= 0)
+        QString name = o.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty())
+            name = o.value(QStringLiteral("filename")).toString().trimmed();
+        if (name.isEmpty())
+            continue;
+        double strength = 1.0;
+        if (o.contains(QStringLiteral("strength")))
+            strength = o.value(QStringLiteral("strength")).toDouble(1.0);
+        else if (o.contains(QStringLiteral("strength_percent")))
+            strength = o.value(QStringLiteral("strength_percent")).toInt(100) / 100.0;
+        if (qFuzzyIsNull(strength))
             continue;
         CheckpointLoraWeight w;
-        w.name = fn;
-        w.strengthModel = qBound(0.01, pct / 100.0, 4.0);
+        w.name = name;
+        w.strengthModel = qBound(0.01, strength, 4.0);
         w.strengthClip = w.strengthModel;
         out.append(w);
     }
@@ -392,7 +388,7 @@ QJsonObject buildTextToImage(const TextToImageParams &params)
         CheckpointLoadParams cl;
         cl.checkpoint = ckpt;
         cl.arch = arch;
-        cl.loras = checkpointLorasFromEnabledLibrary();
+        cl.loras = checkpointLorasFromStyle(params.styleLoras);
         loadCheckpointWithLora(&workflow, cl);
     }
     {
@@ -665,6 +661,7 @@ QJsonObject buildRefineRegion(const RefineRegionParams &params)
     ip.sampler = params.refine.sampler;
     ip.scheduler = params.refine.scheduler;
     ip.arch = params.refine.arch;
+    ip.styleLoras = params.refine.styleLoras;
     ip.growMaskBy = 0;
 
     QJsonObject workflow = buildInpaint(ip);
@@ -674,7 +671,7 @@ QJsonObject buildRefineRegion(const RefineRegionParams &params)
     CheckpointLoadParams cl;
     cl.checkpoint = ip.checkpoint;
     cl.arch = ip.arch;
-    cl.loras = checkpointLorasFromEnabledLibrary();
+    cl.loras = checkpointLorasFromStyle(params.refine.styleLoras);
     CheckpointGraphRefs ckptRefs;
     loadCheckpointWithLora(&workflow, cl, &ckptRefs);
 
@@ -752,7 +749,7 @@ QJsonObject buildRefine(const RefineParams &params)
         CheckpointLoadParams cl;
         cl.checkpoint = ckpt;
         cl.arch = arch;
-        cl.loras = checkpointLorasFromEnabledLibrary();
+        cl.loras = checkpointLorasFromStyle(params.styleLoras);
         loadCheckpointWithLora(&workflow, cl);
     }
     int injectId = 90;
@@ -820,7 +817,7 @@ QJsonObject buildInpaint(const InpaintBuildParams &params)
         CheckpointLoadParams cl;
         cl.checkpoint = ckpt;
         cl.arch = arch;
-        cl.loras = checkpointLorasFromEnabledLibrary();
+        cl.loras = checkpointLorasFromStyle(params.styleLoras);
         loadCheckpointWithLora(&workflow, cl);
     }
     int injectId = 90;

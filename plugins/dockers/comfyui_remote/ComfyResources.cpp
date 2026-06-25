@@ -5,6 +5,8 @@
 
 #include "ComfyResources.h"
 
+#include <QVector>
+
 namespace ComfyResources {
 
 namespace ControlMode {
@@ -123,6 +125,75 @@ Arch archFromKey(const QString &key)
     return Arch::Unknown;
 }
 
+QString archDisplayName(Arch arch)
+{
+    switch (arch) {
+    case Arch::Sd15:
+        return QStringLiteral("SD 1.5");
+    case Arch::Sdxl:
+        return QStringLiteral("SD XL");
+    case Arch::Sd3:
+        return QStringLiteral("SD 3");
+    case Arch::Flux:
+        return QStringLiteral("Flux");
+    case Arch::FluxK:
+        return QStringLiteral("Flux Kontext");
+    case Arch::Flux2_4b:
+        return QStringLiteral("Flux 2 Klein 4B");
+    case Arch::Flux2_9b:
+        return QStringLiteral("Flux 2 Klein 9B");
+    case Arch::Illu:
+        return QStringLiteral("Illustrious");
+    case Arch::IlluV:
+        return QStringLiteral("Illustrious v-prediction");
+    case Arch::Chroma:
+        return QStringLiteral("Chroma");
+    case Arch::Qwen:
+        return QStringLiteral("Qwen");
+    case Arch::QwenE:
+        return QStringLiteral("Qwen Edit");
+    case Arch::QwenEP:
+        return QStringLiteral("Qwen Edit Plus");
+    case Arch::QwenL:
+        return QStringLiteral("Qwen Layered");
+    case Arch::ZImage:
+        return QStringLiteral("Z-Image");
+    default:
+        return archToKey(arch);
+    }
+}
+
+QString architectureKeyDisplayName(const QString &key)
+{
+    const QString k = key.trimmed().toLower();
+    if (k == QLatin1String("auto"))
+        return QStringLiteral("Automatic");
+    const Arch a = archFromKey(k);
+    if (a != Arch::Unknown)
+        return archDisplayName(a);
+    return key;
+}
+
+QVector<QString> validArchitectureKeysForResolvedArch(Arch resolved)
+{
+    if (isSdxlLike(resolved))
+        return {QStringLiteral("auto"), QStringLiteral("sdxl"), QStringLiteral("illu"), QStringLiteral("illu_v")};
+    if (isFlux2(resolved))
+        return {QStringLiteral("auto"), QStringLiteral("flux2_4b"), QStringLiteral("flux2_9b")};
+    if (resolved == Arch::Flux || resolved == Arch::FluxK)
+        return {QStringLiteral("auto"), QStringLiteral("flux"), QStringLiteral("flux_k")};
+    if (isQwenLike(resolved))
+        return {QStringLiteral("auto"), QStringLiteral("qwen"), QStringLiteral("qwen_e"), QStringLiteral("qwen_e_p"), QStringLiteral("qwen_l")};
+    QVector<QString> keys;
+    keys.append(QStringLiteral("auto"));
+    if (resolved != Arch::Unknown) {
+        const QString k = archToKey(resolved);
+        if (k != QLatin1String("unknown"))
+            keys.append(k);
+    }
+    return keys;
+}
+
 Arch archFromCheckpointName(const QString &checkpoint)
 {
     Arch a = Arch::Unknown;
@@ -217,6 +288,11 @@ bool isEditArch(Arch arch)
 bool isFluxLike(Arch arch)
 {
     return arch == Arch::Flux || arch == Arch::FluxK || arch == Arch::Flux2_4b || arch == Arch::Flux2_9b;
+}
+
+bool isFlux2(Arch arch)
+{
+    return arch == Arch::Flux2_4b || arch == Arch::Flux2_9b;
 }
 
 bool isSdxlLike(Arch arch)

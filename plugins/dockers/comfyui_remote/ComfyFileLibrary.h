@@ -71,6 +71,7 @@ public:
     int findIndex(const QString &id) const;
 
     void setMeta(ComfyFileRecord *file, const QString &key, const QJsonValue &value);
+    bool setMetaById(const QString &id, const QString &key, const QJsonValue &value);
 
 private:
     void removeMissingLocalFiles();

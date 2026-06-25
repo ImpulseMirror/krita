@@ -182,6 +182,7 @@ void ComfyUIRemoteDock::continueUpscaleAfterCanvasUpload(int canvasW, int canvas
             QString sch = QStringLiteral("normal");
             readUpscaleRefinementSampling(&baseSteps, &baseCfg, &sam, &sch);
             const ComfyUIUtils::ResolvedSamplerInputs rsi = ComfyUIUtils::resolveSamplerForLive(
+                currentJsonStyleEntry(),
                 ComfyUIUtils::loadSettingsJson(), sam, baseSteps, baseCfg);
             const int strengthPct = m_d->sliderUpscaleRefineStrength ? m_d->sliderUpscaleRefineStrength->value() : 30;
             const int guidancePct = m_d->sliderUpscaleRefineGuidance ? m_d->sliderUpscaleRefineGuidance->value() : 50;
@@ -212,7 +213,7 @@ void ComfyUIRemoteDock::continueUpscaleAfterCanvasUpload(int canvasW, int canvas
                 pos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
                 pos = ComfyUIUtils::evalWildcards(pos, static_cast<quint32>(seed));
                 ComfyUIUtils::extractLayerPlaceholders(pos);
-                pos = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(pos);
+                pos = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(pos, currentStyleLoras());
                 neg = ComfyUIUtils::evalWildcards(
                     ComfyUIUtils::stripPromptComments(m_d->editNegative ? m_d->editNegative->toPlainText() : QString()).trimmed(),
                     static_cast<quint32>(seed));

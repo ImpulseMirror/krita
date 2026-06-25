@@ -6,10 +6,12 @@
 #include "ComfyUIUtils.h"
 #include "ComfyLocalization.h"
 #include "ComfyFileLibrary.h"
+#include "ComfyStyleCollection.h"
 #include "ComfyResources.h"
+#include "ComfyWorkflowEngine.h"
 #include "ComfyTheme.h"
 
-#include <cmath>
+#include <QSet>
 #include <algorithm>
 #include <QApplication>
 #include <QDir>
@@ -924,7 +926,8 @@ bool samplerPresetLookup(const QJsonObject &root,
                          QString *outScheduler,
                          int *outSteps,
                          int *outMinimumSteps,
-                         double *outCfg)
+                         double *outCfg,
+                         QString *outLora)
 {
     if (!outSampler || !outScheduler || !outSteps || !outMinimumSteps || !outCfg)
         return false;
@@ -942,16 +945,78 @@ bool samplerPresetLookup(const QJsonObject &root,
         *outCfg = o.value(QStringLiteral("cfg")).toDouble(8.0);
     else
         *outCfg = o.value(QStringLiteral("cfg_scale")).toDouble(8.0);
+    if (outLora)
+        *outLora = o.value(QStringLiteral("lora")).toString();
     return true;
 }
 
-ResolvedSamplerInputs resolveSamplerForLive(const QJsonObject &settings,
+QStringList visibleSamplerPresetNames(const QString &ensureIncluded)
+{
+    QSet<QString> names;
+    const QJsonObject root = builtinSamplerPresetsRoot();
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        const QJsonObject o = it.value().toObject();
+        if (o.isEmpty())
+            continue;
+        if (o.value(QStringLiteral("hidden")).toBool() && it.key() != ensureIncluded)
+            continue;
+        names.insert(it.key());
+    }
+    for (const ComfyStyleEntry &s : ComfyStyleCollection::instance().all()) {
+        if (!s.samplerPresetName.isEmpty())
+            names.insert(s.samplerPresetName);
+        if (!s.liveSamplerPresetName.isEmpty())
+            names.insert(s.liveSamplerPresetName);
+    }
+    if (!ensureIncluded.isEmpty())
+        names.insert(ensureIncluded);
+    QStringList out = names.values();
+    out.sort();
+    return out;
+}
+
+QStringList styleCheckpointWarnings(const ComfyStyleEntry &style,
+                                    const QStringList &serverCheckpointNames,
+                                    const QJsonObject &objectInfoRoot)
+{
+    QStringList warn;
+    const QString ckpt = ComfyFileLibrary::preferredCheckpoint(style.checkpoints, serverCheckpointNames);
+    if (ckpt == QLatin1String("not-found") && !style.checkpoints.isEmpty())
+        warn.append(ComfyTr::tr("The checkpoint used by this style is not installed."));
+
+    const ComfyResources::Arch arch =
+        ComfyWorkflowEngine::resolveArch(style.checkpoints.isEmpty() ? QString() : style.checkpoints.first(),
+                                       style.architecture);
+    if (ckpt != QLatin1String("not-found")) {
+        const QString archLabel = ComfyResources::archDisplayName(arch);
+        if (!archLabel.isEmpty() && arch != ComfyResources::Arch::Sd15 && arch != ComfyResources::Arch::Sdxl) {
+            // Best-effort: surface arch hint when using non-SD15/SDXL ecosystems (full workload API deferred).
+            Q_UNUSED(objectInfoRoot);
+        }
+    }
+
+    const bool needsBundledVae = ComfyResources::isFluxLike(arch) || arch == ComfyResources::Arch::Chroma
+                                 || arch == ComfyResources::Arch::Sd3;
+    if (needsBundledVae && ckpt != QLatin1String("not-found")) {
+        const QStringList vaes = vaeNamesFromObjectInfo(objectInfoRoot);
+        if (vaes.isEmpty() && style.vae.trimmed().isEmpty())
+            warn.append(ComfyTr::tr("The VAE for this diffusion model is not installed"));
+    }
+    return warn;
+}
+
+ResolvedSamplerInputs resolveSamplerForLive(const ComfyStyleEntry *styleEntry,
+                                            const QJsonObject &settings,
                                             const QString &dockSamplerText,
                                             int dockSteps,
                                             double dockCfg)
 {
     ResolvedSamplerInputs r;
-    const QString key = settings.value(QStringLiteral("live_sampler_preset")).toString().trimmed();
+    QString key;
+    if (styleEntry && !styleEntry->liveSamplerPresetName.isEmpty())
+        key = styleEntry->liveSamplerPresetName;
+    else
+        key = settings.value(QStringLiteral("live_sampler_preset")).toString().trimmed();
     if (!key.isEmpty()) {
         const QJsonObject root = builtinSamplerPresetsRoot();
         QString sam, sch;
@@ -964,6 +1029,13 @@ ResolvedSamplerInputs resolveSamplerForLive(const QJsonObject &settings,
             r.cfg = cfg;
             return r;
         }
+    }
+    if (styleEntry && styleEntry->liveSamplerPresetName.isEmpty()) {
+        r.sampler = dockSamplerText.trimmed().isEmpty() ? QStringLiteral("euler") : dockSamplerText.trimmed();
+        r.scheduler = QStringLiteral("normal");
+        r.steps = styleEntry->liveSamplerSteps > 0 ? styleEntry->liveSamplerSteps : dockSteps;
+        r.cfg = styleEntry->liveCfgScale > 0 ? styleEntry->liveCfgScale : dockCfg;
+        return r;
     }
     r.sampler = dockSamplerText.trimmed().isEmpty() ? QStringLiteral("euler") : dockSamplerText.trimmed();
     r.scheduler = QStringLiteral("normal");
@@ -1251,6 +1323,27 @@ QString tagsStorageDir()
     return path;
 }
 
+QStringList discoverTagFileStems()
+{
+    QSet<QString> stems;
+    const auto collectCsvStems = [&stems](const QString &dirPath) {
+        const QDir dir(dirPath);
+        if (!dir.exists())
+            return;
+        const QStringList files = dir.entryList(QStringList() << QStringLiteral("*.csv"), QDir::Files);
+        for (const QString &fn : files) {
+            const QString stem = QFileInfo(fn).completeBaseName().trimmed();
+            if (!stem.isEmpty())
+                stems.insert(stem);
+        }
+    };
+    collectCsvStems(pluginInstallDataDir() + QStringLiteral("/tags"));
+    collectCsvStems(tagsStorageDir());
+    QStringList out(stems.begin(), stems.end());
+    out.sort(Qt::CaseInsensitive);
+    return out;
+}
+
 QStringList tagKeywordsForAutocomplete(const QJsonObject &settingsIn)
 {
     const QJsonObject settings = settingsIn.isEmpty() ? loadSettingsJson() : settingsIn;
@@ -1367,6 +1460,33 @@ QString mergeLibraryLoraTagsIntoPositivePrompt(const QString &positivePrompt)
     return t + QStringLiteral(", ") + suffix;
 }
 
+QString mergeStyleLoraTriggersIntoPositivePrompt(const QString &positivePrompt, const QJsonArray &styleLoras)
+{
+    QStringList triggers;
+    ComfyFileLibrary::instance().init();
+    for (const QJsonValue &v : styleLoras) {
+        if (!v.isObject())
+            continue;
+        const QJsonObject o = v.toObject();
+        if (!o.value(QStringLiteral("enabled")).toBool(true))
+            continue;
+        const QString name = o.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty())
+            continue;
+        const ComfyFileRecord *rec = ComfyFileLibrary::instance().loras().find(name);
+        const QString t = rec ? rec->meta(QStringLiteral("lora_triggers")).toString().trimmed() : QString();
+        if (!t.isEmpty())
+            triggers.append(t);
+    }
+    if (triggers.isEmpty())
+        return positivePrompt;
+    const QString suffix = triggers.join(QStringLiteral(", "));
+    const QString t = positivePrompt.trimmed();
+    if (t.isEmpty())
+        return suffix;
+    return t + QStringLiteral(", ") + suffix;
+}
+
 // §13.165: Plugin installation path check — warn if not under expected location (dockers/ or .git)
 void checkPluginInstallationPath()
 {
@@ -1454,6 +1574,18 @@ QJsonObject loadSettingsJson()
     return doc.object();
 }
 
+QString savedServerUrl()
+{
+    const QJsonObject settings = loadSettingsJson();
+    if (settings.contains(QStringLiteral("server_url"))) {
+        const QString fromJson = settings.value(QStringLiteral("server_url")).toString().trimmed();
+        if (!fromJson.isEmpty())
+            return fromJson;
+    }
+    const KConfigGroup cfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
+    return cfg.readEntry(QStringLiteral("ServerUrl"), QString()).trimmed();
+}
+
 bool saveSettingsJson(const QJsonObject &obj)
 {
     QSaveFile f(settingsFilePath());
@@ -1465,7 +1597,8 @@ bool saveSettingsJson(const QJsonObject &obj)
 
 void dumpComfyPromptPayloadIfEnabled(const QJsonObject &payload)
 {
-    if (!loadSettingsJson().value(QStringLiteral("dump_workflow")).toBool(false))
+    if (!loadSettingsJson().value(QStringLiteral("debug_dump_workflow")).toBool(false)
+        && !loadSettingsJson().value(QStringLiteral("dump_workflow")).toBool(false))
         return;
     const QString dir = pluginLogDir();
     QDir().mkpath(dir);
@@ -2402,6 +2535,18 @@ bool tryResolveCustomWorkflowJsonToApi(QJsonObject *inOut, const QJsonObject &ob
 void setComfyUIRequestHeaders(QNetworkRequest &req)
 {
     req.setRawHeader(QByteArrayLiteral("ngrok-skip-browser-warning"), QByteArrayLiteral("69420"));
+}
+
+QString normalizeComfyServerBaseUrl(const QString &hostOrUrl)
+{
+    QString base = hostOrUrl.trimmed();
+    if (base.isEmpty())
+        return QString();
+    if (!base.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
+        && !base.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)) {
+        base = QStringLiteral("http://") + base;
+    }
+    return base;
 }
 
 QUrl comfyResolveApiUrl(const QString &baseUrlTrimmed, const QString &relativeApiPath)
@@ -3608,8 +3753,9 @@ QString mergeStylePromptWithInstruction(const QString &styleTemplate, const QStr
     return t + QLatin1String(", ") + u;
 }
 
-LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QString &dockCkpt, int dockSteps, double dockCfg,
-                                                double dockDenoise, const QString &dockSampler, const QString &dockScheduler)
+LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QString &linkedStyleId, const QString &dockCkpt,
+                                                int dockSteps, double dockCfg, double dockDenoise, const QString &dockSampler,
+                                                const QString &dockScheduler)
 {
     LinkedEditStyleOverride o;
     o.checkpoint = dockCkpt.trimmed();
@@ -3622,25 +3768,31 @@ LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QStr
     o.scheduler = dockScheduler.isEmpty() ? QStringLiteral("normal") : dockScheduler;
     if (!editModeEnabled)
         return o;
-    const QString linked = loadSettingsJson().value(QStringLiteral("linked_edit_style")).toString().trimmed();
+    const QString linked = linkedStyleId.trimmed();
     if (linked.isEmpty())
         return o;
-    const KConfigGroup mainCfg(KSharedConfig::openConfig(), QStringLiteral("ComfyUIRemote"));
-    if (!mainCfg.readEntry(QStringLiteral("PresetNames"), QStringList()).contains(linked))
+    const ComfyStyleEntry *linkedStyle = ComfyStyleCollection::instance().findByStyleId(linked);
+    if (!linkedStyle)
         return o;
-    const KConfigGroup presetCfg(KSharedConfig::openConfig(), QStringLiteral("ComfyUIRemote_Preset_") + linked);
     o.active = true;
-    o.steps = presetCfg.readEntry(QStringLiteral("Steps"), o.steps);
-    o.cfg = presetCfg.readEntry(QStringLiteral("Cfg"), o.cfg);
-    const int strPct = qBound(1, presetCfg.readEntry(QStringLiteral("Strength"), 100), 100);
-    o.denoise = strPct / 100.0;
-    o.sampler = presetCfg.readEntry(QStringLiteral("Sampler"), o.sampler);
-    o.scheduler = presetCfg.readEntry(QStringLiteral("Scheduler"), o.scheduler);
-    const QString ck = presetCfg.readEntry(QStringLiteral("Checkpoint"), QString()).trimmed();
-    if (!ck.isEmpty())
-        o.checkpoint = ck;
-    o.stylePositiveTemplate = presetCfg.readEntry(QStringLiteral("Prompt"), QString());
-    o.styleNegative = presetCfg.readEntry(QStringLiteral("Negative"), QString());
+    o.stylePositiveTemplate = linkedStyle->stylePrompt;
+    o.styleNegative = linkedStyle->negativePrompt;
+    o.steps = linkedStyle->samplerSteps;
+    o.cfg = linkedStyle->cfgScale;
+    if (!linkedStyle->checkpoints.isEmpty())
+        o.checkpoint = linkedStyle->checkpoints.first();
+    const QJsonObject samplerRoot = builtinSamplerPresetsRoot();
+    QString sam, sch;
+    int steps = linkedStyle->samplerSteps;
+    int minSteps = 1;
+    double cfg = linkedStyle->cfgScale;
+    if (!linkedStyle->samplerPresetName.isEmpty()
+        && samplerPresetLookup(samplerRoot, linkedStyle->samplerPresetName, &sam, &sch, &steps, &minSteps, &cfg)) {
+        o.sampler = sam;
+        o.scheduler = sch;
+        o.steps = qMax(steps, minSteps);
+        o.cfg = cfg;
+    }
     return o;
 }
 

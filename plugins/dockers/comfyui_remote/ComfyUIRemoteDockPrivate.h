@@ -48,6 +48,7 @@ class QWebSocket;
 #include <QWidget>
 
 class ComfyUIIntervalSlider;
+class ComfyStyleLoraListWidget;
 #include <QRect>
 #include <QImage>
 #include <QVector>
@@ -94,6 +95,8 @@ struct ComfyUIRemoteDock::Private
     bool stylesTabSyncing = false;
     QString stylesTabPresetNameBaselineMember;
     bool stylesTabPersistingAdvanced = false;
+    bool stylesTabPersistingLoras = false;
+    bool stylesTabPendingNewPreset = false;
     // FAITHFUL_PORT: wrap the Seamless/Focus/Frames rows so their orphan labels
     // are hidden together with the controls in compact view.
     QWidget *seamlessRowWidget = nullptr;
@@ -128,8 +131,13 @@ struct ComfyUIRemoteDock::Private
     QSpinBox *spinBatchCount = nullptr;
     QLabel *labelQueueCount = nullptr;
     QPushButton *btnTest = nullptr;
-    /// §13.81: one-shot probe when ServerMode is undefined or a legacy skipped mode
+    /// §13.81: one-shot auto-connect when a server URL is saved in settings
     bool autostartServerProbeDone = false;
+    bool connectionAutostartActive = false;
+    int connectionAutostartRetryAttempt = 0;
+    static constexpr int connectionAutostartMaxRetries = 5;
+    QTimer *connectionRetryTimer = nullptr;
+    uint connectionSessionId = 0;
     QPushButton *btnGenerate = nullptr;
     QPushButton *btnCancelQueue = nullptr;
     QPushButton *btnInpaint = nullptr;
@@ -186,7 +194,6 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnHistoryReRun = nullptr;
     QPushButton *btnHistoryApply = nullptr;
     QPlainTextEdit *editCustomWorkflow = nullptr;
-    QVBoxLayout *customWorkflowSettingsLayout = nullptr;
     QVBoxLayout *graphWorkflowEditorLayout = nullptr;
     // §13.25: ETN_Parameter / ETN_KritaStyle / ETN_KritaImageLayer / ETN_KritaMaskLayer — Configure → Workflow tab (layer slots keyed by Comfy node id)
     QGroupBox *customWorkflowParamsGroup = nullptr;
@@ -197,8 +204,8 @@ struct ComfyUIRemoteDock::Private
     QStringListModel *tagKeywordModel = nullptr;
     QCompleter *promptTagCompleter = nullptr;
     QCompleter *negativePromptTagCompleter = nullptr;
-    QPushButton *btnLoadWorkflow = nullptr;
-    QCheckBox *checkConfirmDiscardImage = nullptr;  // §13.192: confirm_discard_image (Interface tab)
+    QCheckBox *checkConfirmDiscardImage = nullptr;  // §13.192: KConfig only (not on Interface tab)
+    QPointer<QComboBox> settingsPromptTranslationCombo;
 
     // §13.44: Preview layer ID (QUuid string) from document annotation; restored on setCanvas
     QString previewLayerId;
@@ -376,6 +383,7 @@ struct ComfyUIRemoteDock::Private
     int inpaintPollCount = 0;
     static const int inpaintMaxPollCount = 300;
     QTimer *inpaintPollTimer = nullptr;
+    HistoryEntry inpaintPendingEntry;
 
     // Upscale state (§13.179 FactorWidget: slider + spinbox + target size; §13.147 TileOverlapMode)
     double upscaleFactor = 2.0;
@@ -419,9 +427,7 @@ struct ComfyUIRemoteDock::Private
     QStringList objectInfoSpec58NodesPresent;
     /// Avoid repeating the same §13.58 object_info summary on every Refresh (log only when the set changes).
     QString objectInfoSpec58LastLoggedSignature;
-    QPointer<QLabel> stylesTabLoraWarningLabel;   // §13.166: Configure → Styles LoRA warning line
-    QPointer<QListWidget> stylesTabLoraListWidget; // same tab, for refreshStylesTabLoraWarning
-    int stylesTabLoraFilterMode = 0; // 0 = All, 1 = On server, 2 = Not on server (§4.5)
+    QPointer<ComfyStyleLoraListWidget> stylesTabLoraListWidget;
     QString comfyDeviceSummary;               // Last formatted line from system_stats (after Connect)
     QJsonObject lastComfySystemStats;         // §13.17: Parsed GET /system_stats body (empty if disconnected / failed)
     /// §13.101 / §13.123: Last GET /object_info root (empty until a successful fetch) — UI workflow → API conversion

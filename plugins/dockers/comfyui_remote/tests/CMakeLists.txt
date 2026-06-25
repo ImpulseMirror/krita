@@ -8,9 +8,9 @@ kis_add_tests(
 )
 
 kis_add_test(
-    ComfyPortP52Test
     ComfyPortP52Test.cpp
     ComfyMockHttpServer.cpp
+    TEST_NAME ComfyPortP52Test
     LINK_LIBRARIES kritacomfyuiremote_static kritaui kritaimage kritatestsdk
 )
 

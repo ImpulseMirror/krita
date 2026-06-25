@@ -32,6 +32,7 @@ private slots:
     void testStyleCollectionSaveUserOverrideRoundtrip();
     void testBuiltinSamplerPresetLookupDpm2M();
     void testMergeLibraryLoraTagsIntoPrompt();
+    void testCheckpointLorasFromStyle();
     void testLocalLorasMissingOnServer();
     void testLorasJsonSaveLoadRoundtrip();
     void testFileCollectionRemoveMissingLocal();
@@ -151,6 +152,27 @@ void ComfyPortP51Test::testBuiltinSamplerPresetLookupDpm2M()
     QCOMPARE(minSteps, 4);
     QCOMPARE(cfg, 7.0);
     QVERIFY(!samplerPresetLookup(root, QStringLiteral("No Such Preset"), &sampler, &scheduler, &steps, &minSteps, &cfg));
+}
+
+void ComfyPortP51Test::testCheckpointLorasFromStyle()
+{
+    QJsonArray loras;
+    QJsonObject enabled;
+    enabled.insert(QStringLiteral("name"), QStringLiteral("hero.safetensors"));
+    enabled.insert(QStringLiteral("strength"), 0.75);
+    enabled.insert(QStringLiteral("enabled"), true);
+    loras.append(enabled);
+    QJsonObject disabled;
+    disabled.insert(QStringLiteral("name"), QStringLiteral("other.safetensors"));
+    disabled.insert(QStringLiteral("strength"), 1.0);
+    disabled.insert(QStringLiteral("enabled"), false);
+    loras.append(disabled);
+
+    const QList<ComfyWorkflowEngine::CheckpointLoraWeight> weights =
+        ComfyWorkflowEngine::checkpointLorasFromStyle(loras);
+    QCOMPARE(weights.size(), 1);
+    QCOMPARE(weights.first().name, QStringLiteral("hero.safetensors"));
+    QCOMPARE(weights.first().strengthModel, 0.75);
 }
 
 void ComfyPortP51Test::testMergeLibraryLoraTagsIntoPrompt()

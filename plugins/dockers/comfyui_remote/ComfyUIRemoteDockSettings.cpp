@@ -10,8 +10,11 @@
 #include "ComfyUIUtils.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyResources.h"
+#include "ComfyTheme.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyFileLibrary.h"
+#include "ComfyStyleLoraListWidget.h"
+#include "ComfyStyleSamplerWidget.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -49,7 +52,6 @@
 #include <QMenu>
 #include <QAction>
 #include <QInputDialog>
-#include <QFileDialog>
 #include <QFile>
 #include <QListWidgetItem>
 #include <QAbstractItemView>
@@ -95,7 +97,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         m_d->settingsDialog = dlg;
         // §13.78: When user dismisses Configure (e.g. after connecting), refresh dock so Welcome vs workspace updates
         connect(dlg, &QDialog::finished, this, [this](int) {
-            m_d->stylesTabLoraWarningLabel = nullptr;
             m_d->stylesTabLoraListWidget = nullptr;
             updateWelcomeVisibility();
             refreshPromptTagCompleter();
@@ -115,7 +116,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         // FAITHFUL_PORT: Plugin tab dropped on Android — the auto-update path and
         // diagnostics buttons there expose host-only flows (URL handlers, intent
         // launchers) that crash or no-op on Android; the docker's About menu plus
-        // the footer's Open Settings folder cover the remaining info.
+        // the footer Ok button cover the remaining info.
         const QStringList navItems = { ComfyTr::tr("Connection"), ComfyTr::tr("Styles"), ComfyTr::tr("Diffusion"), ComfyTr::tr("Interface"), ComfyTr::tr("Performance") };
         for (const QString &label : navItems) {
             QListWidgetItem *item = new QListWidgetItem(label);
@@ -152,16 +153,19 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         connectionLayout->addLayout(connForm);
 
         m_d->btnTest = new QPushButton(ComfyTr::tr("Connect"), connectionPage);
-        m_d->btnTest->setIcon(KisIconUtils::loadIcon("network-connect"));
+        m_d->btnTest->setIcon(ComfyTheme::icon(QStringLiteral("web-connection")));
         connect(m_d->btnTest, &QPushButton::clicked, this, [this](bool) {
             if (m_d->isConnected)
                 slotDisconnect();
-            else
+            else {
+                m_d->connectionAutostartActive = false;
+                cancelConnectionAutostartRetry();
                 slotTestConnection();
+            }
         });
         connectionLayout->addWidget(m_d->btnTest);
 
-        m_d->labelConnectionStatus = new QLabel(ComfyTr::tr("Disconnected"), connectionPage);
+        m_d->labelConnectionStatus = new QLabel(connectionPage);
         m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
         connectionLayout->addWidget(m_d->labelConnectionStatus);
 
@@ -202,82 +206,133 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         stylesHeadingFont.setBold(true);
         stylesHeading->setFont(stylesHeadingFont);
         stylesLayout->addWidget(stylesHeading);
-        QLabel *labelStylePath = new QLabel(stylesInner);
-        labelStylePath->setWordWrap(true);
-        labelStylePath->setStyleSheet(QStringLiteral("color: palette(mid);"));
-        QLabel *stylesBuiltinHint = new QLabel(ComfyTr::tr("Built-in styles cannot be modified. Click to edit a copy."), stylesInner);
-        stylesBuiltinHint->setWordWrap(true);
-        stylesLayout->addWidget(labelStylePath);
-        stylesLayout->addWidget(stylesBuiltinHint);
+
+        QFrame *styleToolbarFrame = new QFrame(stylesInner);
+        styleToolbarFrame->setFrameStyle(QFrame::StyledPanel);
+        styleToolbarFrame->setLineWidth(1);
+        QVBoxLayout *styleToolbarLayout = new QVBoxLayout(styleToolbarFrame);
         QHBoxLayout *presetBtnRow = new QHBoxLayout();
-        QComboBox *stylesPresetMirror = new QComboBox(stylesInner);
-        // §4.5: dropdown, + (add), ⋮ (menu), trash (delete), refresh, save
-        QToolButton *btnStylesAddPreset = new QToolButton(stylesInner);
-        btnStylesAddPreset->setIcon(KisIconUtils::loadIcon("list-add"));
-        btnStylesAddPreset->setToolTip(ComfyTr::tr("Add a new custom preset from current dock settings"));
+        QComboBox *stylesPresetMirror = new QComboBox(styleToolbarFrame);
+        QToolButton *btnStylesAddPreset = new QToolButton(styleToolbarFrame);
+        btnStylesAddPreset->setIcon(ComfyTheme::icon(QStringLiteral("control-add")));
+        btnStylesAddPreset->setToolTip(ComfyTr::tr("Create a new style"));
         btnStylesAddPreset->setAutoRaise(true);
-        QToolButton *btnStylesMenu = new QToolButton(stylesInner);
-        btnStylesMenu->setIcon(KisIconUtils::loadIcon("application-menu"));
-        btnStylesMenu->setToolTip(ComfyTr::tr("More preset actions"));
-        btnStylesMenu->setAutoRaise(true);
-        btnStylesMenu->setPopupMode(QToolButton::InstantPopup);
-        QMenu *menuStylesPreset = new QMenu(btnStylesMenu);
-        QAction *actStylesSaveAsNew = menuStylesPreset->addAction(ComfyTr::tr("Save as new preset…"));
-        QAction *actStylesRename = menuStylesPreset->addAction(ComfyTr::tr("Rename preset…"));
-        btnStylesMenu->setMenu(menuStylesPreset);
-        QToolButton *btnStylesDeletePreset = new QToolButton(stylesInner);
-        btnStylesDeletePreset->setIcon(KisIconUtils::loadIcon("edit-delete"));
-        btnStylesDeletePreset->setToolTip(ComfyTr::tr("Delete the current custom preset"));
+        QToolButton *btnStylesDuplicate = new QToolButton(styleToolbarFrame);
+        btnStylesDuplicate->setIcon(ComfyTheme::icon(QStringLiteral("edit")));
+        btnStylesDuplicate->setToolTip(ComfyTr::tr("Duplicate the current style"));
+        btnStylesDuplicate->setAutoRaise(true);
+        QToolButton *btnStylesDeletePreset = new QToolButton(styleToolbarFrame);
+        btnStylesDeletePreset->setIcon(ComfyTheme::icon(QStringLiteral("discard")));
+        btnStylesDeletePreset->setToolTip(ComfyTr::tr("Delete the current style"));
         btnStylesDeletePreset->setAutoRaise(true);
-        QPushButton *btnStylesRefresh = new QPushButton(ComfyTr::tr("Refresh"), stylesInner);
-        btnStylesRefresh->setToolTip(ComfyTr::tr("Reload the preset list and refresh the checkpoint list from the server"));
-        QPushButton *btnStylesSavePreset = new QPushButton(ComfyTr::tr("Save"), stylesInner);
-        btnStylesSavePreset->setToolTip(ComfyTr::tr("Save current dock settings into the selected custom preset"));
-        // slotSaveAsPreset() mutates m_d->comboPreset (the dock-side combo) but
-        // does NOT touch this dialog's stylesPresetMirror. Wire the refresh
-        // explicitly below after syncStylesFromDock() is defined so the "+" and
-        // "Save as new preset…" actions actually update the mirror combo (which
-        // is what the user sees on Android — the dock combo is hidden in the
-        // compact layout). The connections live in dialog-scope so they are
-        // tied to dlg's lifetime via the dlg context object.
+        QToolButton *btnStylesRefresh = new QToolButton(styleToolbarFrame);
+        btnStylesRefresh->setIcon(ComfyTheme::icon(QStringLiteral("reset")));
+        btnStylesRefresh->setToolTip(ComfyTr::tr("Look for new style files"));
+        btnStylesRefresh->setAutoRaise(true);
         connect(btnStylesDeletePreset, &QToolButton::clicked, this, &ComfyUIRemoteDock::slotDeletePreset);
-        connect(btnStylesSavePreset, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotSaveCurrentPreset);
         presetBtnRow->addWidget(stylesPresetMirror, 1);
         presetBtnRow->addWidget(btnStylesAddPreset);
-        presetBtnRow->addWidget(btnStylesMenu);
+        presetBtnRow->addWidget(btnStylesDuplicate);
         presetBtnRow->addWidget(btnStylesDeletePreset);
         presetBtnRow->addWidget(btnStylesRefresh);
-        presetBtnRow->addWidget(btnStylesSavePreset);
-        stylesLayout->addLayout(presetBtnRow);
-        // §4.5: checkbox follows preset toolbar; Name field is the next spec item
-        QCheckBox *checkShowBuiltinStyles = new QCheckBox(ComfyTr::tr("Show pre-installed styles"), stylesInner);
+        styleToolbarLayout->addLayout(presetBtnRow);
+
+        QLabel *lblBuiltinMessage = new QLabel(ComfyTr::tr("Built-in styles cannot be modified."), styleToolbarFrame);
+        lblBuiltinMessage->setStyleSheet(QStringLiteral("font-style: italic;"));
+        lblBuiltinMessage->hide();
+        QLabel *lblBuiltinCopyLink = new QLabel(
+            QStringLiteral("<a href=\"copy\">%1</a>").arg(ComfyTr::tr("Click to edit a copy")), styleToolbarFrame);
+        lblBuiltinCopyLink->setTextFormat(Qt::RichText);
+        lblBuiltinCopyLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
+        lblBuiltinCopyLink->setOpenExternalLinks(false);
+        lblBuiltinCopyLink->hide();
+        QHBoxLayout *builtinLayout = new QHBoxLayout();
+        builtinLayout->setContentsMargins(6, 1, 1, 1);
+        builtinLayout->addWidget(lblBuiltinMessage);
+        builtinLayout->addWidget(lblBuiltinCopyLink);
+        builtinLayout->addStretch();
+        QCheckBox *checkShowBuiltinStyles = new QCheckBox(ComfyTr::tr("Show pre-installed styles"), styleToolbarFrame);
         checkShowBuiltinStyles->setChecked(
             ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true));
-        checkShowBuiltinStyles->setToolTip(ComfyTr::tr("When unchecked, the dock preset list hides built-in entries (custom presets only)."));
-        stylesLayout->addWidget(checkShowBuiltinStyles);
-        QFormLayout *stylesNameForm = new QFormLayout();
+        builtinLayout->addWidget(checkShowBuiltinStyles);
+        styleToolbarLayout->addLayout(builtinLayout);
+        stylesLayout->addWidget(styleToolbarFrame);
+
+        auto addStylesBoldHeader = [stylesInner](const QString &title) -> QLabel * {
+            QLabel *titleLabel = new QLabel(title, stylesInner);
+            QFont titleFont = titleLabel->font();
+            titleFont.setBold(true);
+            titleLabel->setFont(titleFont);
+            return titleLabel;
+        };
+        auto addStylesSettingRow = [stylesInner](const QString &title, const QString &description, QWidget *control) -> QWidget * {
+            QWidget *row = new QWidget(stylesInner);
+            QHBoxLayout *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            QVBoxLayout *textCol = new QVBoxLayout();
+            textCol->setContentsMargins(0, 0, 0, 0);
+            textCol->setSpacing(2);
+            QLabel *titleLabel = new QLabel(title, row);
+            QFont titleFont = titleLabel->font();
+            titleFont.setBold(true);
+            titleLabel->setFont(titleFont);
+            textCol->addWidget(titleLabel);
+            if (!description.isEmpty()) {
+                QLabel *descLabel = new QLabel(description, row);
+                descLabel->setWordWrap(true);
+                textCol->addWidget(descLabel);
+            }
+            rowLayout->addLayout(textCol, 5);
+            if (control)
+                rowLayout->addWidget(control, 0, Qt::AlignRight | Qt::AlignVCenter);
+            else
+                rowLayout->addStretch(1);
+            return row;
+        };
+        // Python LineEditSetting: header block then full-width line edit below.
+        auto addStylesLineEditBlock = [stylesInner, addStylesBoldHeader](const QString &title, const QString &description,
+                                                                         QLineEdit *edit) -> QWidget * {
+            QWidget *block = new QWidget(stylesInner);
+            QVBoxLayout *blockLayout = new QVBoxLayout(block);
+            blockLayout->setContentsMargins(0, 4, 0, 4);
+            blockLayout->setSpacing(4);
+            blockLayout->addWidget(addStylesBoldHeader(title));
+            if (!description.isEmpty()) {
+                QLabel *descLabel = new QLabel(description, block);
+                descLabel->setWordWrap(true);
+                blockLayout->addWidget(descLabel);
+            }
+            edit->setMinimumWidth(0);
+            edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            blockLayout->addWidget(edit);
+            return block;
+        };
+
         QLineEdit *editStyleName = new QLineEdit(stylesInner);
-        editStyleName->setPlaceholderText(ComfyTr::tr("Custom preset name"));
-        stylesNameForm->addRow(ComfyTr::tr("Name:"), editStyleName);
-        stylesLayout->addLayout(stylesNameForm);
-        QFormLayout *stylesForm = new QFormLayout();
+        stylesLayout->addWidget(addStylesSettingRow(ComfyTr::tr("Name"), QString(), editStyleName));
+
         QHBoxLayout *ckptRow = new QHBoxLayout();
         QComboBox *stylesCkptMirror = new QComboBox(stylesInner);
         stylesCkptMirror->setEditable(true);
+        stylesCkptMirror->setMinimumWidth(230);
         stylesCkptMirror->setPlaceholderText(ComfyTr::tr("The Diffusion model checkpoint file"));
         QToolButton *btnStylesCkptRefresh = new QToolButton(stylesInner);
-        btnStylesCkptRefresh->setIcon(KisIconUtils::loadIcon(QStringLiteral("view-refresh")));
-        btnStylesCkptRefresh->setToolTip(ComfyTr::tr("Refresh checkpoint list from server"));
+        btnStylesCkptRefresh->setIcon(ComfyTheme::icon(QStringLiteral("reset")));
+        btnStylesCkptRefresh->setToolTip(ComfyTr::tr("Look for new checkpoint files"));
         btnStylesCkptRefresh->setAutoRaise(true);
         connect(btnStylesCkptRefresh, &QToolButton::clicked, this, &ComfyUIRemoteDock::slotRefreshCheckpoints);
         ckptRow->addWidget(stylesCkptMirror, 1);
         ckptRow->addWidget(btnStylesCkptRefresh);
-        stylesForm->addRow(ComfyTr::tr("Model Checkpoint:"), ckptRow);
-        stylesLayout->addLayout(stylesForm);
-        stylesCkptMirror->setToolTip(ComfyTr::tr("The Diffusion model checkpoint file."));
+        QWidget *ckptControl = new QWidget(stylesInner);
+        ckptControl->setLayout(ckptRow);
+        stylesLayout->addWidget(addStylesSettingRow(
+            ComfyTr::tr("Model Checkpoint"),
+            ComfyTr::tr("The Diffusion model checkpoint file"),
+            ckptControl));
         QLabel *stylesCkptWarning = new QLabel(stylesInner);
         stylesCkptWarning->setWordWrap(true);
-        stylesCkptWarning->setStyleSheet(QStringLiteral("color: #b8860b;"));
+        stylesCkptWarning->setStyleSheet(QStringLiteral("color: #b8860b; font-style: italic;"));
+        stylesCkptWarning->setAlignment(Qt::AlignRight);
         stylesCkptWarning->hide();
         stylesLayout->addWidget(stylesCkptWarning);
 
@@ -295,434 +350,174 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         toggleAdvCkpt->setText(ComfyTr::tr("Checkpoint configuration (advanced)"));
         QWidget *advCkptBody = new QWidget(stylesInner);
         QVBoxLayout *advCkptLay = new QVBoxLayout(advCkptBody);
-        advCkptLay->setContentsMargins(16, 0, 0, 0);
-        QFormLayout *advCkptForm = new QFormLayout();
-        QLabel *labelStyleArchitecture = new QLabel(advCkptBody);
-        labelStyleArchitecture->setToolTip(ComfyTr::tr("Architecture from the style JSON (auto resolves from checkpoint at generate time)."));
+        advCkptLay->setContentsMargins(0, 0, 0, 0);
+        advCkptLay->setSpacing(0);
+        auto addAdvCkptSettingRow = [advCkptBody, advCkptLay](const QString &title, const QString &description) -> QHBoxLayout * {
+            QWidget *row = new QWidget(advCkptBody);
+            QHBoxLayout *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(16, 4, 0, 4);
+            QVBoxLayout *textCol = new QVBoxLayout();
+            textCol->setContentsMargins(0, 0, 0, 0);
+            textCol->setSpacing(2);
+            QLabel *titleLabel = new QLabel(title, row);
+            QFont titleFont = titleLabel->font();
+            titleFont.setBold(true);
+            titleLabel->setFont(titleFont);
+            textCol->addWidget(titleLabel);
+            if (!description.isEmpty()) {
+                QLabel *descLabel = new QLabel(description, row);
+                descLabel->setWordWrap(true);
+                textCol->addWidget(descLabel);
+            }
+            rowLayout->addLayout(textCol, 5);
+            rowLayout->addStretch(1);
+            advCkptLay->addWidget(row);
+            return rowLayout;
+        };
+        QComboBox *comboStyleArchitecture = new QComboBox(advCkptBody);
+        comboStyleArchitecture->setMinimumWidth(230);
+        comboStyleArchitecture->setToolTip(
+            ComfyTr::tr("Architecture for the checkpoint. Automatic resolves from the model at generate time."));
         QComboBox *comboStyleVae = new QComboBox(advCkptBody);
+        comboStyleVae->setMinimumWidth(230);
         comboStyleVae->setToolTip(ComfyTr::tr("VAE used for encode/decode. Connect to the server and refresh to list installed VAE files."));
         QSpinBox *spinStyleClipSkip = new QSpinBox(advCkptBody);
         spinStyleClipSkip->setRange(0, 12);
+        spinStyleClipSkip->setMinimumWidth(100);
+        spinStyleClipSkip->setSpecialValueText(ComfyTr::tr("Default"));
         spinStyleClipSkip->setToolTip(ComfyTr::tr("CLIP skip layers (SD 1.5 / SDXL / Illustrious). 0 uses the checkpoint default."));
         QCheckBox *checkStyleClipSkipOverride = new QCheckBox(ComfyTr::tr("Override"), advCkptBody);
-        QHBoxLayout *clipSkipRow = new QHBoxLayout();
-        clipSkipRow->addWidget(spinStyleClipSkip);
-        clipSkipRow->addWidget(checkStyleClipSkipOverride);
-        clipSkipRow->addStretch();
         QSpinBox *spinStylePreferredResolution = new QSpinBox(advCkptBody);
         spinStylePreferredResolution->setRange(0, 2048);
         spinStylePreferredResolution->setSingleStep(8);
+        spinStylePreferredResolution->setMinimumWidth(100);
+        spinStylePreferredResolution->setSpecialValueText(ComfyTr::tr("Default"));
         spinStylePreferredResolution->setToolTip(ComfyTr::tr("When enabled, sets generate width/height to this square size when the style is applied."));
         QCheckBox *checkStylePreferredResolution = new QCheckBox(ComfyTr::tr("Override"), advCkptBody);
-        QHBoxLayout *resolutionRow = new QHBoxLayout();
-        resolutionRow->addWidget(spinStylePreferredResolution);
-        resolutionRow->addWidget(checkStylePreferredResolution);
-        resolutionRow->addStretch();
         ComfySwitchWidget *switchStyleZsnr = new ComfySwitchWidget(advCkptBody);
         switchStyleZsnr->setToolTip(ComfyTr::tr("v-prediction zsnr (saved to style JSON; workflow nodes deferred)."));
+        QLabel *labelStyleZsnrState = new QLabel(ComfyTr::tr("Off"), advCkptBody);
         ComfySwitchWidget *switchStyleSag = new ComfySwitchWidget(advCkptBody);
         switchStyleSag->setToolTip(ComfyTr::tr("Self-attention guidance (saved to style JSON; workflow nodes deferred)."));
-        advCkptForm->addRow(ComfyTr::tr("Architecture:"), labelStyleArchitecture);
-        advCkptForm->addRow(ComfyTr::tr("VAE:"), comboStyleVae);
-        advCkptForm->addRow(ComfyTr::tr("Clip skip:"), clipSkipRow);
-        advCkptForm->addRow(ComfyTr::tr("Preferred resolution:"), resolutionRow);
-        advCkptForm->addRow(ComfyTr::tr("v-prediction zsnr:"), switchStyleZsnr);
-        advCkptForm->addRow(ComfyTr::tr("Self-attention guidance:"), switchStyleSag);
-        advCkptLay->addLayout(advCkptForm);
+        QLabel *labelStyleSagState = new QLabel(ComfyTr::tr("Off"), advCkptBody);
+        {
+            QHBoxLayout *archRow = addAdvCkptSettingRow(
+                ComfyTr::tr("Diffusion Architecture"),
+                ComfyTr::tr("The base model ecosystem which the selected checkpoint belongs to."));
+            archRow->addWidget(comboStyleArchitecture);
+        }
+        {
+            QHBoxLayout *vaeRow = addAdvCkptSettingRow(
+                ComfyTr::tr("VAE"),
+                ComfyTr::tr("Model to encode and decode images. Commonly affects saturation and sharpness."));
+            vaeRow->addWidget(comboStyleVae);
+        }
+        {
+            QHBoxLayout *clipRow = addAdvCkptSettingRow(
+                ComfyTr::tr("Clip Skip"),
+                ComfyTr::tr("Clip layers to omit at the end. Some checkpoints prefer a different value than the default."));
+            clipRow->addWidget(checkStyleClipSkipOverride);
+            clipRow->addWidget(spinStyleClipSkip);
+        }
+        {
+            QHBoxLayout *resRow = addAdvCkptSettingRow(
+                ComfyTr::tr("Preferred Resolution"),
+                ComfyTr::tr("Image resolution the checkpoint was trained on"));
+            resRow->addWidget(checkStylePreferredResolution);
+            resRow->addWidget(spinStylePreferredResolution);
+        }
+        {
+            QHBoxLayout *zsnrRow = addAdvCkptSettingRow(
+                ComfyTr::tr("V-Prediction / Zero Terminal SNR"),
+                ComfyTr::tr("Enable this if the checkpoint is a v-prediction model which requires zero terminal SNR noise schedule"));
+            zsnrRow->addWidget(labelStyleZsnrState);
+            zsnrRow->addWidget(switchStyleZsnr);
+        }
+        {
+            QHBoxLayout *sagRow = addAdvCkptSettingRow(
+                ComfyTr::tr("Enable SAG / Self-Attention Guidance"),
+                ComfyTr::tr("Pay more attention to difficult parts of the image. Can improve fine details."));
+            sagRow->addWidget(labelStyleSagState);
+            sagRow->addWidget(switchStyleSag);
+        }
+        connect(switchStyleZsnr, &QAbstractButton::toggled, labelStyleZsnrState, [labelStyleZsnrState](bool on) {
+            labelStyleZsnrState->setText(on ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+        });
+        connect(switchStyleSag, &QAbstractButton::toggled, labelStyleSagState, [labelStyleSagState](bool on) {
+            labelStyleSagState->setText(on ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+        });
         wireDisclosure(toggleAdvCkpt, advCkptBody, false);
         stylesLayout->addWidget(toggleAdvCkpt);
         stylesLayout->addWidget(advCkptBody);
 
-        QToolButton *toggleLora = new QToolButton(stylesInner);
-        toggleLora->setText(ComfyTr::tr("LoRA"));
-        QWidget *loraBody = new QWidget(stylesInner);
-        QVBoxLayout *loraLay = new QVBoxLayout(loraBody);
-        loraLay->setContentsMargins(16, 0, 0, 0);
-        loraLay->addWidget(new QLabel(
-            ComfyTr::tr("Extensions to the checkpoint which expand its range based on additional training."), loraBody));
-        QHBoxLayout *loraBtnRow = new QHBoxLayout();
-        QPushButton *btnLoraAdd = new QPushButton(ComfyTr::tr("Add"), loraBody);
-        QPushButton *btnLoraRemove = new QPushButton(ComfyTr::tr("Remove"), loraBody);
-        QPushButton *btnLoraUpload = new QPushButton(ComfyTr::tr("Upload"), loraBody);
-        QComboBox *comboLoraFilter = new QComboBox(loraBody);
-        comboLoraFilter->addItem(ComfyTr::tr("All"));
-        comboLoraFilter->addItem(ComfyTr::tr("On server"));
-        comboLoraFilter->addItem(ComfyTr::tr("Not on server"));
-        comboLoraFilter->setToolTip(ComfyTr::tr("Filter using LoRA names from the server object_info list (after Connect or Refresh)."));
-        QPushButton *btnLoraRefresh = new QPushButton(ComfyTr::tr("Refresh"), loraBody);
-        btnLoraAdd->setToolTip(ComfyTr::tr("Add a local .safetensors LoRA; the basename is used in `<lora:…>` tags appended to positive prompts."));
-        btnLoraRemove->setToolTip(ComfyTr::tr("Remove the selected LoRA from the library file."));
-        btnLoraUpload->setToolTip(
-            ComfyTr::tr("Adds the LoRA to your library. When connected, tries upload via the Krita AI Diffusion ETN API (%1); if that fails or you are offline, copy the file to %2 on the server and use Refresh.",
-                 QStringLiteral("PUT api/etn/upload/loras/…"),
-                 QStringLiteral("models/loras")));
-        btnLoraRefresh->setToolTip(
-            ComfyTr::tr("Reload database/loras.json, then refresh checkpoints (updates the server LoRA list from object_info)."));
-        loraBtnRow->addWidget(btnLoraAdd);
-        loraBtnRow->addWidget(btnLoraRemove);
-        loraBtnRow->addWidget(btnLoraUpload);
-        loraBtnRow->addWidget(comboLoraFilter);
-        loraBtnRow->addWidget(btnLoraRefresh);
-        loraBtnRow->addStretch();
-        loraLay->addLayout(loraBtnRow);
-        QListWidget *listLora = new QListWidget(loraBody);
-        listLora->setMaximumHeight(140);
-        listLora->setSelectionMode(QAbstractItemView::SingleSelection);
-        loraLay->addWidget(listLora);
-        QLabel *lblLoraWarning = new QLabel(loraBody);
-        lblLoraWarning->setWordWrap(true);
-        lblLoraWarning->hide();
-        loraLay->addWidget(lblLoraWarning);
-        m_d->stylesTabLoraListWidget = listLora;
-        m_d->stylesTabLoraWarningLabel = lblLoraWarning;
-        QHBoxLayout *loraStrRow = new QHBoxLayout();
-        QLabel *lblLoraStr = new QLabel(ComfyTr::tr("Strength %:"), loraBody);
-        QSpinBox *spinLoraStrength = new QSpinBox(loraBody);
-        spinLoraStrength->setRange(1, 200);
-        spinLoraStrength->setValue(100);
-        spinLoraStrength->setEnabled(false);
-        spinLoraStrength->setToolTip(ComfyTr::tr("Per-LoRA strength as a percentage of 1.0 (e.g. 100 = weight 1.0 in the prompt tag)."));
-        loraStrRow->addWidget(lblLoraStr);
-        loraStrRow->addWidget(spinLoraStrength);
-        loraStrRow->addStretch();
-        loraLay->addLayout(loraStrRow);
-        loraLay->addWidget(new QLabel(
-            ComfyTr::tr("Checked entries are appended to positive prompts as `<lora:filename.safetensors:weight>` for default Generate, Live, Inpaint, and Regions workflows."),
-            loraBody));
-        wireDisclosure(toggleLora, loraBody, false);
-        stylesLayout->addWidget(toggleLora);
-        stylesLayout->addWidget(loraBody);
+        ComfyStyleLoraListWidget *loraListWidget = new ComfyStyleLoraListWidget(stylesInner);
+        m_d->stylesTabLoraListWidget = loraListWidget;
+        stylesLayout->addWidget(loraListWidget);
 
-        // §4.5: Style Prompt → Negative Prompt → Linked Edit Style (before Sampler Settings)
-        QLabel *stylePromptDesc = new QLabel(
-            ComfyTr::tr("Text which is appended to all prompts. The {prompt} placeholder can be used to wrap prompts."), stylesInner);
-        stylePromptDesc->setWordWrap(true);
-        stylesLayout->addWidget(stylePromptDesc);
-        QPlainTextEdit *editStylesPositive = new QPlainTextEdit(stylesInner);
-        editStylesPositive->setPlaceholderText(ComfyTr::tr("Style prompt (synced with Generate view)"));
-        editStylesPositive->setMaximumHeight(100);
-        stylesLayout->addWidget(editStylesPositive);
-        QLabel *negDesc = new QLabel(ComfyTr::tr("Textual description of things to avoid in generated images."), stylesInner);
-        negDesc->setWordWrap(true);
-        stylesLayout->addWidget(negDesc);
-        QPlainTextEdit *editStylesNegative = new QPlainTextEdit(stylesInner);
-        editStylesNegative->setPlaceholderText(ComfyTr::tr("Negative prompt (synced with Generate view)"));
-        editStylesNegative->setMaximumHeight(80);
-        stylesLayout->addWidget(editStylesNegative);
-        QFormLayout *linkedStyleForm = new QFormLayout();
+        QLineEdit *editStylesPositive = new QLineEdit(stylesInner);
+        stylesLayout->addWidget(addStylesLineEditBlock(
+            ComfyTr::tr("Style Prompt"),
+            ComfyTr::tr("Text which is appended to all prompts. The {prompt} placeholder can be used to wrap prompts."),
+            editStylesPositive));
+
+        QLineEdit *editStylesNegative = new QLineEdit(stylesInner);
+        stylesLayout->addWidget(addStylesLineEditBlock(
+            ComfyTr::tr("Negative Prompt"),
+            ComfyTr::tr("Textual description of things to avoid in generated images."),
+            editStylesNegative));
+
         QComboBox *comboLinkedEditStyle = new QComboBox(stylesInner);
-        comboLinkedEditStyle->setToolTip(ComfyTr::tr("Select an alternative style to use for instruction-based editing."));
-        linkedStyleForm->addRow(ComfyTr::tr("Linked Edit Style:"), comboLinkedEditStyle);
-        stylesLayout->addLayout(linkedStyleForm);
+        comboLinkedEditStyle->setMinimumWidth(230);
+        QWidget *linkedEditStyleRow = addStylesSettingRow(
+            ComfyTr::tr("Linked Edit Style"),
+            ComfyTr::tr("Select an alternative style for instruction-based editing"),
+            comboLinkedEditStyle);
+        stylesLayout->addWidget(linkedEditStyleRow);
 
-        QLabel *lblSamplerMerge = new QLabel(
-            ComfyTr::tr("Configure sampler type, steps and CFG to tweak the quality of generated images. "
-                 "Presets match the samplers.json shape (sampler, scheduler, steps, minimum_steps, cfg). "
-                 "Optional file %1 merges with built-in presets (reloaded when you open this Styles tab).",
-                 ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/samplers.json")),
-            stylesInner);
-        lblSamplerMerge->setWordWrap(true);
-        stylesLayout->addWidget(lblSamplerMerge);
-        QLabel *lblControlPresets = new QLabel(
-            ComfyTr::tr("Optional %1 defines default strength and range presets for control layers. "
-                 "Reloaded when you open this tab.",
-                 ComfyUIUtils::pluginUserDataDir() + QStringLiteral("/presets/control.json")),
-            stylesInner);
-        lblControlPresets->setWordWrap(true);
-        lblControlPresets->setStyleSheet(QStringLiteral("color: palette(mid);"));
-        stylesLayout->addWidget(lblControlPresets);
-        QFormLayout *controlPresetForm = new QFormLayout();
-        QComboBox *comboControlDefaultPreset = new QComboBox(stylesInner);
-        ComfyUIIntervalSlider *controlRangePreview = new ComfyUIIntervalSlider(stylesInner);
-        QLabel *controlRangePreviewLabel = new QLabel(stylesInner);
-        comboControlDefaultPreset->setToolTip(
-            ComfyTr::tr("Default strength and timing range when adding a control layer (from control.json, default mode)."));
-        controlRangePreview->setToolTip(
-            ComfyTr::tr("Preview of the selected control-layer timing range (low/high)."));
-        controlRangePreview->setEnabled(false);
-        controlRangePreview->setRange(0, 100);
-        controlRangePreviewLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
-        controlPresetForm->addRow(ComfyTr::tr("Default control layer preset:"), comboControlDefaultPreset);
-        controlPresetForm->addRow(ComfyTr::tr("Preset timing range:"), controlRangePreview);
-        controlPresetForm->addRow(QString(), controlRangePreviewLabel);
-        stylesLayout->addLayout(controlPresetForm);
-        QComboBox *comboQualitySamplerPreset = new QComboBox(stylesInner);
-        QComboBox *comboLiveSamplerPreset = new QComboBox(stylesInner);
-        comboQualitySamplerPreset->setToolTip(
-            ComfyTr::tr("Applies to Generate, Inpaint, and Regions. Chooses Custom to adjust sampler, steps, and CFG only on the dock."));
-        comboLiveSamplerPreset->setToolTip(
-            ComfyTr::tr("When a named preset is selected, Live mode uses it for sampler, scheduler, steps, and CFG. Custom follows the dock row."));
-        QToolButton *toggleSamplerQuality = new QToolButton(stylesInner);
-        toggleSamplerQuality->setText(ComfyTr::tr("Quality Preset (generate and upscale)"));
-        QWidget *samplerQualityBody = new QWidget(stylesInner);
-        QVBoxLayout *samplerQualityLay = new QVBoxLayout(samplerQualityBody);
-        samplerQualityLay->setContentsMargins(16, 0, 0, 0);
-        samplerQualityLay->addWidget(new QLabel(
-            ComfyTr::tr("Preset used for Generate, Inpaint, Regions, and Upscale (e.g. a named Euler or DPM++ preset)."),
-            samplerQualityBody));
-        samplerQualityLay->addWidget(comboQualitySamplerPreset);
-        wireDisclosure(toggleSamplerQuality, samplerQualityBody, false);
-        stylesLayout->addWidget(toggleSamplerQuality);
-        stylesLayout->addWidget(samplerQualityBody);
-        QToolButton *toggleSamplerLive = new QToolButton(stylesInner);
-        toggleSamplerLive->setText(ComfyTr::tr("Performance Preset (live mode)"));
-        QWidget *samplerLiveBody = new QWidget(stylesInner);
-        QVBoxLayout *samplerLiveLay = new QVBoxLayout(samplerLiveBody);
-        samplerLiveLay->setContentsMargins(16, 0, 0, 0);
-        samplerLiveLay->addWidget(new QLabel(
-            ComfyTr::tr("Preset used for Live mode, or Custom to follow the dock sampler row."),
-            samplerLiveBody));
-        samplerLiveLay->addWidget(comboLiveSamplerPreset);
-        wireDisclosure(toggleSamplerLive, samplerLiveBody, false);
-        stylesLayout->addWidget(toggleSamplerLive);
-        stylesLayout->addWidget(samplerLiveBody);
+        QLabel *samplerSectionDesc = new QLabel(
+            ComfyTr::tr("Configure sampler type, steps and CFG to tweak the quality of generated images."), stylesInner);
+        samplerSectionDesc->setWordWrap(true);
+        stylesLayout->addWidget(addStylesBoldHeader(ComfyTr::tr("Sampler Settings")));
+        stylesLayout->addWidget(samplerSectionDesc);
 
-        // §4.2: Six nav items only — Fast/Quality and custom workflow live under Styles (not a seventh nav entry).
-        QFormLayout *qualityFastForm = new QFormLayout();
-        qualityFastForm->addRow(ComfyTr::tr("Quality:"), m_d->comboQuality);
-        stylesLayout->addLayout(qualityFastForm);
-        {
-            QLabel *dockGenHint = new QLabel(
-                ComfyTr::tr("Image size (preset, width, height), sampling steps, CFG scale, sampler, fixed seed, and random seed are set on the AI Image Generation dock (Generate workspace)."),
-                stylesInner);
-            dockGenHint->setWordWrap(true);
-            stylesLayout->addWidget(dockGenHint);
-        }
-        QGroupBox *workflowGroup = new QGroupBox(ComfyTr::tr("Custom ComfyUI workflow"), stylesInner);
-        QVBoxLayout *workflowLayout = new QVBoxLayout(workflowGroup);
-        workflowLayout->addWidget(new QLabel(ComfyTr::tr("Custom workflow (optional, API JSON):"), workflowGroup));
-        QLabel *wfFolderInfo = new QLabel(
-            ComfyTr::tr("Local workflow library: %1 (place exported API JSON files here).", ComfyUIUtils::workflowsStorageDir()),
-            workflowGroup);
-        wfFolderInfo->setWordWrap(true);
-        workflowLayout->addWidget(wfFolderInfo);
-        QHBoxLayout *wfLibRow = new QHBoxLayout();
-        QComboBox *comboLocalWorkflows = new QComboBox(workflowGroup);
-        QPushButton *btnWorkflowRefresh = new QPushButton(ComfyTr::tr("Refresh list"), workflowGroup);
-        QPushButton *btnWorkflowFolder = new QPushButton(ComfyTr::tr("Open folder"), workflowGroup);
-        wfLibRow->addWidget(new QLabel(ComfyTr::tr("Load from library:"), workflowGroup));
-        wfLibRow->addWidget(comboLocalWorkflows, 1);
-        wfLibRow->addWidget(btnWorkflowRefresh);
-        wfLibRow->addWidget(btnWorkflowFolder);
-        workflowLayout->addLayout(wfLibRow);
-        auto refillLocalWorkflowCombo = [comboLocalWorkflows]() {
-            comboLocalWorkflows->blockSignals(true);
-            comboLocalWorkflows->clear();
-            comboLocalWorkflows->addItem(ComfyTr::tr("— select —"), QString());
-            for (const QString &n : ComfyUIUtils::listLocalWorkflowJsonFilenames())
-                comboLocalWorkflows->addItem(n, n);
-            comboLocalWorkflows->setCurrentIndex(0);
-            comboLocalWorkflows->blockSignals(false);
-        };
-        refillLocalWorkflowCombo();
-        connect(comboLocalWorkflows, QOverload<int>::of(&QComboBox::activated), this,
-                [this, comboLocalWorkflows](int idx) {
-                    if (idx <= 0 || !m_d->editCustomWorkflow)
-                        return;
-                    const QString fn = comboLocalWorkflows->itemData(idx).toString();
-                    if (fn.isEmpty())
-                        return;
-                    QFile f(ComfyUIUtils::workflowsStorageDir() + QLatin1Char('/') + fn);
-                    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-                        return;
-                    m_d->editCustomWorkflow->setPlainText(
-                        QString::fromUtf8(ComfyUIUtils::stripJsonLineComments(f.readAll())));
-                });
-        connect(btnWorkflowRefresh, &QPushButton::clicked, dlg, [refillLocalWorkflowCombo](bool) { refillLocalWorkflowCombo(); });
-        connect(btnWorkflowFolder, &QPushButton::clicked, dlg, [](bool) {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::workflowsStorageDir()));
-        });
-        workflowLayout->addWidget(m_d->checkUseReferenceImage);
-        m_d->customWorkflowSettingsLayout = workflowLayout;
-        workflowLayout->addWidget(m_d->editCustomWorkflow);
-        m_d->customWorkflowParamsGroup = new QGroupBox(ComfyTr::tr("Workflow parameters (ETN)"), workflowGroup);
-        m_d->customWorkflowParamsForm = new QFormLayout(m_d->customWorkflowParamsGroup);
-        m_d->customWorkflowParamsGroup->setLayout(m_d->customWorkflowParamsForm);
-        workflowLayout->addWidget(m_d->customWorkflowParamsGroup);
-        m_d->customWorkflowParamsGroup->setVisible(false);
-        workflowLayout->addWidget(m_d->btnLoadWorkflow);
-        workflowLayout->addStretch();
-        stylesLayout->addWidget(workflowGroup);
+        ComfyStyleSamplerWidget *qualitySamplerWidget = new ComfyStyleSamplerWidget(ComfyStyleSamplerWidget::Kind::Quality, stylesInner);
+        ComfyStyleSamplerWidget *liveSamplerWidget = new ComfyStyleSamplerWidget(ComfyStyleSamplerWidget::Kind::Live, stylesInner);
+        stylesLayout->addWidget(qualitySamplerWidget);
+        stylesLayout->addWidget(liveSamplerWidget);
         stylesLayout->addStretch();
         stylesScroll->setWidget(stylesInner);
         stylesOuter->addWidget(stylesScroll);
         stack->addWidget(stylesPage);
 
-        auto persistLoraList = [listLora]() {
-            QJsonArray arr;
-            for (int i = 0; i < listLora->count(); ++i) {
-                QListWidgetItem *it = listLora->item(i);
-                if (!it)
-                    continue;
-                QJsonObject o;
-                o.insert(QStringLiteral("filename"), it->data(Qt::UserRole).toString());
-                o.insert(QStringLiteral("strength_percent"), it->data(Qt::UserRole + 1).toInt());
-                o.insert(QStringLiteral("enabled"), it->checkState() == Qt::Checked);
-                arr.append(o);
-            }
-            ComfyUIUtils::saveLorasJsonArray(arr);
+        m_d->stylesTabPersistingLoras = false;
+        auto persistStyleLoras = [this, loraListWidget]() {
+            if (m_d->stylesTabPersistingLoras || !m_d->comboPreset)
+                return;
+            const ComfyStyleEntry *st = currentJsonStyleEntry();
+            if (!st || st->isBuiltin)
+                return;
+            ComfyStyleEntry e = *st;
+            e.loras = loraListWidget->value();
+            m_d->stylesTabPersistingLoras = true;
+            saveStyleEntry(e);
+            m_d->stylesTabPersistingLoras = false;
         };
-        auto reloadLoraListFromDisk = [listLora, spinLoraStrength, this]() {
-            listLora->blockSignals(true);
-            listLora->clear();
-            const QJsonArray arr = ComfyUIUtils::loadLorasJsonArray();
-            for (const QJsonValue &v : arr) {
-                const QJsonObject o = v.toObject();
-                QString fn = o.value(QStringLiteral("filename")).toString().trimmed();
-                if (fn.isEmpty())
-                    fn = o.value(QStringLiteral("name")).toString().trimmed();
-                if (fn.isEmpty())
-                    continue;
-                const int pct = o.value(QStringLiteral("strength_percent")).toInt(100);
-                const bool en = o.value(QStringLiteral("enabled")).toBool(true);
-                auto *it = new QListWidgetItem(QStringLiteral("%1 — %2%").arg(fn).arg(pct), listLora);
-                it->setFlags(it->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
-                it->setCheckState(en ? Qt::Checked : Qt::Unchecked);
-                it->setData(Qt::UserRole, fn);
-                it->setData(Qt::UserRole + 1, qBound(1, pct, 200));
-                listLora->addItem(it);
-            }
-            listLora->blockSignals(false);
-            if (listLora->currentRow() < 0 && listLora->count() > 0)
-                listLora->setCurrentRow(0);
-            QListWidgetItem *cur = listLora->currentItem();
-            spinLoraStrength->setEnabled(cur != nullptr);
-            if (cur) {
-                spinLoraStrength->blockSignals(true);
-                spinLoraStrength->setValue(cur->data(Qt::UserRole + 1).toInt());
-                spinLoraStrength->blockSignals(false);
-            }
-            applyStylesTabLoraListFilter();
-            refreshStylesTabLoraWarning();
+        auto reloadStyleLorasFromPreset = [this, loraListWidget]() {
+            if (!loraListWidget)
+                return;
+            m_d->stylesTabPersistingLoras = true;
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                loraListWidget->setValue(st->loras);
+            else
+                loraListWidget->setValue(QJsonArray());
+            loraListWidget->setServerLoraFilenames(m_d->comfyServerLoraFilenames);
+            loraListWidget->refreshFilters();
+            m_d->stylesTabPersistingLoras = false;
         };
-        comboLoraFilter->setCurrentIndex(m_d->stylesTabLoraFilterMode);
-        reloadLoraListFromDisk();
-        connect(btnLoraAdd, &QPushButton::clicked, dlg, [listLora, loraBody, reloadLoraListFromDisk, this](bool) {
-            const QString path = QFileDialog::getOpenFileName(
-                loraBody,
-                ComfyTr::tr("Select LoRA file"),
-                QString(),
-                ComfyTr::tr("LoRA files (*.safetensors *.pt);;All files (*)"));
-            if (path.isEmpty())
-                return;
-            ComfyFileLibrary::instance().init();
-            if (ComfyFileLibrary::instance().loras().find(QFileInfo(path).fileName()))
-                return;
-            ComfyFileRecord rec = ComfyFileRecord::local(path, ComfyFileFormat::Lora, true);
-            rec.setMeta(QStringLiteral("strength_percent"), 100);
-            rec.setMeta(QStringLiteral("enabled"), true);
-            ComfyFileLibrary::instance().loras().add(rec);
-            reloadLoraListFromDisk();
-            applyStylesTabLoraListFilter();
-            refreshStylesTabLoraWarning();
-        });
-        connect(btnLoraRemove, &QPushButton::clicked, dlg, [listLora, spinLoraStrength, persistLoraList, this](bool) {
-            const int row = listLora->currentRow();
-            if (row < 0)
-                return;
-            delete listLora->takeItem(row);
-            persistLoraList();
-            spinLoraStrength->setEnabled(listLora->currentItem() != nullptr);
-            applyStylesTabLoraListFilter();
-            refreshStylesTabLoraWarning();
-        });
-        connect(btnLoraRefresh, &QPushButton::clicked, this, [this, reloadLoraListFromDisk](bool) {
-            reloadLoraListFromDisk();
-            slotRefreshCheckpoints();
-        });
-        connect(btnLoraUpload, &QPushButton::clicked, dlg, [listLora, loraBody, reloadLoraListFromDisk, dlg, this](bool) {
-            const QString path = QFileDialog::getOpenFileName(
-                loraBody,
-                ComfyTr::tr("Select LoRA file"),
-                QString(),
-                ComfyTr::tr("LoRA files (*.safetensors);;LoRA files (*.safetensors *.pt);;All files (*)"));
-            if (path.isEmpty())
-                return;
-            const QString base = QFileInfo(path).fileName();
-            if (base.isEmpty())
-                return;
-            ComfyFileLibrary::instance().init();
-            if (!ComfyFileLibrary::instance().loras().find(base)) {
-                ComfyFileRecord rec = ComfyFileRecord::local(path, ComfyFileFormat::Lora, true);
-                rec.setMeta(QStringLiteral("strength_percent"), 100);
-                rec.setMeta(QStringLiteral("enabled"), true);
-                ComfyFileLibrary::instance().loras().add(rec);
-                reloadLoraListFromDisk();
-            }
-            applyStylesTabLoraListFilter();
-            refreshStylesTabLoraWarning();
-
-            const QString url = m_d->editServerUrl ? m_d->editServerUrl->text().trimmed() : QString();
-            if (m_d->isConnected && m_d->nam && !url.isEmpty()) {
-                QPointer<QDialog> dlgLife(dlg);
-                QNetworkReply *reply = ComfyUIUtils::tryUploadLoraFileViaEtnApi(m_d->nam, url, path, dlg);
-                if (!reply) {
-                    QMessageBox::warning(
-                        loraBody,
-                        ComfyTr::tr("Upload LoRA"),
-                        ComfyTr::tr("Could not read the selected file. The library entry was still saved."));
-                    return;
-                }
-                connect(reply, &QNetworkReply::finished, dlg, [reply, dlgLife, this]() {
-                    reply->deleteLater();
-                    if (!dlgLife)
-                        return;
-                    const QVariant codeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
-                    const int code = codeVar.isValid() ? codeVar.toInt() : 0;
-                    const bool ok = (reply->error() == QNetworkReply::NoError && (code == 200 || code == 201 || code == 204));
-                    if (ok) {
-                        slotRefreshCheckpoints();
-                        QMessageBox::information(
-                            dlgLife.data(),
-                            ComfyTr::tr("Upload LoRA"),
-                            ComfyTr::tr("The server accepted the LoRA upload (Krita AI Diffusion ETN API)."));
-                    } else {
-                        const QString codeStr = code > 0 ? QString::number(code) : QStringLiteral("—");
-                        QMessageBox::information(
-                            dlgLife.data(),
-                            ComfyTr::tr("Upload LoRA"),
-                            ComfyTr::tr("The filename was saved in your library, but the server did not accept the upload (HTTP %1). "
-                                 "Use a ComfyUI setup with the Krita AI Diffusion nodes, or copy the file to %2 on the server and click Refresh.",
-                                 codeStr,
-                                 QStringLiteral("models/loras")));
-                    }
-                });
-                return;
-            }
-            QMessageBox::information(
-                loraBody,
-                ComfyTr::tr("Upload LoRA"),
-                ComfyTr::tr("Connect to the server to try an automatic upload (ETN API), or copy this file into the server’s %1 folder, then click Refresh.",
-                     QStringLiteral("models/loras")));
-        });
-        connect(comboLoraFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
-            m_d->stylesTabLoraFilterMode = idx;
-            applyStylesTabLoraListFilter();
-        });
-        connect(listLora, &QListWidget::itemChanged, dlg, [persistLoraList](QListWidgetItem *) { persistLoraList(); });
-        connect(listLora, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *, QListWidgetItem *) {
-            refreshStylesTabLoraWarning();
-        });
-        connect(listLora, &QListWidget::currentRowChanged, dlg, [listLora, spinLoraStrength](int row) {
-            if (row < 0 || !listLora->item(row)) {
-                spinLoraStrength->setEnabled(false);
-                return;
-            }
-            spinLoraStrength->setEnabled(true);
-            spinLoraStrength->blockSignals(true);
-            spinLoraStrength->setValue(listLora->item(row)->data(Qt::UserRole + 1).toInt());
-            spinLoraStrength->blockSignals(false);
-        });
-        connect(spinLoraStrength, QOverload<int>::of(&QSpinBox::valueChanged), dlg,
-                [listLora, spinLoraStrength, persistLoraList](int v) {
-                    QListWidgetItem *it = listLora->currentItem();
-                    if (!it)
-                        return;
-                    it->setData(Qt::UserRole + 1, v);
-                    const QString fn = it->data(Qt::UserRole).toString();
-                    it->setText(QStringLiteral("%1 — %2%").arg(fn).arg(v));
-                    persistLoraList();
-                });
+        reloadStyleLorasFromPreset();
+        connect(loraListWidget, &ComfyStyleLoraListWidget::valueChanged, dlg, persistStyleLoras);
+        connect(loraListWidget, &ComfyStyleLoraListWidget::refreshRequested, this, &ComfyUIRemoteDock::slotRefreshCheckpoints);
 
         // FAITHFUL_PORT/CRASH FIX: these were stack-locals, captured by reference by
         // syncStylesFromDock() / editStyles{Positive,Negative}::textChanged /
@@ -735,16 +530,36 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         m_d->stylesTabSyncing = false;
         QString &stylesTabPresetNameBaseline = m_d->stylesTabPresetNameBaselineMember;
         bool &syncingStylesTab = m_d->stylesTabSyncing;
-        auto repopulateLinkedEditStyleCombo = [comboLinkedEditStyle]() {
-            const QJsonObject settings = ComfyUIUtils::loadSettingsJson();
-            const QString saved = settings.value(QStringLiteral("linked_edit_style")).toString().trimmed();
+        auto repopulateLinkedEditStyleCombo = [this, comboLinkedEditStyle, linkedEditStyleRow, stylesCkptMirror]() {
+            const QString currentStyleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            QString ckpt = stylesCkptMirror->currentText().trimmed();
+            QString styleArch = QStringLiteral("auto");
+            if (const ComfyStyleEntry *cur = ComfyStyleCollection::instance().findByStyleId(currentStyleId)) {
+                styleArch = cur->architecture;
+                if (ckpt.isEmpty() && !cur->checkpoints.isEmpty())
+                    ckpt = cur->checkpoints.first();
+            }
+            const ComfyResources::Arch curArch = ComfyWorkflowEngine::resolveArch(ckpt, styleArch);
+            const bool hideLinked = ComfyResources::supportsEditInstructions(curArch);
+            linkedEditStyleRow->setVisible(!hideLinked);
+            if (hideLinked)
+                return;
+            QString saved;
+            if (const ComfyStyleEntry *cur = ComfyStyleCollection::instance().findByStyleId(currentStyleId))
+                saved = cur->linkedEditStyle.trimmed();
             comboLinkedEditStyle->blockSignals(true);
             comboLinkedEditStyle->clear();
             comboLinkedEditStyle->addItem(ComfyTr::tr("None"), QString());
-            KConfigGroup cfg(KSharedConfig::openConfig(), QStringLiteral("ComfyUIRemote"));
-            for (const QString &n : cfg.readEntry(QStringLiteral("PresetNames"), QStringList())) {
-                if (!n.isEmpty())
-                    comboLinkedEditStyle->addItem(n, n);
+            const bool showBuiltin =
+                ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
+            for (const ComfyStyleEntry *s : ComfyStyleCollection::instance().filtered(showBuiltin)) {
+                if (s->styleId == currentStyleId)
+                    continue;
+                const QString ckpt = s->checkpoints.isEmpty() ? QString() : s->checkpoints.first();
+                const ComfyResources::Arch a = ComfyWorkflowEngine::resolveArch(ckpt, s->architecture);
+                if (!ComfyResources::supportsEditInstructions(a))
+                    continue;
+                comboLinkedEditStyle->addItem(ComfyStyleCollection::comboDisplayName(*s), s->styleId);
             }
             int si = 0;
             if (!saved.isEmpty()) {
@@ -755,22 +570,48 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             comboLinkedEditStyle->setCurrentIndex(si);
             comboLinkedEditStyle->blockSignals(false);
         };
+        auto updateBuiltinStyleUi = [this, lblBuiltinMessage, lblBuiltinCopyLink, editStyleName, stylesCkptMirror,
+                                     loraListWidget, editStylesPositive, editStylesNegative, comboLinkedEditStyle,
+                                     qualitySamplerWidget, liveSamplerWidget, toggleAdvCkpt, advCkptBody,
+                                     comboStyleArchitecture, comboStyleVae, spinStyleClipSkip, checkStyleClipSkipOverride,
+                                     spinStylePreferredResolution, checkStylePreferredResolution, switchStyleZsnr,
+                                     switchStyleSag, btnStylesDeletePreset]() {
+            const ComfyStyleEntry *st = currentJsonStyleEntry();
+            const bool hasJson = st != nullptr;
+            const bool builtin = hasJson && st->isBuiltin;
+            const bool editable = hasJson && !builtin;
+            lblBuiltinMessage->setVisible(builtin);
+            lblBuiltinCopyLink->setVisible(builtin);
+            editStyleName->setReadOnly(!editable);
+            stylesCkptMirror->setEnabled(editable);
+            loraListWidget->setEditingEnabled(editable);
+            editStylesPositive->setReadOnly(!editable);
+            editStylesNegative->setReadOnly(!editable);
+            comboLinkedEditStyle->setEnabled(editable);
+            qualitySamplerWidget->setEditingEnabled(editable);
+            liveSamplerWidget->setEditingEnabled(editable);
+            toggleAdvCkpt->setEnabled(editable);
+            advCkptBody->setEnabled(editable);
+            comboStyleArchitecture->setEnabled(editable);
+            comboStyleVae->setEnabled(editable);
+            checkStyleClipSkipOverride->setEnabled(editable);
+            spinStyleClipSkip->setEnabled(editable && checkStyleClipSkipOverride->isChecked());
+            checkStylePreferredResolution->setEnabled(editable);
+            spinStylePreferredResolution->setEnabled(editable && checkStylePreferredResolution->isChecked());
+            switchStyleZsnr->setEnabled(editable);
+            switchStyleSag->setEnabled(editable);
+            btnStylesDeletePreset->setEnabled(editable);
+        };
         auto syncStyleNameField = [editStyleName, &stylesTabPresetNameBaseline, this]() {
             if (!m_d->comboPreset)
                 return;
             editStyleName->blockSignals(true);
-            const int idx = m_d->comboPreset->currentIndex();
-            const int firstCustom = firstCustomPresetIndex();
-            if (idx <= 0) {
-                editStyleName->clear();
-                editStyleName->setReadOnly(true);
-            } else if (idx < firstCustom) {
-                editStyleName->setText(m_d->comboPreset->currentText());
-                editStyleName->setReadOnly(true);
+            if (const ComfyStyleEntry *st = currentJsonStyleEntry()) {
+                editStyleName->setText(st->name);
+                stylesTabPresetNameBaseline = st->name;
             } else {
-                editStyleName->setText(m_d->comboPreset->currentText());
-                editStyleName->setReadOnly(false);
-                stylesTabPresetNameBaseline = m_d->comboPreset->currentText();
+                editStyleName->clear();
+                stylesTabPresetNameBaseline.clear();
             }
             editStyleName->blockSignals(false);
         };
@@ -784,18 +625,44 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         // member so the storage outlives the dialog.
         m_d->stylesTabPersistingAdvanced = false;
         bool &persistingStyleAdvanced = m_d->stylesTabPersistingAdvanced;
-        auto effectiveStyleArch = [this]() -> ComfyResources::Arch {
+        auto resolvedStyleArch = [this, stylesCkptMirror]() -> ComfyResources::Arch {
+            QString ckpt = stylesCkptMirror->currentText().trimmed();
+            QString styleArch = QStringLiteral("auto");
             const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
             if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId)) {
-                ComfyResources::Arch a = ComfyResources::archFromKey(st->architecture);
-                if (a != ComfyResources::Arch::Unknown)
-                    return a;
-                if (!st->checkpoints.isEmpty())
-                    return ComfyResources::archFromCheckpointName(st->checkpoints.first());
+                styleArch = st->architecture;
+                if (ckpt.isEmpty() && !st->checkpoints.isEmpty())
+                    ckpt = st->checkpoints.first();
             }
-            if (m_d->comboCheckpoint)
-                return ComfyResources::archFromCheckpointName(m_d->comboCheckpoint->currentText());
-            return ComfyResources::Arch::Sd15;
+            if (ckpt.isEmpty() && m_d->comboCheckpoint)
+                ckpt = m_d->comboCheckpoint->currentText().trimmed();
+            return ComfyWorkflowEngine::resolveArch(ckpt, styleArch);
+        };
+        auto repopulateStyleArchitectureCombo = [this, comboStyleArchitecture, stylesCkptMirror](const QString &styleArchitectureKey) {
+            QString ckpt = stylesCkptMirror->currentText().trimmed();
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (ckpt.isEmpty()) {
+                if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId)) {
+                    if (!st->checkpoints.isEmpty())
+                        ckpt = st->checkpoints.first();
+                }
+            }
+            if (ckpt.isEmpty() && m_d->comboCheckpoint)
+                ckpt = m_d->comboCheckpoint->currentText().trimmed();
+            const ComfyResources::Arch resolved = ComfyWorkflowEngine::resolveArch(ckpt, styleArchitectureKey);
+            const QVector<QString> keys = ComfyResources::validArchitectureKeysForResolvedArch(resolved);
+            const QString wantKey =
+                styleArchitectureKey.trimmed().isEmpty() ? QStringLiteral("auto") : styleArchitectureKey.trimmed().toLower();
+            comboStyleArchitecture->blockSignals(true);
+            comboStyleArchitecture->clear();
+            for (const QString &key : keys)
+                comboStyleArchitecture->addItem(ComfyResources::architectureKeyDisplayName(key), key);
+            int pick = comboStyleArchitecture->findData(wantKey);
+            if (pick < 0)
+                pick = comboStyleArchitecture->findData(QStringLiteral("auto"));
+            if (pick >= 0)
+                comboStyleArchitecture->setCurrentIndex(pick);
+            comboStyleArchitecture->blockSignals(false);
         };
         auto repopulateStyleVaeCombo = [this, comboStyleVae]() {
             const QString prev = comboStyleVae->currentText();
@@ -813,21 +680,27 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             }
             comboStyleVae->blockSignals(false);
         };
-        auto updateStyleAdvancedArchUi = [effectiveStyleArch, spinStyleClipSkip, checkStyleClipSkipOverride, switchStyleSag]() {
-            const ComfyResources::Arch arch = effectiveStyleArch();
+        auto updateStyleAdvancedArchUi = [resolvedStyleArch, spinStyleClipSkip, checkStyleClipSkipOverride, switchStyleZsnr,
+                                          switchStyleSag]() {
+            const ComfyResources::Arch arch = resolvedStyleArch();
             const bool clipOk = ComfyResources::supportsClipSkip(arch);
             checkStyleClipSkipOverride->setEnabled(clipOk);
             spinStyleClipSkip->setEnabled(clipOk && checkStyleClipSkipOverride->isChecked());
-            switchStyleSag->setEnabled(ComfyResources::supportsAttentionGuidance(arch));
+            const bool attnOk = ComfyResources::supportsAttentionGuidance(arch);
+            switchStyleZsnr->setEnabled(attnOk);
+            switchStyleSag->setEnabled(attnOk);
         };
-        auto syncAdvCkptFromStyle = [this, labelStyleArchitecture, comboStyleVae, spinStyleClipSkip, checkStyleClipSkipOverride,
-                                     spinStylePreferredResolution, checkStylePreferredResolution, switchStyleZsnr, switchStyleSag,
-                                     &persistingStyleAdvanced, updateStyleAdvancedArchUi, repopulateStyleVaeCombo]() {
+        auto syncAdvCkptFromStyle = [this, comboStyleArchitecture, stylesCkptMirror, comboStyleVae, spinStyleClipSkip,
+                                     checkStyleClipSkipOverride, spinStylePreferredResolution, checkStylePreferredResolution,
+                                     switchStyleZsnr, switchStyleSag, labelStyleZsnrState, labelStyleSagState,
+                                     &persistingStyleAdvanced, updateStyleAdvancedArchUi, repopulateStyleVaeCombo,
+                                     repopulateStyleArchitectureCombo]() {
             repopulateStyleVaeCombo();
             const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
             const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId);
             const bool hasStyle = st != nullptr;
-            labelStyleArchitecture->setText(hasStyle ? st->architecture : ComfyTr::tr("—"));
+            const QString styleArchKey = hasStyle ? st->architecture : QStringLiteral("auto");
+            repopulateStyleArchitectureCombo(styleArchKey);
             persistingStyleAdvanced = true;
             if (hasStyle) {
                 int vi = comboStyleVae->findText(st->vae);
@@ -843,170 +716,128 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 spinStyleClipSkip->setValue(clipOn ? st->clipSkip : 0);
                 const bool resOn = st->preferredResolution > 0;
                 checkStylePreferredResolution->setChecked(resOn);
-                spinStylePreferredResolution->setValue(resOn ? st->preferredResolution : 512);
+                spinStylePreferredResolution->setValue(resOn ? st->preferredResolution : 0);
                 spinStylePreferredResolution->setEnabled(resOn);
                 switchStyleZsnr->setChecked(st->vPredictionZsnr);
+                labelStyleZsnrState->setText(st->vPredictionZsnr ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
                 switchStyleSag->setChecked(st->selfAttentionGuidance);
+                labelStyleSagState->setText(st->selfAttentionGuidance ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
             } else {
                 comboStyleVae->setCurrentIndex(0);
                 checkStyleClipSkipOverride->setChecked(false);
                 spinStyleClipSkip->setValue(0);
                 checkStylePreferredResolution->setChecked(false);
-                spinStylePreferredResolution->setValue(512);
+                spinStylePreferredResolution->setValue(0);
                 spinStylePreferredResolution->setEnabled(false);
                 switchStyleZsnr->setChecked(false);
+                labelStyleZsnrState->setText(ComfyTr::tr("Off"));
                 switchStyleSag->setChecked(false);
+                labelStyleSagState->setText(ComfyTr::tr("Off"));
             }
             persistingStyleAdvanced = false;
             updateStyleAdvancedArchUi();
         };
-        auto persistStyleCheckpointOptions = [this, stylesCkptMirror, comboStyleVae, spinStyleClipSkip, checkStyleClipSkipOverride,
-                                              spinStylePreferredResolution, checkStylePreferredResolution, switchStyleZsnr, switchStyleSag,
-                                              &persistingStyleAdvanced]() {
-            if (persistingStyleAdvanced || !m_d->comboPreset)
-                return;
-            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
-            const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId);
-            if (!st)
-                return;
+        auto persistCurrentJsonStyle = [this, editStyleName, stylesCkptMirror, editStylesPositive, editStylesNegative,
+                                        qualitySamplerWidget, liveSamplerWidget, loraListWidget,
+                                        comboStyleArchitecture, comboStyleVae, spinStyleClipSkip, checkStyleClipSkipOverride,
+                                        spinStylePreferredResolution, checkStylePreferredResolution, switchStyleZsnr,
+                                        switchStyleSag, comboLinkedEditStyle]() -> bool {
+            const ComfyStyleEntry *st = currentJsonStyleEntry();
+            if (!st || st->isBuiltin)
+                return false;
             ComfyStyleEntry e = *st;
+            e.name = editStyleName->text().trimmed().isEmpty() ? e.name : editStyleName->text().trimmed();
             const QString ckpt = stylesCkptMirror->currentText().trimmed();
             if (!ckpt.isEmpty())
                 e.checkpoints = QStringList{ckpt};
+            e.stylePrompt = editStylesPositive->text();
+            e.negativePrompt = editStylesNegative->text();
+            e.loras = loraListWidget->value();
+            e.linkedEditStyle = comboLinkedEditStyle->currentData().toString();
+            const QString archKey = comboStyleArchitecture->currentData().toString().trimmed();
+            if (!archKey.isEmpty())
+                e.architecture = archKey;
             e.vae = comboStyleVae->currentText();
             e.clipSkip = checkStyleClipSkipOverride->isChecked() ? spinStyleClipSkip->value() : 0;
             e.preferredResolution =
                 checkStylePreferredResolution->isChecked() ? spinStylePreferredResolution->value() : 0;
             e.vPredictionZsnr = switchStyleZsnr->isChecked();
             e.selfAttentionGuidance = switchStyleSag->isChecked();
-            persistingStyleAdvanced = true;
-            if (!ComfyStyleCollection::instance().saveEntryToUserStyles(e).isEmpty()) {
-                if (const ComfyStyleEntry *saved = ComfyStyleCollection::instance().findByStyleId(styleId))
-                    applyComfyStyleEntry(*saved);
-            }
-            persistingStyleAdvanced = false;
+            qualitySamplerWidget->writeToStyle(&e);
+            liveSamplerWidget->writeToStyle(&e);
+            return saveStyleEntry(e);
         };
-        auto updateStylePathLabel = [labelStylePath, this]() {
-            if (!m_d->comboPreset) return;
-            const int idx = m_d->comboPreset->currentIndex();
-            const int firstCustom = firstCustomPresetIndex();
-            QString pathPart;
-            if (idx <= 0)
-                pathPart = ComfyTr::tr("no preset");
-            else if (idx < firstCustom) {
-                const char *ids[] = {"", "portrait", "landscape", "anime", "realistic"};
-                pathPart = QStringLiteral("built-in/%1.json").arg(QLatin1String(ids[idx]));
-            } else {
-                pathPart = ComfyTr::tr("custom (Krita configuration)");
-            }
-            labelStylePath->setText(ComfyTr::tr("Current preset: %1 (%2)", m_d->comboPreset->currentText(), pathPart));
+        auto persistStyleCheckpointOptions = [persistCurrentJsonStyle, &persistingStyleAdvanced]() {
+            if (persistingStyleAdvanced)
+                return;
+            persistCurrentJsonStyle();
         };
-        auto updateStylesCkptWarning = [stylesCkptWarning, this]() {
-            if (!m_d->comboCheckpoint) {
-                stylesCkptWarning->hide();
-                return;
-            }
-            const QString ck = m_d->comboCheckpoint->currentText().trimmed();
-            if (ck.isEmpty()) {
-                stylesCkptWarning->hide();
-                return;
-            }
-            bool known = false;
-            for (int i = 0; i < m_d->comboCheckpoint->count(); ++i) {
-                if (m_d->comboCheckpoint->itemText(i) == ck) {
-                    known = true;
-                    break;
+        auto readJsonStyleIntoTab = [this, stylesCkptMirror, editStylesPositive, editStylesNegative, qualitySamplerWidget,
+                                     liveSamplerWidget, &syncingStylesTab]() {
+            syncingStylesTab = true;
+            if (const ComfyStyleEntry *st = currentJsonStyleEntry()) {
+                stylesCkptMirror->blockSignals(true);
+                if (!st->checkpoints.isEmpty()) {
+                    const QString ck = st->checkpoints.first();
+                    int fi = stylesCkptMirror->findText(ck);
+                    if (fi >= 0)
+                        stylesCkptMirror->setCurrentIndex(fi);
+                    else
+                        stylesCkptMirror->setEditText(ck);
                 }
+                stylesCkptMirror->blockSignals(false);
+                QString stylePrompt = st->stylePrompt;
+                QString negativePrompt = st->negativePrompt;
+                // User styles created before defaults were wired may have empty prompts on disk.
+                if (!st->isBuiltin && stylePrompt.trimmed().isEmpty() && negativePrompt.trimmed().isEmpty()
+                    && st->name == ComfyTr::tr("New Style")) {
+                    stylePrompt = comfyDefaultStylePrompt();
+                    negativePrompt = comfyDefaultNegativeStylePrompt();
+                }
+                editStylesPositive->setText(stylePrompt);
+                editStylesNegative->setText(negativePrompt);
+                qualitySamplerWidget->readFromStyle(*st);
+                liveSamplerWidget->readFromStyle(*st);
             }
-            if (!known) {
-                stylesCkptWarning->setText(ComfyTr::tr("The checkpoint used by this style is not installed."));
+            syncingStylesTab = false;
+        };
+        auto updateStylesCkptWarning = [stylesCkptWarning, stylesCkptMirror, this]() {
+            const ComfyStyleEntry *st = currentJsonStyleEntry();
+            if (!st) {
+                stylesCkptWarning->hide();
+                return;
+            }
+            ComfyStyleEntry probe = *st;
+            const QString ck = stylesCkptMirror->currentText().trimmed();
+            if (!ck.isEmpty())
+                probe.checkpoints = QStringList{ck};
+            QStringList serverCkpts;
+            if (m_d->comboCheckpoint) {
+                for (int i = 0; i < m_d->comboCheckpoint->count(); ++i)
+                    serverCkpts.append(m_d->comboCheckpoint->itemText(i));
+            }
+            const QStringList warn =
+                ComfyUIUtils::styleCheckpointWarnings(probe, serverCkpts, m_d->lastObjectInfoRoot);
+            if (warn.isEmpty()) {
+                stylesCkptWarning->hide();
+            } else {
+                stylesCkptWarning->setText(warn.join(QLatin1Char('\n')));
                 stylesCkptWarning->show();
-            } else {
-                stylesCkptWarning->hide();
             }
         };
-        auto syncSamplerPresetCombos = [comboQualitySamplerPreset, comboLiveSamplerPreset, comboControlDefaultPreset,
-                                        controlRangePreview, controlRangePreviewLabel]() {
+        auto syncStylesFromDock = [this, stylesPresetMirror, stylesCkptMirror, updateStylesCkptWarning,
+                                    repopulateLinkedEditStyleCombo, syncStyleNameField, reloadStyleLorasFromPreset,
+                                    syncAdvCkptFromStyle, readJsonStyleIntoTab, updateBuiltinStyleUi, &syncingStylesTab]() {
+            if (!m_d->comboPreset)
+                return;
             ComfyUIUtils::reloadSamplerPresetsCache();
-            ComfyUIUtils::reloadControlPresetsCache();
-            const QJsonObject root = ComfyUIUtils::builtinSamplerPresetsRoot();
-            QStringList keys = root.keys();
-            keys.sort();
-            const QJsonObject s = ComfyUIUtils::loadSettingsJson();
-            const QString savedQ = s.value(QStringLiteral("quality_sampler_preset")).toString();
-            const QString savedL = s.value(QStringLiteral("live_sampler_preset")).toString();
-            auto refill = [&](QComboBox *cb, const QString &savedKey) {
-                cb->blockSignals(true);
-                cb->clear();
-                cb->addItem(ComfyTr::tr("Custom (use dock controls)"), QString());
-                for (const QString &k : keys) {
-                    const QJsonObject o = root.value(k).toObject();
-                    if (o.isEmpty())
-                        continue;
-                    if (o.value(QStringLiteral("hidden")).toBool())
-                        continue;
-                    cb->addItem(k, k);
-                }
-                const int idx = savedKey.isEmpty() ? 0 : cb->findData(savedKey);
-                cb->setCurrentIndex(idx >= 0 ? idx : 0);
-                cb->blockSignals(false);
-            };
-            refill(comboQualitySamplerPreset, savedQ);
-            refill(comboLiveSamplerPreset, savedL);
-
-            comboControlDefaultPreset->blockSignals(true);
-            comboControlDefaultPreset->clear();
-            const QJsonObject controlRoot = ComfyUIUtils::builtinControlPresetsRoot();
-            const QList<ComfyUIUtils::ControlLayerPreset> cps =
-                ComfyUIUtils::controlPresetsForMode(controlRoot, QStringLiteral("default"), QString());
-            const int maxSlots = qMin(4, cps.size());
-            if (maxSlots <= 0) {
-                comboControlDefaultPreset->addItem(ComfyTr::tr("No presets in control.json"), -1);
-                comboControlDefaultPreset->setEnabled(false);
-                controlRangePreview->setEnabled(false);
-                controlRangePreview->setInterval(0, 100);
-                controlRangePreviewLabel->setText(ComfyTr::tr("No control presets available."));
-            } else {
-                comboControlDefaultPreset->setEnabled(true);
-                for (int i = 0; i < maxSlots; ++i) {
-                    const ComfyUIUtils::ControlLayerPreset &p = cps.at(i);
-                    comboControlDefaultPreset->addItem(
-                        ComfyTr::tr("Preset %1: strength %2, range %3–%4",
-                             i + 1,
-                             QString::number(p.strength, 'f', 2),
-                             QString::number(p.start, 'f', 2),
-                             QString::number(p.end, 'f', 2)),
-                        i);
-                }
-                const int want = qBound(0,
-                                        s.value(QStringLiteral("control_layer_default_preset_index")).toInt(0),
-                                        maxSlots - 1);
-                comboControlDefaultPreset->setCurrentIndex(want);
-                const ComfyUIUtils::ControlLayerPreset p = cps.at(want);
-                const int low = qBound(0, qRound(p.start * 100.0), 100);
-                const int high = qBound(0, qRound(p.end * 100.0), 100);
-                controlRangePreview->setEnabled(true);
-                controlRangePreview->setInterval(qMin(low, high), qMax(low, high));
-                controlRangePreviewLabel->setText(
-                    ComfyTr::tr("Strength %1, range %2%–%3%",
-                         QString::number(p.strength, 'f', 2),
-                         qMin(low, high),
-                         qMax(low, high)));
-            }
-            comboControlDefaultPreset->blockSignals(false);
-        };
-        auto syncStylesFromDock = [this, stylesPresetMirror, stylesCkptMirror, editStylesPositive, editStylesNegative,
-                                    updateStylePathLabel, updateStylesCkptWarning, repopulateLinkedEditStyleCombo,
-                                    syncStyleNameField, syncSamplerPresetCombos, reloadLoraListFromDisk, syncAdvCkptFromStyle,
-                                    &syncingStylesTab]() {
-            if (!m_d->comboPreset) return;
             syncingStylesTab = true;
             stylesPresetMirror->blockSignals(true);
             stylesPresetMirror->clear();
             for (int i = 0; i < m_d->comboPreset->count(); ++i)
                 stylesPresetMirror->addItem(m_d->comboPreset->itemText(i), i);
-            int cur = m_d->comboPreset->currentIndex();
-            int mirrorIdx = stylesPresetMirror->findData(cur);
+            const int cur = m_d->comboPreset->currentIndex();
+            const int mirrorIdx = stylesPresetMirror->findData(cur);
             stylesPresetMirror->setCurrentIndex(mirrorIdx >= 0 ? mirrorIdx : 0);
             stylesPresetMirror->blockSignals(false);
             if (m_d->comboCheckpoint) {
@@ -1015,33 +846,36 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 for (int i = 0; i < m_d->comboCheckpoint->count(); ++i)
                     stylesCkptMirror->addItem(m_d->comboCheckpoint->itemText(i));
                 stylesCkptMirror->setCurrentIndex(m_d->comboCheckpoint->currentIndex());
-                if (m_d->comboCheckpoint->currentText().size()
+                if (!m_d->comboCheckpoint->currentText().isEmpty()
                     && stylesCkptMirror->findText(m_d->comboCheckpoint->currentText()) < 0)
                     stylesCkptMirror->setEditText(m_d->comboCheckpoint->currentText());
                 stylesCkptMirror->blockSignals(false);
             }
-            editStylesPositive->setPlainText(m_d->editPrompt ? m_d->editPrompt->toPlainText() : QString());
-            editStylesNegative->setPlainText(m_d->editNegative ? m_d->editNegative->toPlainText() : QString());
             syncingStylesTab = false;
-            updateStylePathLabel();
-            updateStylesCkptWarning();
-            repopulateLinkedEditStyleCombo();
+            readJsonStyleIntoTab();
             syncStyleNameField();
-            syncSamplerPresetCombos();
-            reloadLoraListFromDisk();
+            reloadStyleLorasFromPreset();
             syncAdvCkptFromStyle();
+            repopulateLinkedEditStyleCombo();
+            updateStylesCkptWarning();
+            updateBuiltinStyleUi();
         };
-        // FAITHFUL_PORT: deferred connects for the "+ / Save as new preset" actions.
-        // slotSaveAsPreset() prompts for a name, persists the preset, and inserts it
-        // into the dock-side m_d->comboPreset; we then run syncStylesFromDock() to
-        // rebuild stylesPresetMirror from comboPreset (and re-select the newly added
-        // entry via its data index), which is what the user actually sees here.
-        connect(btnStylesAddPreset, &QToolButton::clicked, dlg, [this, syncStylesFromDock](bool) {
-            slotSaveAsPreset();
+        connect(btnStylesAddPreset, &QToolButton::clicked, this, [this, stylesCkptMirror, syncStylesFromDock]() {
+            createJsonStyle(stylesCkptMirror->currentText().trimmed());
             syncStylesFromDock();
         });
-        connect(actStylesSaveAsNew, &QAction::triggered, dlg, [this, syncStylesFromDock]() {
-            slotSaveAsPreset();
+        connect(btnStylesDuplicate, &QToolButton::clicked, this, [this, syncStylesFromDock]() {
+            duplicateJsonStyle();
+            syncStylesFromDock();
+        });
+        connect(lblBuiltinCopyLink, &QLabel::linkActivated, this, [this, syncStylesFromDock](const QString &) {
+            duplicateJsonStyle();
+            syncStylesFromDock();
+        });
+        connect(btnStylesRefresh, &QToolButton::clicked, this, [this, syncStylesFromDock]() {
+            ComfyStyleCollection::instance().reload();
+            rebuildPresetComboItems();
+            slotRefreshCheckpoints();
             syncStylesFromDock();
         });
         // Also pick up out-of-dialog mutations to the preset list (refresh, delete,
@@ -1057,112 +891,59 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     [syncStylesFromDock]() { syncStylesFromDock(); });
         }
         connect(checkStyleClipSkipOverride, &QCheckBox::toggled, advCkptBody,
-                [spinStyleClipSkip, checkStyleClipSkipOverride, effectiveStyleArch, updateStyleAdvancedArchUi,
+                [spinStyleClipSkip, checkStyleClipSkipOverride, resolvedStyleArch, updateStyleAdvancedArchUi,
                  persistStyleCheckpointOptions](bool on) {
                     spinStyleClipSkip->setEnabled(on);
                     if (on && spinStyleClipSkip->value() == 0) {
-                        const ComfyResources::Arch a = effectiveStyleArch();
+                        const ComfyResources::Arch a = resolvedStyleArch();
                         spinStyleClipSkip->setValue(a == ComfyResources::Arch::Sd15 ? 1 : 2);
                     } else if (!on)
                         spinStyleClipSkip->setValue(0);
                     updateStyleAdvancedArchUi();
                     persistStyleCheckpointOptions();
                 });
-        connect(checkStylePreferredResolution, &QCheckBox::toggled, spinStylePreferredResolution, &QSpinBox::setEnabled);
-        connect(comboStyleVae, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, persistStyleCheckpointOptions);
-        connect(spinStyleClipSkip, QOverload<int>::of(&QSpinBox::valueChanged), dlg, persistStyleCheckpointOptions);
-        connect(spinStylePreferredResolution, QOverload<int>::of(&QSpinBox::valueChanged), dlg, persistStyleCheckpointOptions);
-        connect(checkStylePreferredResolution, &QCheckBox::toggled, dlg, persistStyleCheckpointOptions);
-        connect(switchStyleZsnr, &QAbstractButton::toggled, dlg, persistStyleCheckpointOptions);
-        connect(switchStyleSag, &QAbstractButton::toggled, dlg, persistStyleCheckpointOptions);
-        connect(actStylesRename, &QAction::triggered, this, [this, syncStylesFromDock]() {
-            if (!m_d->comboPreset)
-                return;
-            const int idx = m_d->comboPreset->currentIndex();
-            if (idx < firstCustomPresetIndex()) {
-                QMessageBox::information(this, ComfyTr::tr("Rename preset"), ComfyTr::tr("Select a custom preset to rename."));
-                return;
-            }
-            const QString oldName = m_d->comboPreset->currentText();
-            bool ok = false;
-            const QString newName = QInputDialog::getText(this, ComfyTr::tr("Rename preset"), ComfyTr::tr("New name:"), QLineEdit::Normal,
-                                                          oldName, &ok)
-                                        .trimmed();
-            if (!ok || newName.isEmpty() || newName == oldName)
-                return;
-            if (!renameCustomPreset(oldName, newName)) {
-                QMessageBox::warning(this, ComfyTr::tr("Rename preset"), ComfyTr::tr("Could not rename (name may already exist)."));
-                return;
-            }
-            syncStylesFromDock();
-        });
-        connect(btnStylesRefresh, &QPushButton::clicked, this, [this, syncStylesFromDock](bool) {
-            rebuildPresetComboItems();
-            slotRefreshCheckpoints();
-            syncStylesFromDock();
-        });
-        connect(menuStylesPreset, &QMenu::aboutToShow, this, [actStylesRename, this]() {
-            const bool custom = m_d->comboPreset && m_d->comboPreset->currentIndex() >= firstCustomPresetIndex();
-            actStylesRename->setEnabled(custom);
-        });
-        connect(comboQualitySamplerPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
-                [this, comboQualitySamplerPreset]() {
-                    const QString k = comboQualitySamplerPreset->currentData().toString();
-                    QJsonObject s = ComfyUIUtils::loadSettingsJson();
-                    s.insert(QStringLiteral("quality_sampler_preset"), k);
-                    ComfyUIUtils::saveSettingsJson(s);
-                    applyQualitySamplerPresetKey(k);
+        connect(checkStylePreferredResolution, &QCheckBox::toggled, advCkptBody,
+                [spinStylePreferredResolution, resolvedStyleArch, persistStyleCheckpointOptions](bool on) {
+                    spinStylePreferredResolution->setEnabled(on);
+                    if (on && spinStylePreferredResolution->value() == 0) {
+                        const ComfyResources::Arch a = resolvedStyleArch();
+                        spinStylePreferredResolution->setValue(a == ComfyResources::Arch::Sd15 ? 640 : 1024);
+                    } else if (!on && spinStylePreferredResolution->value() > 0) {
+                        spinStylePreferredResolution->setValue(0);
+                    }
+                    persistStyleCheckpointOptions();
                 });
-        connect(comboLiveSamplerPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
-                [comboLiveSamplerPreset]() {
-                    QJsonObject s = ComfyUIUtils::loadSettingsJson();
-                    s.insert(QStringLiteral("live_sampler_preset"), comboLiveSamplerPreset->currentData().toString());
-                    ComfyUIUtils::saveSettingsJson(s);
+        connect(comboStyleArchitecture, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                [persistStyleCheckpointOptions, updateStyleAdvancedArchUi](int) {
+                    persistStyleCheckpointOptions();
+                    updateStyleAdvancedArchUi();
                 });
-        connect(comboControlDefaultPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
-                [comboControlDefaultPreset, controlRangePreview, controlRangePreviewLabel]() {
-                    const int idx = comboControlDefaultPreset->currentData().toInt();
-                    if (idx < 0)
-                        return;
-                    QJsonObject st = ComfyUIUtils::loadSettingsJson();
-                    st.insert(QStringLiteral("control_layer_default_preset_index"), idx);
-                    ComfyUIUtils::saveSettingsJson(st);
-                    const QJsonObject controlRoot = ComfyUIUtils::builtinControlPresetsRoot();
-                    const QList<ComfyUIUtils::ControlLayerPreset> cps =
-                        ComfyUIUtils::controlPresetsForMode(controlRoot, QStringLiteral("default"), QString());
-                    if (idx >= cps.size())
-                        return;
-                    const ComfyUIUtils::ControlLayerPreset p = cps.at(idx);
-                    const int low = qBound(0, qRound(p.start * 100.0), 100);
-                    const int high = qBound(0, qRound(p.end * 100.0), 100);
-                    controlRangePreview->setEnabled(true);
-                    controlRangePreview->setInterval(qMin(low, high), qMax(low, high));
-                    controlRangePreviewLabel->setText(
-                        ComfyTr::tr("Strength %1, range %2%–%3%",
-                             QString::number(p.strength, 'f', 2),
-                             qMin(low, high),
-                             qMax(low, high)));
-                });
+        connect(comboStyleVae, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                [persistStyleCheckpointOptions]() { persistStyleCheckpointOptions(); });
+        connect(spinStyleClipSkip, QOverload<int>::of(&QSpinBox::valueChanged), dlg,
+                [persistStyleCheckpointOptions]() { persistStyleCheckpointOptions(); });
+        connect(spinStylePreferredResolution, QOverload<int>::of(&QSpinBox::valueChanged), dlg,
+                [persistStyleCheckpointOptions]() { persistStyleCheckpointOptions(); });
+        connect(switchStyleZsnr, &QAbstractButton::toggled, dlg,
+                [persistStyleCheckpointOptions]() { persistStyleCheckpointOptions(); });
+        connect(switchStyleSag, &QAbstractButton::toggled, dlg,
+                [persistStyleCheckpointOptions]() { persistStyleCheckpointOptions(); });
+        connect(qualitySamplerWidget, &ComfyStyleSamplerWidget::valueChanged, dlg,
+                [persistCurrentJsonStyle]() { persistCurrentJsonStyle(); });
+        connect(liveSamplerWidget, &ComfyStyleSamplerWidget::valueChanged, dlg,
+                [persistCurrentJsonStyle]() { persistCurrentJsonStyle(); });
         connect(stylesPresetMirror, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this, stylesPresetMirror, updateStylePathLabel, updateStylesCkptWarning, syncStyleNameField,
-             syncAdvCkptFromStyle, syncStylesFromDock](int) {
-                int dataIdx = stylesPresetMirror->currentData().toInt();
-                if (m_d->comboPreset && dataIdx >= 0 && dataIdx < m_d->comboPreset->count())
-                    m_d->comboPreset->setCurrentIndex(dataIdx);
-                updateStylePathLabel();
-                updateStylesCkptWarning();
-                syncStyleNameField();
-                syncAdvCkptFromStyle();
-                // FAITHFUL_PORT: after switching the dock-side preset, refresh the
-                // Styles-tab mirrors (especially stylesCkptMirror) from the new
-                // dock state. Without this, toggling between two custom styles
-                // with different checkpoints left the Styles tab showing the
-                // previous style's checkpoint even though m_d->comboCheckpoint
-                // had already been updated by slotPresetChanged().
-                syncStylesFromDock();
-            });
+                [this, stylesPresetMirror, syncStylesFromDock, &syncingStylesTab](int) {
+                    if (syncingStylesTab)
+                        return;
+                    const int dataIdx = stylesPresetMirror->currentData().toInt();
+                    if (m_d->comboPreset && dataIdx >= 0 && dataIdx < m_d->comboPreset->count())
+                        m_d->comboPreset->setCurrentIndex(dataIdx);
+                    syncStylesFromDock();
+                });
         connect(stylesCkptMirror, &QComboBox::currentTextChanged, this,
-                [this, updateStylesCkptWarning, updateStyleAdvancedArchUi, persistStyleCheckpointOptions](const QString &t) {
+                [this, updateStylesCkptWarning, updateStyleAdvancedArchUi, persistStyleCheckpointOptions,
+                 repopulateStyleArchitectureCombo, stylesCkptMirror](const QString &t) {
                     if (m_d->comboCheckpoint) {
                         int fi = m_d->comboCheckpoint->findText(t);
                         if (fi >= 0)
@@ -1170,17 +951,28 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                         else
                             m_d->comboCheckpoint->setCurrentText(t);
                     }
+                    const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+                    QString styleArch = QStringLiteral("auto");
+                    if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                        styleArch = st->architecture;
+                    repopulateStyleArchitectureCombo(styleArch);
                     updateStylesCkptWarning();
                     updateStyleAdvancedArchUi();
                     persistStyleCheckpointOptions();
                 });
-        connect(editStylesPositive, &QPlainTextEdit::textChanged, this, [this, editStylesPositive, &syncingStylesTab]() {
-            if (!syncingStylesTab && m_d->editPrompt)
-                m_d->editPrompt->setPlainText(editStylesPositive->toPlainText());
+        connect(editStylesPositive, &QLineEdit::textChanged, this, [this, editStylesPositive, &syncingStylesTab, persistCurrentJsonStyle]() {
+            if (syncingStylesTab)
+                return;
+            if (m_d->editPrompt)
+                m_d->editPrompt->setPlainText(editStylesPositive->text());
+            persistCurrentJsonStyle();
         });
-        connect(editStylesNegative, &QPlainTextEdit::textChanged, this, [this, editStylesNegative, &syncingStylesTab]() {
-            if (!syncingStylesTab && m_d->editNegative)
-                m_d->editNegative->setPlainText(editStylesNegative->toPlainText());
+        connect(editStylesNegative, &QLineEdit::textChanged, this, [this, editStylesNegative, &syncingStylesTab, persistCurrentJsonStyle]() {
+            if (syncingStylesTab)
+                return;
+            if (m_d->editNegative)
+                m_d->editNegative->setPlainText(editStylesNegative->text());
+            persistCurrentJsonStyle();
         });
         connect(checkShowBuiltinStyles, &QCheckBox::toggled, dlg, [this, syncStylesFromDock](bool on) {
             QJsonObject s = ComfyUIUtils::loadSettingsJson();
@@ -1189,143 +981,196 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             rebuildPresetComboItems();
             syncStylesFromDock();
         });
-        connect(comboLinkedEditStyle, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, [comboLinkedEditStyle]() {
-            QJsonObject s = ComfyUIUtils::loadSettingsJson();
-            s.insert(QStringLiteral("linked_edit_style"), comboLinkedEditStyle->currentData().toString());
-            ComfyUIUtils::saveSettingsJson(s);
-        });
+        connect(comboLinkedEditStyle, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                [persistCurrentJsonStyle]() { persistCurrentJsonStyle(); });
         connect(editStyleName, &QLineEdit::editingFinished, this,
-                [this, editStyleName, &stylesTabPresetNameBaseline, syncStylesFromDock]() {
-                    if (!m_d->comboPreset)
-                        return;
-                    const int idx = m_d->comboPreset->currentIndex();
-                    if (idx < firstCustomPresetIndex())
+                [this, editStyleName, &stylesTabPresetNameBaseline, persistCurrentJsonStyle, syncStylesFromDock]() {
+                    const ComfyStyleEntry *st = currentJsonStyleEntry();
+                    if (!st || st->isBuiltin)
                         return;
                     const QString oldName = stylesTabPresetNameBaseline.trimmed();
                     const QString newName = editStyleName->text().trimmed();
-                    if (newName.isEmpty()) {
+                    if (newName.isEmpty() || oldName == newName)
+                        return;
+                    if (!ComfyStyleCollection::instance().renameStyle(st->styleId, newName)) {
                         editStyleName->blockSignals(true);
                         editStyleName->setText(oldName);
                         editStyleName->blockSignals(false);
                         return;
                     }
-                    if (oldName == newName)
-                        return;
-                    if (!renameCustomPreset(oldName, newName)) {
-                        editStyleName->blockSignals(true);
-                        editStyleName->setText(oldName);
-                        editStyleName->blockSignals(false);
-                        return;
-                    }
+                    stylesTabPresetNameBaseline = newName;
+                    rebuildPresetComboItems();
+                    applyStyleIdToPresetCombo(m_d->comboPreset, st->styleId);
                     syncStylesFromDock();
                 });
 
-        // Diffusion tab (index 2) – §4.6: Selection Feather, Blend, Padding, Color Match, NSFW Filter; §13.43 advanced (min transition, grow offset, invert, square)
+        // Diffusion tab (index 2) — Python DiffusionSettings (settings.py L669–697)
         QWidget *diffusionPage = new QWidget(dlg);
-        QVBoxLayout *diffusionLayout = new QVBoxLayout(diffusionPage);
-        QLabel *diffHeading = new QLabel(ComfyTr::tr("Diffusion Settings"), diffusionPage);
+        QVBoxLayout *diffusionOuter = new QVBoxLayout(diffusionPage);
+        diffusionOuter->setContentsMargins(0, 0, 0, 0);
+        QScrollArea *diffusionScroll = new QScrollArea(diffusionPage);
+        diffusionScroll->setWidgetResizable(true);
+        diffusionScroll->setFrameShape(QFrame::NoFrame);
+        diffusionScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        QWidget *diffusionInner = new QWidget();
+        QVBoxLayout *diffusionLayout = new QVBoxLayout(diffusionInner);
+        QLabel *diffHeading = new QLabel(ComfyTr::tr("Diffusion Settings"), diffusionInner);
         QFont diffFont = diffHeading->font();
         diffFont.setBold(true);
+        diffFont.setPointSize(diffFont.pointSize() + 2);
         diffHeading->setFont(diffFont);
         diffusionLayout->addWidget(diffHeading);
+        diffusionLayout->addSpacing(6);
+
+        auto makeDiffusionLabelColumn = [](QWidget *parent, const QString &title, const QString &description) -> QWidget * {
+            auto *col = new QWidget(parent);
+            auto *colLayout = new QVBoxLayout(col);
+            colLayout->setContentsMargins(0, 0, 0, 0);
+            colLayout->setSpacing(2);
+            auto *titleLabel = new QLabel(title, col);
+            QFont titleFont = titleLabel->font();
+            titleFont.setBold(true);
+            titleLabel->setFont(titleFont);
+            colLayout->addWidget(titleLabel);
+            if (!description.isEmpty()) {
+                auto *descLabel = new QLabel(description, col);
+                descLabel->setWordWrap(true);
+                colLayout->addWidget(descLabel);
+            }
+            col->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            return col;
+        };
+        auto addDiffusionSliderRow = [makeDiffusionLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                        QSlider **outSlider, QLabel **outValueLabel, int min, int max,
+                                        const QString &valueFormat) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makeDiffusionLabelColumn(row, title, description), 1);
+            auto *sliderBox = new QWidget(row);
+            auto *sliderLayout = new QHBoxLayout(sliderBox);
+            sliderLayout->setContentsMargins(0, 0, 0, 0);
+            auto *slider = new QSlider(Qt::Horizontal, sliderBox);
+            slider->setMinimumWidth(200);
+            slider->setMaximumWidth(300);
+            slider->setRange(min, max);
+            auto *valueLabel = new QLabel(sliderBox);
+            const QFontMetrics fm(valueLabel->font());
+            valueLabel->setMinimumWidth(fm.horizontalAdvance(QStringLiteral("555 px")));
+            valueLabel->setText(valueFormat);
+            sliderLayout->addWidget(slider);
+            sliderLayout->addWidget(valueLabel);
+            rowLayout->addWidget(sliderBox, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outSlider = slider;
+            *outValueLabel = valueLabel;
+            return row;
+        };
+        auto addDiffusionSwitchRow = [makeDiffusionLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                        ComfySwitchWidget **outSwitch, QLabel **outStateLabel) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makeDiffusionLabelColumn(row, title, description), 1);
+            auto *stateLabel = new QLabel(ComfyTr::tr("Off"), row);
+            auto *sw = new ComfySwitchWidget(row);
+            rowLayout->addWidget(stateLabel, 0, Qt::AlignRight | Qt::AlignVCenter);
+            rowLayout->addWidget(sw, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outSwitch = sw;
+            *outStateLabel = stateLabel;
+            return row;
+        };
+        auto addDiffusionComboRow = [makeDiffusionLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                       QComboBox **outCombo) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makeDiffusionLabelColumn(row, title, description), 1);
+            auto *combo = new QComboBox(row);
+            combo->setMinimumWidth(230);
+            rowLayout->addWidget(combo, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outCombo = combo;
+            return row;
+        };
+
         QJsonObject diffSettings = ComfyUIUtils::loadSettingsJson();
-        // §4.6 / §3.5: spec defaults 10, 25, 6; feather UI range 0–25
         int selFeather = qBound(0, diffSettings.value(QStringLiteral("selection_feather")).toInt(10), 25);
         int selBlend = qBound(0, diffSettings.value(QStringLiteral("selection_blend")).toInt(25), 100);
         int selPadding = qBound(0, diffSettings.value(QStringLiteral("selection_padding")).toInt(6), 25);
-        bool colorMatch = diffSettings.value(QStringLiteral("color_match")).toBool(true);
-        double nsfwVal = qBound(0.0, diffSettings.value(QStringLiteral("nsfw_filter")).toDouble(0.0), 1.0);
-        double selMinTransition = qBound(0.0, diffSettings.value(QStringLiteral("selection_min_transition")).toDouble(0.0), 100.0);
-        int selGrowOffset = qBound(0, diffSettings.value(QStringLiteral("selection_grow_offset")).toInt(0), 499);
-        const bool selInvert = ComfyUIUtils::getSelectionModifiersInvert();
-        const bool selSquare = ComfyUIUtils::getSelectionModifiersSquare();
-        QFormLayout *diffForm = new QFormLayout();
-        diffForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-        diffForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        diffForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-        diffForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        diffForm->setHorizontalSpacing(12);
-        diffForm->setVerticalSpacing(6);
-        // §4.6: Selection Feather — slider 0–25, suffix " %"
-        QSlider *sliderSelectionFeather = new QSlider(Qt::Horizontal, diffusionPage);
-        sliderSelectionFeather->setRange(0, 25);
+        const bool colorMatch = diffSettings.value(QStringLiteral("color_match")).toBool(true);
+        const double nsfwVal = qBound(0.0, diffSettings.value(QStringLiteral("nsfw_filter")).toDouble(0.0), 1.0);
+        if (nsfwVal > 0.0)
+            g_nsfwFilterWarningShownThisSession = true;
+
+        QSlider *sliderSelectionFeather = nullptr;
+        QLabel *labelFeatherVal = nullptr;
+        diffusionLayout->addWidget(addDiffusionSliderRow(
+            diffusionInner,
+            ComfyTr::tr("Selection Feather"),
+            ComfyTr::tr("The border is expanded and blurred by a fraction of selection size"),
+            &sliderSelectionFeather,
+            &labelFeatherVal,
+            0,
+            25,
+            QStringLiteral("%1 %").arg(selFeather)));
         sliderSelectionFeather->setValue(selFeather);
-        sliderSelectionFeather->setToolTip(ComfyTr::tr("The border is expanded and blurred by a fraction of selection size."));
-        QLabel *labelFeatherVal = new QLabel(QStringLiteral("%1 %").arg(selFeather), diffusionPage);
-        QHBoxLayout *featherRow = new QHBoxLayout();
-        featherRow->addWidget(sliderSelectionFeather, 1);
-        featherRow->addWidget(labelFeatherVal);
-        diffForm->addRow(ComfyTr::tr("Selection Feather:"), featherRow);
-        // §4.6: Selection Blend — slider 0–100, suffix " px"
-        QSlider *sliderSelectionBlend = new QSlider(Qt::Horizontal, diffusionPage);
-        sliderSelectionBlend->setRange(0, 100);
+
+        QSlider *sliderSelectionBlend = nullptr;
+        QLabel *labelBlendVal = nullptr;
+        diffusionLayout->addWidget(addDiffusionSliderRow(
+            diffusionInner,
+            ComfyTr::tr("Selection Blend"),
+            ComfyTr::tr("Transition area for alpha blending the result image"),
+            &sliderSelectionBlend,
+            &labelBlendVal,
+            0,
+            100,
+            QString::number(selBlend) + ComfyTr::tr(" px")));
         sliderSelectionBlend->setValue(selBlend);
-        sliderSelectionBlend->setToolTip(ComfyTr::tr("Transition area for alpha blending the result image."));
-        QLabel *labelBlendVal = new QLabel(QString::number(selBlend) + ComfyTr::tr(" px"), diffusionPage);
-        QHBoxLayout *blendRow = new QHBoxLayout();
-        blendRow->addWidget(sliderSelectionBlend, 1);
-        blendRow->addWidget(labelBlendVal);
-        diffForm->addRow(ComfyTr::tr("Selection Blend:"), blendRow);
-        // §4.6: Selection Padding — slider 0–25, suffix " %"
-        QSlider *sliderSelectionPadding = new QSlider(Qt::Horizontal, diffusionPage);
-        sliderSelectionPadding->setRange(0, 25);
+
+        QSlider *sliderSelectionPadding = nullptr;
+        QLabel *labelPaddingVal = nullptr;
+        diffusionLayout->addWidget(addDiffusionSliderRow(
+            diffusionInner,
+            ComfyTr::tr("Selection Padding"),
+            ComfyTr::tr("Minimum additional padding around the selection area"),
+            &sliderSelectionPadding,
+            &labelPaddingVal,
+            0,
+            25,
+            QStringLiteral("%1 %").arg(selPadding)));
         sliderSelectionPadding->setValue(selPadding);
-        sliderSelectionPadding->setToolTip(ComfyTr::tr("Minimum additional padding around the selection area."));
-        QLabel *labelPaddingVal = new QLabel(QStringLiteral("%1 %").arg(selPadding), diffusionPage);
-        QHBoxLayout *paddingRow = new QHBoxLayout();
-        paddingRow->addWidget(sliderSelectionPadding, 1);
-        paddingRow->addWidget(labelPaddingVal);
-        diffForm->addRow(ComfyTr::tr("Selection Padding:"), paddingRow);
-        // §4.6: Color Match toggle
-        QCheckBox *checkColorMatch = new QCheckBox(ComfyTr::tr("Color Match"), diffusionPage);
-        checkColorMatch->setChecked(colorMatch);
-        checkColorMatch->setToolTip(ComfyTr::tr("Match peripheral colors and brightness with existing content. Requires a selection."));
-        diffForm->addRow(QString(), checkColorMatch);
-        // §4.6: NSFW Filter dropdown Disabled / Basic / Strict
-        QComboBox *comboNsfwFilter = new QComboBox(diffusionPage);
+
+        ComfySwitchWidget *switchColorMatch = nullptr;
+        QLabel *labelColorMatchState = nullptr;
+        diffusionLayout->addWidget(addDiffusionSwitchRow(
+            diffusionInner,
+            ComfyTr::tr("Color Match"),
+            ComfyTr::tr("Match peripheral colors and brightness with existing content. Requires a selection."),
+            &switchColorMatch,
+            &labelColorMatchState));
+        switchColorMatch->setChecked(colorMatch);
+        labelColorMatchState->setText(colorMatch ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+
+        QComboBox *comboNsfwFilter = nullptr;
+        diffusionLayout->addWidget(addDiffusionComboRow(
+            diffusionInner,
+            ComfyTr::tr("NSFW Filter"),
+            ComfyTr::tr("Attempt to filter out images with explicit content"),
+            &comboNsfwFilter));
         comboNsfwFilter->addItem(ComfyTr::tr("Disabled"), 0.0);
         comboNsfwFilter->addItem(ComfyTr::tr("Basic"), 0.65);
         comboNsfwFilter->addItem(ComfyTr::tr("Strict"), 0.8);
-        int nsfwIdx = (nsfwVal <= 0.0) ? 0 : (nsfwVal < 0.7) ? 1 : 2;
+        const int nsfwIdx = (nsfwVal <= 0.0) ? 0 : (nsfwVal < 0.7) ? 1 : 2;
         comboNsfwFilter->setCurrentIndex(nsfwIdx);
-        comboNsfwFilter->setToolTip(ComfyTr::tr("Attempt to filter out images with explicit content."));
-        diffForm->addRow(ComfyTr::tr("NSFW Filter:"), comboNsfwFilter);
-        diffusionLayout->addLayout(diffForm);
-        // Advanced: §13.43 selection_min_transition, selection_grow_offset; §13.102 invert, square (not in Python Diffusion tab but required in schema)
-        QGroupBox *advancedGroup = new QGroupBox(ComfyTr::tr("Advanced (mask preprocess)"), diffusionPage);
-        QFormLayout *advForm = new QFormLayout(advancedGroup);
-        QDoubleSpinBox *spinSelectionMinTransition = new QDoubleSpinBox(diffusionPage);
-        spinSelectionMinTransition->setRange(0, 100);
-        spinSelectionMinTransition->setDecimals(1);
-        spinSelectionMinTransition->setValue(selMinTransition);
-        spinSelectionMinTransition->setToolTip(ComfyTr::tr("Minimum transition size in pixels (scaled by strength)."));
-        advForm->addRow(ComfyTr::tr("Selection min transition:"), spinSelectionMinTransition);
-        QSpinBox *spinSelectionGrowOffset = new QSpinBox(diffusionPage);
-        spinSelectionGrowOffset->setRange(0, 499);
-        spinSelectionGrowOffset->setValue(selGrowOffset);
-        spinSelectionGrowOffset->setToolTip(ComfyTr::tr("Extra grow offset in pixels for mask (grow_mask_by base)."));
-        advForm->addRow(ComfyTr::tr("Selection grow offset:"), spinSelectionGrowOffset);
-        QCheckBox *checkSelectionInvert = new QCheckBox(ComfyTr::tr("Invert selection before creating mask"), diffusionPage);
-        checkSelectionInvert->setChecked(selInvert);
-        checkSelectionInvert->setToolTip(ComfyTr::tr("Use the inverse of the current selection as the mask (e.g. inpaint outside the selection)."));
-        advForm->addRow(QString(), checkSelectionInvert);
-        QCheckBox *checkSelectionSquare = new QCheckBox(ComfyTr::tr("Force selection bounds to square"), diffusionPage);
-        checkSelectionSquare->setChecked(selSquare);
-        checkSelectionSquare->setToolTip(ComfyTr::tr("Use a square area (max of width/height) for generation bounds."));
-        advForm->addRow(QString(), checkSelectionSquare);
-        diffusionLayout->addWidget(advancedGroup);
-        auto saveDiffusionSettings = [sliderSelectionFeather, sliderSelectionBlend, sliderSelectionPadding, checkColorMatch, comboNsfwFilter,
-                                       spinSelectionMinTransition, spinSelectionGrowOffset, checkSelectionInvert, checkSelectionSquare]() {
+
+        auto saveDiffusionSettings = [sliderSelectionFeather, sliderSelectionBlend, sliderSelectionPadding,
+                                      switchColorMatch, comboNsfwFilter]() {
             QJsonObject s = ComfyUIUtils::loadSettingsJson();
             s.insert(QStringLiteral("selection_feather"), sliderSelectionFeather->value());
             s.insert(QStringLiteral("selection_blend"), sliderSelectionBlend->value());
             s.insert(QStringLiteral("selection_padding"), sliderSelectionPadding->value());
-            s.insert(QStringLiteral("color_match"), checkColorMatch->isChecked());
+            s.insert(QStringLiteral("color_match"), switchColorMatch->isChecked());
             s.insert(QStringLiteral("nsfw_filter"), comboNsfwFilter->currentData().toDouble());
-            s.insert(QStringLiteral("selection_min_transition"), spinSelectionMinTransition->value());
-            s.insert(QStringLiteral("selection_grow_offset"), spinSelectionGrowOffset->value());
-            s.insert(QStringLiteral("selection_invert"), checkSelectionInvert->isChecked());
-            s.insert(QStringLiteral("selection_square"), checkSelectionSquare->isChecked());
             ComfyUIUtils::saveSettingsJson(s);
         };
         connect(sliderSelectionFeather, &QSlider::valueChanged, dlg, [labelFeatherVal, saveDiffusionSettings](int v) {
@@ -1340,46 +1185,115 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             labelPaddingVal->setText(QStringLiteral("%1 %").arg(v));
             saveDiffusionSettings();
         });
-        connect(checkColorMatch, &QCheckBox::toggled, dlg, saveDiffusionSettings);
-        connect(comboNsfwFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, [dlg, comboNsfwFilter, saveDiffusionSettings](int idx) {
-            // §13.140: NSFW filter (first time) — warning once per session
-            if (idx > 0 && !g_nsfwFilterWarningShownThisSession) {
-                g_nsfwFilterWarningShownThisSession = true;
-                QMessageBox::warning(
-                    dlg,
-                    ComfyTr::tr("NSFW Filter Warning"),
-                    ComfyTr::tr("The NSFW filter is a basic tool to exclude explicit content from generated images. It is NOT a guarantee and may not catch all inappropriate content. Please use responsibly and always review the generated images."));
-            }
+        connect(switchColorMatch, &QAbstractButton::toggled, dlg, [labelColorMatchState, saveDiffusionSettings](bool on) {
+            labelColorMatchState->setText(on ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
             saveDiffusionSettings();
         });
-        connect(spinSelectionMinTransition, QOverload<double>::of(&QDoubleSpinBox::valueChanged), dlg, saveDiffusionSettings);
-        connect(spinSelectionGrowOffset, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveDiffusionSettings);
-        connect(checkSelectionInvert, &QCheckBox::toggled, dlg, saveDiffusionSettings);
-        connect(checkSelectionSquare, &QCheckBox::toggled, dlg, saveDiffusionSettings);
+        connect(comboNsfwFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                [dlg, saveDiffusionSettings](int idx) {
+                    if (idx > 0 && !g_nsfwFilterWarningShownThisSession) {
+                        g_nsfwFilterWarningShownThisSession = true;
+                        QMessageBox::warning(
+                            dlg,
+                            ComfyTr::tr("NSFW Filter Warning"),
+                            ComfyTr::tr("The NSFW filter is a basic tool to exclude explicit content from generated images. It is NOT a guarantee and may not catch all inappropriate content. Please use responsibly and always review the generated images."));
+                    }
+                    saveDiffusionSettings();
+                });
+
         diffusionLayout->addStretch();
+        diffusionScroll->setWidget(diffusionInner);
+        diffusionOuter->addWidget(diffusionScroll);
         stack->addWidget(diffusionPage);
 
-        // Interface tab (index 3) – §4.7 Interface Settings
+        // Interface tab (index 3) — Python InterfaceSettings (settings.py L699–793)
         QWidget *interfacePage = new QWidget(dlg);
-        QVBoxLayout *interfaceLayout = new QVBoxLayout(interfacePage);
-        QLabel *ifaceHeading = new QLabel(ComfyTr::tr("Interface Settings"), interfacePage);
+        QVBoxLayout *interfaceOuter = new QVBoxLayout(interfacePage);
+        interfaceOuter->setContentsMargins(0, 0, 0, 0);
+        QScrollArea *ifaceScroll = new QScrollArea(interfacePage);
+        ifaceScroll->setWidgetResizable(true);
+        ifaceScroll->setFrameShape(QFrame::NoFrame);
+        ifaceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        QWidget *ifaceInner = new QWidget();
+        QVBoxLayout *interfaceLayout = new QVBoxLayout(ifaceInner);
+        QLabel *ifaceHeading = new QLabel(ComfyTr::tr("Interface Settings"), ifaceInner);
         QFont ifaceHeadingFont = ifaceHeading->font();
         ifaceHeadingFont.setBold(true);
+        ifaceHeadingFont.setPointSize(ifaceHeadingFont.pointSize() + 2);
         ifaceHeading->setFont(ifaceHeadingFont);
         interfaceLayout->addWidget(ifaceHeading);
+        interfaceLayout->addSpacing(6);
+
+        auto makeIfaceLabelColumn = [](QWidget *parent, const QString &title, const QString &description) -> QWidget * {
+            auto *col = new QWidget(parent);
+            auto *colLayout = new QVBoxLayout(col);
+            colLayout->setContentsMargins(0, 0, 0, 0);
+            colLayout->setSpacing(2);
+            auto *titleLabel = new QLabel(title, col);
+            QFont titleFont = titleLabel->font();
+            titleFont.setBold(true);
+            titleLabel->setFont(titleFont);
+            colLayout->addWidget(titleLabel);
+            if (!description.isEmpty()) {
+                auto *descLabel = new QLabel(description, col);
+                descLabel->setWordWrap(true);
+                colLayout->addWidget(descLabel);
+            }
+            col->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            return col;
+        };
+        auto addIfaceSpinRow = [makeIfaceLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                      QSpinBox **outSpin, int min, int max) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makeIfaceLabelColumn(row, title, description), 1);
+            auto *spin = new QSpinBox(row);
+            spin->setMinimumWidth(100);
+            spin->setRange(min, max);
+            rowLayout->addWidget(spin, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outSpin = spin;
+            return row;
+        };
+        auto addIfaceSwitchRow = [makeIfaceLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                        const QString &onLabel, const QString &offLabel,
+                                                        ComfySwitchWidget **outSwitch, QLabel **outStateLabel) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makeIfaceLabelColumn(row, title, description), 1);
+            auto *stateLabel = new QLabel(onLabel, row);
+            auto *sw = new ComfySwitchWidget(row);
+            rowLayout->addWidget(stateLabel, 0, Qt::AlignRight | Qt::AlignVCenter);
+            rowLayout->addWidget(sw, 0, Qt::AlignRight | Qt::AlignVCenter);
+            connect(sw, &QAbstractButton::toggled, row, [stateLabel, onLabel, offLabel](bool on) {
+                stateLabel->setText(on ? onLabel : offLabel);
+            });
+            *outSwitch = sw;
+            *outStateLabel = stateLabel;
+            return row;
+        };
+        auto addIfaceComboRow = [makeIfaceLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                       QComboBox **outCombo) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makeIfaceLabelColumn(row, title, description), 1);
+            auto *combo = new QComboBox(row);
+            combo->setMinimumWidth(230);
+            rowLayout->addWidget(combo, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outCombo = combo;
+            return row;
+        };
+
         QJsonObject ifaceSettings = ComfyUIUtils::loadSettingsJson();
-        QFormLayout *ifaceForm = new QFormLayout();
-        // FAITHFUL_PORT: on the Android tablet width the longer labels ("Prompt
-        // line count (Live workspace):", "Tag Auto-Completion:", etc.) collided
-        // with the field column and looked unreadable. Wrap long rows onto two
-        // lines, let fields stretch, and bump spacing so the form is legible.
-        ifaceForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-        ifaceForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        ifaceForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-        ifaceForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        ifaceForm->setHorizontalSpacing(12);
-        ifaceForm->setVerticalSpacing(6);
-        QComboBox *comboLanguage = new QComboBox(interfacePage);
+
+        QComboBox *comboLanguage = nullptr;
+        interfaceLayout->addWidget(addIfaceComboRow(
+            ifaceInner,
+            ComfyTr::tr("Language"),
+            ComfyTr::tr("Interface language used by the plugin - requires restart!"),
+            &comboLanguage));
         const QList<ComfyLanguageInfo> availableLangs = ComfyLocalization::instance().availableLanguages();
         for (const ComfyLanguageInfo &lang : availableLangs)
             comboLanguage->addItem(lang.name, lang.id);
@@ -1392,164 +1306,265 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             if (curLang.isEmpty())
                 curLang = ComfyLocalization::instance().languageId();
             curLang = curLang.trimmed().toLower().replace(QLatin1Char('_'), QLatin1Char('-'));
-            int li = comboLanguage->findData(curLang);
+            const int li = comboLanguage->findData(curLang);
             comboLanguage->setCurrentIndex(li >= 0 ? li : 0);
         }
-        comboLanguage->setToolTip(ComfyTr::tr("Interface language used by the plugin - requires restart!"));
-        ifaceForm->addRow(ComfyTr::tr("Language:"), comboLanguage);
-        QComboBox *comboPromptTranslation = new QComboBox(interfacePage);
-        comboPromptTranslation->addItem(ComfyTr::tr("Disabled"), QStringLiteral("disabled"));
-        for (const ComfyLanguageInfo &lang : availableLangs)
-            comboPromptTranslation->addItem(lang.name, lang.id);
-        {
-            QString pt = ifaceSettings.value(QStringLiteral("prompt_translation")).toString();
-            if (pt.isEmpty()) pt = QStringLiteral("disabled");
-            int pti = comboPromptTranslation->findData(pt);
-            comboPromptTranslation->setCurrentIndex(pti >= 0 ? pti : 0);
-        }
-        comboPromptTranslation->setToolTip(ComfyTr::tr("Translate text prompts from the selected language to English."));
-        ifaceForm->addRow(ComfyTr::tr("Prompt Translation:"), comboPromptTranslation);
-        QSpinBox *spinPromptLines = new QSpinBox(interfacePage);
-        spinPromptLines->setRange(1, 10);
+
+        QComboBox *comboPromptTranslation = nullptr;
+        interfaceLayout->addWidget(addIfaceComboRow(
+            ifaceInner,
+            ComfyTr::tr("Prompt Translation"),
+            ComfyTr::tr("Translate text prompts from the selected language to English"),
+            &comboPromptTranslation));
+        m_d->settingsPromptTranslationCombo = comboPromptTranslation;
+
+        QSpinBox *spinPromptLines = nullptr;
+        interfaceLayout->addWidget(addIfaceSpinRow(
+            ifaceInner,
+            ComfyTr::tr("Prompt Line Count"),
+            ComfyTr::tr("Size of the text editor for image descriptions"),
+            &spinPromptLines,
+            1,
+            10));
         spinPromptLines->setValue(ifaceSettings.value(QStringLiteral("prompt_line_count")).toInt(2));
-        spinPromptLines->setToolTip(ComfyTr::tr("Size of the text editor for image descriptions."));
-        ifaceForm->addRow(ComfyTr::tr("Prompt Line Count:"), spinPromptLines);
-        QSpinBox *spinPromptLinesLive = new QSpinBox(interfacePage);
-        spinPromptLinesLive->setRange(1, 10);
-        spinPromptLinesLive->setValue(ifaceSettings.value(QStringLiteral("prompt_line_count_live")).toInt(2));
-        spinPromptLinesLive->setToolTip(ComfyTr::tr("Height of the prompt editor when the Live workspace is selected (setting prompt_line_count_live)."));
-        ifaceForm->addRow(ComfyTr::tr("Prompt line count (Live workspace):"), spinPromptLinesLive);
-        QCheckBox *checkPromptResizeHandle = new QCheckBox(ComfyTr::tr("Show prompt resize handles"), interfacePage);
-        checkPromptResizeHandle->setChecked(ifaceSettings.value(QStringLiteral("prompt_resize_handle")).toBool(true));
-        checkPromptResizeHandle->setToolTip(
-            ComfyTr::tr("Show a draggable strip under the prompt and negative prompt editors to resize height without opening settings."));
-        ifaceForm->addRow(QString(), checkPromptResizeHandle);
-        QSpinBox *spinNegativeLines = new QSpinBox(interfacePage);
-        spinNegativeLines->setRange(1, 10);
-        spinNegativeLines->setValue(ifaceSettings.value(QStringLiteral("negative_prompt_line_count")).toInt(2));
-        spinNegativeLines->setToolTip(ComfyTr::tr("Initial height of the negative prompt editor (1–10 lines)."));
-        ifaceForm->addRow(ComfyTr::tr("Negative prompt line count:"), spinNegativeLines);
-        QCheckBox *checkShowNegative = new QCheckBox(interfacePage);
-        checkShowNegative->setChecked(ifaceSettings.value(QStringLiteral("show_negative_prompt")).toBool(true));
-        checkShowNegative->setText(checkShowNegative->isChecked() ? ComfyTr::tr("Hide") : ComfyTr::tr("Show"));
-        checkShowNegative->setToolTip(ComfyTr::tr("Show text editor to describe things to avoid."));
-        ifaceForm->addRow(ComfyTr::tr("Negative Prompt:"), checkShowNegative);
-        connect(checkShowNegative, &QCheckBox::toggled, dlg, [checkShowNegative](bool on) {
-            checkShowNegative->setText(on ? ComfyTr::tr("Hide") : ComfyTr::tr("Show"));
-        });
-        QCheckBox *checkShowSteps = new QCheckBox(interfacePage);
-        checkShowSteps->setChecked(ifaceSettings.value(QStringLiteral("show_steps")).toBool(true));
-        checkShowSteps->setText(checkShowSteps->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
-        checkShowSteps->setToolTip(ComfyTr::tr("Display the number of steps to be evaluated in the weights box."));
-        ifaceForm->addRow(ComfyTr::tr("Show Steps:"), checkShowSteps);
-        connect(checkShowSteps, &QCheckBox::toggled, dlg, [checkShowSteps](bool on) {
-            checkShowSteps->setText(on ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
-        });
-        // §4.7 / §13.48: Tag auto-completion
-        QLabel *tagAutoDesc = new QLabel(ComfyTr::tr("Enable text completion for tags from the selected files."), interfacePage);
-        tagAutoDesc->setWordWrap(true);
-        ifaceForm->addRow(ComfyTr::tr("Tag Auto-Completion:"), tagAutoDesc);
-        QLineEdit *editTagDir = new QLineEdit(interfacePage);
-        editTagDir->setClearButtonEnabled(true);
-        editTagDir->setText(ifaceSettings.value(QStringLiteral("tag_directory")).toString().trimmed());
-        editTagDir->setPlaceholderText(ComfyUIUtils::tagsStorageDir());
-        editTagDir->setToolTip(ComfyTr::tr("Folder containing tag CSV files (e.g. Danbooru.csv). Leave empty to use the default plugin tags folder."));
-        QPushButton *btnBrowseTagDir = new QPushButton(ComfyTr::tr("Browse…"), interfacePage);
-        QHBoxLayout *tagDirLayout = new QHBoxLayout();
-        tagDirLayout->addWidget(editTagDir, 1);
-        tagDirLayout->addWidget(btnBrowseTagDir);
-        QWidget *tagDirRow = new QWidget(interfacePage);
-        tagDirRow->setLayout(tagDirLayout);
-        ifaceForm->addRow(ComfyTr::tr("Tag CSV folder:"), tagDirRow);
-        connect(btnBrowseTagDir, &QPushButton::clicked, dlg, [editTagDir, interfacePage](bool) {
-            const QString start = editTagDir->text().trimmed().isEmpty() ? ComfyUIUtils::tagsStorageDir() : editTagDir->text().trimmed();
-            const QString d = QFileDialog::getExistingDirectory(interfacePage, ComfyTr::tr("Tag CSV folder"), start);
-            if (!d.isEmpty())
-                editTagDir->setText(d);
-        });
-        QCheckBox *chkTagDanbooru = new QCheckBox(ComfyTr::tr("Danbooru (Danbooru.csv)"), interfacePage);
-        QCheckBox *chkTagDanbooruNsfw = new QCheckBox(ComfyTr::tr("Danbooru NSFW"), interfacePage);
-        QCheckBox *chkTagE621 = new QCheckBox(ComfyTr::tr("e621 (e621.csv)"), interfacePage);
-        QCheckBox *chkTagE621Nsfw = new QCheckBox(ComfyTr::tr("e621 NSFW"), interfacePage);
+
+        ComfySwitchWidget *switchShowNegative = nullptr;
+        QLabel *labelShowNegativeState = nullptr;
+        interfaceLayout->addWidget(addIfaceSwitchRow(
+            ifaceInner,
+            ComfyTr::tr("Negative Prompt"),
+            ComfyTr::tr("Show text editor to describe things to avoid"),
+            ComfyTr::tr("Show"),
+            ComfyTr::tr("Hide"),
+            &switchShowNegative,
+            &labelShowNegativeState));
+        switchShowNegative->setChecked(ifaceSettings.value(QStringLiteral("show_negative_prompt")).toBool(false));
+        labelShowNegativeState->setText(switchShowNegative->isChecked() ? ComfyTr::tr("Show") : ComfyTr::tr("Hide"));
+
+        ComfySwitchWidget *switchShowSteps = nullptr;
+        QLabel *labelShowStepsState = nullptr;
+        interfaceLayout->addWidget(addIfaceSwitchRow(
+            ifaceInner,
+            ComfyTr::tr("Show Steps"),
+            ComfyTr::tr("Display the number of steps to be evaluated in the weights box."),
+            ComfyTr::tr("On"),
+            ComfyTr::tr("Off"),
+            &switchShowSteps,
+            &labelShowStepsState));
+        switchShowSteps->setChecked(ifaceSettings.value(QStringLiteral("show_steps")).toBool(false));
+        labelShowStepsState->setText(switchShowSteps->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+
+        QSpinBox *spinRecentStyles = nullptr;
+        interfaceLayout->addWidget(addIfaceSpinRow(
+            ifaceInner,
+            ComfyTr::tr("Recent Styles"),
+            ComfyTr::tr("Number of most recently used styles to show at the top of the style list"),
+            &spinRecentStyles,
+            0,
+            10));
+        spinRecentStyles->setValue(ifaceSettings.value(QStringLiteral("recent_styles_count")).toInt(4));
+
+        // Tag auto-completion — bundled tag CSV lists (Danbooru / e621 + NSFW variants)
+        QLabel *tagStateLabel = nullptr;
+        QCheckBox *chkTagDanbooru = nullptr;
+        QCheckBox *chkTagDanbooruNsfw = nullptr;
+        QCheckBox *chkTagE621 = nullptr;
+        QCheckBox *chkTagE621Nsfw = nullptr;
         {
-            QJsonArray tf = ifaceSettings.value(QStringLiteral("tag_files")).toArray();
-            QSet<QString> sel;
-            for (const QJsonValue &v : tf)
-                sel.insert(v.toString());
+            QSet<QString> selectedTagStems;
+            const QJsonArray tf = ifaceSettings.value(QStringLiteral("tag_files")).toArray();
             if (tf.isEmpty()) {
-                sel.insert(QStringLiteral("Danbooru"));
-                sel.insert(QStringLiteral("e621"));
+                selectedTagStems.insert(QStringLiteral("Danbooru"));
+                selectedTagStems.insert(QStringLiteral("e621"));
+            } else {
+                for (const QJsonValue &v : tf)
+                    selectedTagStems.insert(v.toString());
             }
-            chkTagDanbooru->setChecked(sel.contains(QStringLiteral("Danbooru")));
-            chkTagDanbooruNsfw->setChecked(sel.contains(QStringLiteral("Danbooru NSFW")));
-            chkTagE621->setChecked(sel.contains(QStringLiteral("e621")));
-            chkTagE621Nsfw->setChecked(sel.contains(QStringLiteral("e621 NSFW")));
+
+            auto *tagRow = new QWidget(ifaceInner);
+            auto *tagRowLayout = new QHBoxLayout(tagRow);
+            tagRowLayout->setContentsMargins(0, 4, 0, 4);
+            tagRowLayout->addWidget(makeIfaceLabelColumn(
+                tagRow,
+                ComfyTr::tr("Tag Auto-Completion"),
+                ComfyTr::tr("Enable text completion for tags from the selected files")),
+                                   1);
+            tagStateLabel = new QLabel(ComfyTr::tr("Disabled"), tagRow);
+            tagRowLayout->addWidget(tagStateLabel, 0, Qt::AlignRight | Qt::AlignVCenter);
+            interfaceLayout->addWidget(tagRow);
+
+            auto *tagListRow = new QWidget(ifaceInner);
+            auto *tagListLayout = new QHBoxLayout(tagListRow);
+            tagListLayout->setContentsMargins(16, 0, 0, 4);
+            chkTagDanbooru = new QCheckBox(ComfyTr::tr("Danbooru"), tagListRow);
+            chkTagDanbooru->setProperty("tagStem", QStringLiteral("Danbooru"));
+            chkTagDanbooruNsfw = new QCheckBox(ComfyTr::tr("Danbooru NSFW"), tagListRow);
+            chkTagDanbooruNsfw->setProperty("tagStem", QStringLiteral("Danbooru NSFW"));
+            chkTagE621 = new QCheckBox(ComfyTr::tr("e621"), tagListRow);
+            chkTagE621->setProperty("tagStem", QStringLiteral("e621"));
+            chkTagE621Nsfw = new QCheckBox(ComfyTr::tr("e621 NSFW"), tagListRow);
+            chkTagE621Nsfw->setProperty("tagStem", QStringLiteral("e621 NSFW"));
+            chkTagDanbooru->setChecked(selectedTagStems.contains(QStringLiteral("Danbooru")));
+            chkTagDanbooruNsfw->setChecked(selectedTagStems.contains(QStringLiteral("Danbooru NSFW")));
+            chkTagE621->setChecked(selectedTagStems.contains(QStringLiteral("e621")));
+            chkTagE621Nsfw->setChecked(selectedTagStems.contains(QStringLiteral("e621 NSFW")));
+            tagListLayout->addWidget(chkTagDanbooru);
+            tagListLayout->addWidget(chkTagDanbooruNsfw);
+            tagListLayout->addWidget(chkTagE621);
+            tagListLayout->addWidget(chkTagE621Nsfw);
+            tagListLayout->addStretch();
+            interfaceLayout->addWidget(tagListRow);
+
+            const auto syncTagStateLabel = [tagStateLabel, chkTagDanbooru, chkTagDanbooruNsfw, chkTagE621, chkTagE621Nsfw]() {
+                const bool any = chkTagDanbooru->isChecked() || chkTagDanbooruNsfw->isChecked()
+                    || chkTagE621->isChecked() || chkTagE621Nsfw->isChecked();
+                tagStateLabel->setText(any ? ComfyTr::tr("Enabled") : ComfyTr::tr("Disabled"));
+            };
+            syncTagStateLabel();
+
+            QPushButton *btnLookNewTagFiles = new QPushButton(ComfyTr::tr("Look for new tag files"), ifaceInner);
+            btnLookNewTagFiles->setIcon(ComfyTheme::icon(QStringLiteral("reset")));
+            QPushButton *btnOpenTagFolder = new QPushButton(
+                ComfyTr::tr("Open folder where custom tag files can be placed"),
+                ifaceInner);
+            btnOpenTagFolder->setIcon(ComfyTheme::icon(QStringLiteral("root")));
+            auto *tagActionRow = new QWidget(ifaceInner);
+            auto *tagActionLayout = new QHBoxLayout(tagActionRow);
+            tagActionLayout->setContentsMargins(16, 0, 0, 4);
+            tagActionLayout->addWidget(btnLookNewTagFiles);
+            tagActionLayout->addWidget(btnOpenTagFolder);
+            tagActionLayout->addStretch();
+            interfaceLayout->addWidget(tagActionRow);
+
+            connect(btnLookNewTagFiles, &QPushButton::clicked, this, [this, syncTagStateLabel](bool) {
+                refreshPromptTagCompleter();
+                syncTagStateLabel();
+            });
+            connect(btnOpenTagFolder, &QPushButton::clicked, dlg, [](bool) {
+                QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::tagsStorageDir()));
+            });
         }
-        QWidget *tagStemCol = new QWidget(interfacePage);
-        QVBoxLayout *tagStemLayout = new QVBoxLayout(tagStemCol);
-        tagStemLayout->setContentsMargins(0, 0, 0, 0);
-        tagStemLayout->addWidget(chkTagDanbooru);
-        tagStemLayout->addWidget(chkTagDanbooruNsfw);
-        tagStemLayout->addWidget(chkTagE621);
-        tagStemLayout->addWidget(chkTagE621Nsfw);
-        ifaceForm->addRow(ComfyTr::tr("Tag lists:"), tagStemCol);
-        QPushButton *btnLookNewTagFiles = new QPushButton(ComfyTr::tr("Look for new tag files"), interfacePage);
-        QPushButton *btnOpenTagFolder = new QPushButton(ComfyTr::tr("Open folder where custom tag files can be placed"), interfacePage);
-        btnLookNewTagFiles->setToolTip(ComfyTr::tr("Reload tag lists from disk (e.g. after adding CSV files)."));
-        btnOpenTagFolder->setToolTip(ComfyTr::tr("Open the tag folder in the file manager."));
-        QHBoxLayout *tagActionLayout = new QHBoxLayout();
-        tagActionLayout->addWidget(btnLookNewTagFiles);
-        tagActionLayout->addWidget(btnOpenTagFolder);
-        tagActionLayout->addStretch();
-        QWidget *tagActionRow = new QWidget(interfacePage);
-        tagActionRow->setLayout(tagActionLayout);
-        ifaceForm->addRow(QString(), tagActionRow);
-        connect(btnLookNewTagFiles, &QPushButton::clicked, this, [this](bool) { refreshPromptTagCompleter(); });
-        connect(btnOpenTagFolder, &QPushButton::clicked, dlg, [editTagDir](bool) {
-            const QString dir = editTagDir->text().trimmed().isEmpty() ? ComfyUIUtils::tagsStorageDir() : editTagDir->text().trimmed();
-            QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
-        });
-        QLabel *tagFileHint = new QLabel(
-            ComfyTr::tr("CSV must include a “tag” column (see spec §13.215). In prompts, press Ctrl+Space to complete the word at the cursor."),
-            interfacePage);
-        tagFileHint->setWordWrap(true);
-        ifaceForm->addRow(QString(), tagFileHint);
-        // §4.7: order — Finished Generation and Apply before Save Image Format
-        QComboBox *comboFinishedAction = new QComboBox(interfacePage);
+
+        QComboBox *comboFinishedAction = nullptr;
+        interfaceLayout->addWidget(addIfaceComboRow(
+            ifaceInner,
+            ComfyTr::tr("Finished Generation"),
+            ComfyTr::tr("Action to take when an image generation job finishes"),
+            &comboFinishedAction));
         comboFinishedAction->addItem(ComfyTr::tr("Do Nothing"), QStringLiteral("none"));
         comboFinishedAction->addItem(ComfyTr::tr("Preview"), QStringLiteral("preview"));
         comboFinishedAction->addItem(ComfyTr::tr("Apply"), QStringLiteral("apply"));
-        QString finAction = ifaceSettings.value(QStringLiteral("generation_finished_action")).toString();
-        if (finAction.isEmpty()) finAction = QStringLiteral("preview");
-        int finIdx = comboFinishedAction->findData(finAction);
-        comboFinishedAction->setCurrentIndex(finIdx >= 0 ? finIdx : 1);
-        comboFinishedAction->setToolTip(ComfyTr::tr("Action to take when an image generation job finishes."));
-        ifaceForm->addRow(ComfyTr::tr("Finished Generation:"), comboFinishedAction);
-        QComboBox *comboApplyBehavior = new QComboBox(interfacePage);
+        {
+            QString finAction = ifaceSettings.value(QStringLiteral("generation_finished_action")).toString();
+            if (finAction.isEmpty())
+                finAction = QStringLiteral("preview");
+            const int finIdx = comboFinishedAction->findData(finAction);
+            comboFinishedAction->setCurrentIndex(finIdx >= 0 ? finIdx : 1);
+        }
+
+        QComboBox *comboApplyBehavior = nullptr;
+        interfaceLayout->addWidget(addIfaceComboRow(
+            ifaceInner,
+            ComfyTr::tr("Apply Behavior"),
+            ComfyTr::tr("Choose how result images are applied to the canvas (generation workspaces)"),
+            &comboApplyBehavior));
         comboApplyBehavior->addItem(ComfyTr::tr("Modify active layer"), QStringLiteral("replace"));
         comboApplyBehavior->addItem(ComfyTr::tr("New layer on top"), QStringLiteral("layer"));
         comboApplyBehavior->addItem(ComfyTr::tr("New layer above active"), QStringLiteral("layer_active"));
-        QString applyBeh = ifaceSettings.value(QStringLiteral("apply_behavior")).toString();
-        if (applyBeh.isEmpty()) applyBeh = QStringLiteral("layer");
-        int applyIdx = comboApplyBehavior->findData(applyBeh);
-        comboApplyBehavior->setCurrentIndex(applyIdx >= 0 ? applyIdx : 1);
-        comboApplyBehavior->setToolTip(ComfyTr::tr("Choose how result images are applied to the canvas (generation workspaces)."));
-        ifaceForm->addRow(ComfyTr::tr("Apply Behavior:"), comboApplyBehavior);
-        QComboBox *comboApplyBehaviorLive = new QComboBox(interfacePage);
+        {
+            QString applyBeh = ifaceSettings.value(QStringLiteral("apply_behavior")).toString();
+            if (applyBeh.isEmpty())
+                applyBeh = QStringLiteral("layer");
+            const int applyIdx = comboApplyBehavior->findData(applyBeh);
+            comboApplyBehavior->setCurrentIndex(applyIdx >= 0 ? applyIdx : 1);
+        }
+
+        QComboBox *comboApplyRegionBehavior = new QComboBox(ifaceInner);
+        comboApplyRegionBehavior->setMinimumWidth(230);
+        comboApplyRegionBehavior->addItem(ComfyTr::tr("Do not update regions"), QStringLiteral("none"));
+        comboApplyRegionBehavior->addItem(ComfyTr::tr("Modify region layers"), QStringLiteral("replace"));
+        comboApplyRegionBehavior->addItem(ComfyTr::tr("Layer group"), QStringLiteral("layer_group"));
+        comboApplyRegionBehavior->addItem(ComfyTr::tr("Layer group + mask"), QStringLiteral("transparency_mask"));
+        comboApplyRegionBehavior->addItem(ComfyTr::tr("Layer group (don't hide)"), QStringLiteral("no_hide"));
+        {
+            QString savedRegionBehavior = ifaceSettings.value(QStringLiteral("apply_region_behavior")).toString();
+            if (savedRegionBehavior.isEmpty())
+                savedRegionBehavior = QStringLiteral("layer_group");
+            const int regionIdx = comboApplyRegionBehavior->findData(savedRegionBehavior);
+            comboApplyRegionBehavior->setCurrentIndex(regionIdx >= 0 ? regionIdx : 2);
+        }
+        comboApplyRegionBehavior->setToolTip(
+            ComfyTr::tr("When applying a result that was generated with regions, how to place the result per region."));
+        {
+            auto *regionRow = new QWidget(ifaceInner);
+            auto *regionLayout = new QHBoxLayout(regionRow);
+            regionLayout->setContentsMargins(0, 4, 0, 4);
+            regionLayout->addStretch(1);
+            regionLayout->addWidget(comboApplyRegionBehavior, 0, Qt::AlignRight);
+            interfaceLayout->addWidget(regionRow);
+        }
+
+        QComboBox *comboApplyBehaviorLive = nullptr;
+        interfaceLayout->addWidget(addIfaceComboRow(
+            ifaceInner,
+            ComfyTr::tr("Apply Behavior (Live)"),
+            ComfyTr::tr("Choose how result images are applied to the canvas in Live mode"),
+            &comboApplyBehaviorLive));
         comboApplyBehaviorLive->addItem(ComfyTr::tr("Modify active layer"), QStringLiteral("replace"));
         comboApplyBehaviorLive->addItem(ComfyTr::tr("New layer on top"), QStringLiteral("layer"));
         comboApplyBehaviorLive->addItem(ComfyTr::tr("New layer above active"), QStringLiteral("layer_active"));
-        QString applyBehLive = ifaceSettings.value(QStringLiteral("apply_behavior_live")).toString();
-        if (applyBehLive.isEmpty()) applyBehLive = QStringLiteral("replace");
-        int applyLiveIdx = comboApplyBehaviorLive->findData(applyBehLive);
-        comboApplyBehaviorLive->setCurrentIndex(applyLiveIdx >= 0 ? applyLiveIdx : 0);
-        comboApplyBehaviorLive->setToolTip(ComfyTr::tr("Choose how result images are applied to the canvas in Live mode."));
-        ifaceForm->addRow(ComfyTr::tr("Apply Behavior (Live):"), comboApplyBehaviorLive);
-        QCheckBox *checkNewSeedAfterApply = new QCheckBox(interfacePage);
-        checkNewSeedAfterApply->setChecked(ifaceSettings.value(QStringLiteral("new_seed_after_apply")).toBool(false));
-        checkNewSeedAfterApply->setToolTip(ComfyTr::tr("Pick a new seed after copying the result to the canvas in Live mode."));
-        ifaceForm->addRow(ComfyTr::tr("Live: New Seed after Apply:"), checkNewSeedAfterApply);
-        QComboBox *comboSaveFormat = new QComboBox(interfacePage);
+        {
+            QString applyBehLive = ifaceSettings.value(QStringLiteral("apply_behavior_live")).toString();
+            if (applyBehLive.isEmpty())
+                applyBehLive = QStringLiteral("replace");
+            const int applyLiveIdx = comboApplyBehaviorLive->findData(applyBehLive);
+            comboApplyBehaviorLive->setCurrentIndex(applyLiveIdx >= 0 ? applyLiveIdx : 0);
+        }
+
+        QComboBox *comboApplyRegionBehaviorLive = new QComboBox(ifaceInner);
+        comboApplyRegionBehaviorLive->setMinimumWidth(230);
+        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Do not update regions"), QStringLiteral("none"));
+        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Modify region layers"), QStringLiteral("replace"));
+        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Layer group"), QStringLiteral("layer_group"));
+        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Layer group + mask"), QStringLiteral("transparency_mask"));
+        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Layer group (don't hide)"), QStringLiteral("no_hide"));
+        {
+            QString savedRegionBehaviorLive = ifaceSettings.value(QStringLiteral("apply_region_behavior_live")).toString();
+            if (savedRegionBehaviorLive.isEmpty())
+                savedRegionBehaviorLive = QStringLiteral("replace");
+            const int regionLiveIdx = comboApplyRegionBehaviorLive->findData(savedRegionBehaviorLive);
+            comboApplyRegionBehaviorLive->setCurrentIndex(regionLiveIdx >= 0 ? regionLiveIdx : 1);
+        }
+        comboApplyRegionBehaviorLive->setToolTip(
+            ComfyTr::tr("Same as apply region behavior, used when the Live workspace is active."));
+        {
+            auto *regionLiveRow = new QWidget(ifaceInner);
+            auto *regionLiveLayout = new QHBoxLayout(regionLiveRow);
+            regionLiveLayout->setContentsMargins(0, 4, 0, 4);
+            regionLiveLayout->addStretch(1);
+            regionLiveLayout->addWidget(comboApplyRegionBehaviorLive, 0, Qt::AlignRight);
+            interfaceLayout->addWidget(regionLiveRow);
+        }
+
+        ComfySwitchWidget *switchNewSeedAfterApply = nullptr;
+        QLabel *labelNewSeedState = nullptr;
+        interfaceLayout->addWidget(addIfaceSwitchRow(
+            ifaceInner,
+            ComfyTr::tr("Live: New Seed after Apply"),
+            ComfyTr::tr("Pick a new seed after copying the result to the canvas in Live mode"),
+            ComfyTr::tr("On"),
+            ComfyTr::tr("Off"),
+            &switchNewSeedAfterApply,
+            &labelNewSeedState));
+        switchNewSeedAfterApply->setChecked(ifaceSettings.value(QStringLiteral("new_seed_after_apply")).toBool(false));
+        labelNewSeedState->setText(switchNewSeedAfterApply->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+
+        QComboBox *comboSaveFormat = nullptr;
+        interfaceLayout->addWidget(addIfaceComboRow(
+            ifaceInner,
+            ComfyTr::tr("Save Image Format"),
+            ComfyTr::tr("File format for saved images from thumbnails."),
+            &comboSaveFormat));
         comboSaveFormat->addItem(ComfyTr::tr("PNG (fast)"), QStringLiteral("png_small"));
         comboSaveFormat->addItem(ComfyTr::tr("PNG"), QStringLiteral("png"));
         comboSaveFormat->addItem(ComfyTr::tr("WebP"), QStringLiteral("webp"));
@@ -1557,125 +1572,101 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         comboSaveFormat->addItem(ComfyTr::tr("JPEG"), QStringLiteral("jpeg"));
         {
             QString sf = ifaceSettings.value(QStringLiteral("save_image_format")).toString();
-            if (sf.isEmpty()) sf = QStringLiteral("png");
+            if (sf.isEmpty())
+                sf = QStringLiteral("png_small");
             int sfi = comboSaveFormat->findData(sf);
-            if (sfi < 0 && sf == QLatin1String("png_small")) sfi = 0;
-            comboSaveFormat->setCurrentIndex(sfi >= 0 ? sfi : 1);
+            if (sfi < 0 && sf == QLatin1String("png"))
+                sfi = comboSaveFormat->findData(QStringLiteral("png"));
+            comboSaveFormat->setCurrentIndex(sfi >= 0 ? sfi : 0);
         }
-        comboSaveFormat->setToolTip(ComfyTr::tr("File format for saved images from thumbnails."));
-        ifaceForm->addRow(ComfyTr::tr("Save Image Format:"), comboSaveFormat);
-        QSpinBox *spinSaveJpegQuality = new QSpinBox(interfacePage);
-        spinSaveJpegQuality->setRange(0, 100);
-        spinSaveJpegQuality->setValue(ComfyUIUtils::saveImageQualityJpeg(ifaceSettings));
-        spinSaveJpegQuality->setToolTip(ComfyTr::tr("JPEG quality when saving from history (setting save_image_quality_jpeg, default 85)."));
-        ifaceForm->addRow(ComfyTr::tr("JPEG save quality:"), spinSaveJpegQuality);
-        QSpinBox *spinSaveWebpQuality = new QSpinBox(interfacePage);
-        spinSaveWebpQuality->setRange(0, 100);
-        spinSaveWebpQuality->setValue(ComfyUIUtils::saveImageQualityWebp(ifaceSettings));
-        spinSaveWebpQuality->setToolTip(ComfyTr::tr("WebP quality for lossy WebP when saving from history (setting save_image_quality_webp, default 80)."));
-        ifaceForm->addRow(ComfyTr::tr("WebP save quality (lossy):"), spinSaveWebpQuality);
-        QCheckBox *checkSaveMeta = new QCheckBox(ComfyTr::tr("Save Image Metadata"), interfacePage);
-        checkSaveMeta->setChecked(ifaceSettings.value(QStringLiteral("save_image_metadata")).toBool(true));
-        checkSaveMeta->setToolTip(ComfyTr::tr("When saving generated images from thumbnails, include metadata in the PNG."));
-        ifaceForm->addRow(QString(), checkSaveMeta);
-        QLineEdit *editSaveImageNameFormat = new QLineEdit(interfacePage);
-        editSaveImageNameFormat->setText(ifaceSettings.value(QStringLiteral("save_image_file_name_format")).toString());
-        editSaveImageNameFormat->setPlaceholderText(
-            QStringLiteral("{document_name}-generated-{job_timestamp}-{job_index}-{prompt}"));
-        editSaveImageNameFormat->setToolTip(
-            ComfyTr::tr("Default suggested filename when saving from history. Placeholders: {document_name}, {job_timestamp}, "
-                 "{job_index} (1-based), {prompt}. Leave empty for the default template."));
-        ifaceForm->addRow(ComfyTr::tr("Save filename template:"), editSaveImageNameFormat);
-        QCheckBox *checkDumpWorkflow = new QCheckBox(ComfyTr::tr("Dump Workflow"), interfacePage);
-        checkDumpWorkflow->setChecked(ifaceSettings.value(QStringLiteral("dump_workflow")).toBool(false));
-        checkDumpWorkflow->setToolTip(ComfyTr::tr("Write latest ComfyUI prompt to the log folder for test & debug."));
-        ifaceForm->addRow(QString(), checkDumpWorkflow);
-        interfaceLayout->addLayout(ifaceForm);
-        m_d->checkConfirmDiscardImage = new QCheckBox(ComfyTr::tr("Ask for confirmation when discarding an image from history"), interfacePage);
-        m_d->checkConfirmDiscardImage->setChecked(KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("ConfirmDiscardImage", true));
-        connect(m_d->checkConfirmDiscardImage, &QCheckBox::toggled, this, [this](bool checked) {
-            KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("ConfirmDiscardImage", checked);
-        });
-        interfaceLayout->addWidget(m_d->checkConfirmDiscardImage);
-        // §4.7 / §13.184: Apply region result
-        QComboBox *comboApplyRegionBehavior = new QComboBox(interfacePage);
-        comboApplyRegionBehavior->addItem(ComfyTr::tr("None"), QStringLiteral("none"));
-        comboApplyRegionBehavior->addItem(ComfyTr::tr("Replace (modify region layer in place)"), QStringLiteral("replace"));
-        comboApplyRegionBehavior->addItem(ComfyTr::tr("Layer group (new group with result layer inside)"), QStringLiteral("layer_group"));
-        comboApplyRegionBehavior->addItem(ComfyTr::tr("Transparency mask (apply as mask on region layer)"), QStringLiteral("transparency_mask"));
-        comboApplyRegionBehavior->addItem(ComfyTr::tr("No hide (new layer; keep sibling layers visible)"), QStringLiteral("no_hide"));
-        QString savedRegionBehavior = ifaceSettings.value(QStringLiteral("apply_region_behavior")).toString();
-        if (savedRegionBehavior.isEmpty()) savedRegionBehavior = QStringLiteral("layer_group");
-        int regionIdx = comboApplyRegionBehavior->findData(savedRegionBehavior);
-        comboApplyRegionBehavior->setCurrentIndex(regionIdx >= 0 ? regionIdx : 1);
-        comboApplyRegionBehavior->setToolTip(ComfyTr::tr("When applying a result that was generated with regions, how to place the result per region (create_result_layer)."));
-        interfaceLayout->addWidget(new QLabel(ComfyTr::tr("Apply region result:"), interfacePage));
-        interfaceLayout->addWidget(comboApplyRegionBehavior);
-        QComboBox *comboApplyRegionBehaviorLive = new QComboBox(interfacePage);
-        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("None"), QStringLiteral("none"));
-        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Replace (modify region layer in place)"), QStringLiteral("replace"));
-        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Layer group (new group with result layer inside)"), QStringLiteral("layer_group"));
-        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Transparency mask (apply as mask on region layer)"), QStringLiteral("transparency_mask"));
-        comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("No hide (new layer; keep sibling layers visible)"), QStringLiteral("no_hide"));
-        QString savedRegionBehaviorLive = ifaceSettings.value(QStringLiteral("apply_region_behavior_live")).toString();
-        if (savedRegionBehaviorLive.isEmpty()) savedRegionBehaviorLive = QStringLiteral("replace");
-        int regionLiveIdx = comboApplyRegionBehaviorLive->findData(savedRegionBehaviorLive);
-        comboApplyRegionBehaviorLive->setCurrentIndex(regionLiveIdx >= 0 ? regionLiveIdx : 1);
-        comboApplyRegionBehaviorLive->setToolTip(
-            ComfyTr::tr("Same as “Apply region result”, used when the Live workspace is active while you apply a region job from history."));
-        interfaceLayout->addWidget(new QLabel(ComfyTr::tr("Apply region result (Live workspace):"), interfacePage));
-        interfaceLayout->addWidget(comboApplyRegionBehaviorLive);
-        auto updateSaveFormatSideEffects = [checkSaveMeta, comboSaveFormat, spinSaveJpegQuality, spinSaveWebpQuality]() {
+
+        ComfySwitchWidget *switchSaveMeta = nullptr;
+        QLabel *labelSaveMetaState = nullptr;
+        interfaceLayout->addWidget(addIfaceSwitchRow(
+            ifaceInner,
+            ComfyTr::tr("Save Image Metadata"),
+            ComfyTr::tr("When saving generated images from thumbnails, include metadata in the PNG"),
+            ComfyTr::tr("On"),
+            ComfyTr::tr("Off"),
+            &switchSaveMeta,
+            &labelSaveMetaState));
+        switchSaveMeta->setChecked(ifaceSettings.value(QStringLiteral("save_image_metadata")).toBool(false));
+        labelSaveMetaState->setText(switchSaveMeta->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+
+        ComfySwitchWidget *switchDumpWorkflow = nullptr;
+        QLabel *labelDumpWorkflowState = nullptr;
+        interfaceLayout->addWidget(addIfaceSwitchRow(
+            ifaceInner,
+            ComfyTr::tr("Dump Workflow"),
+            ComfyTr::tr("Write latest ComfyUI prompt to the log folder for test & debug"),
+            ComfyTr::tr("On"),
+            ComfyTr::tr("Off"),
+            &switchDumpWorkflow,
+            &labelDumpWorkflowState));
+        const bool dumpOn = ifaceSettings.value(QStringLiteral("debug_dump_workflow")).toBool(false)
+            || ifaceSettings.value(QStringLiteral("dump_workflow")).toBool(false);
+        switchDumpWorkflow->setChecked(dumpOn);
+        labelDumpWorkflowState->setText(dumpOn ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+
+        auto updateSaveFormatSideEffects = [switchSaveMeta, labelSaveMetaState, comboSaveFormat]() {
             const QString f = comboSaveFormat->currentData().toString();
-            checkSaveMeta->setEnabled(f == QLatin1String("png") || f == QLatin1String("png_small"));
-            spinSaveJpegQuality->setEnabled(f == QLatin1String("jpeg"));
-            spinSaveWebpQuality->setEnabled(f == QLatin1String("webp"));
+            const bool pngFmt = (f == QLatin1String("png") || f == QLatin1String("png_small"));
+            switchSaveMeta->setEnabled(pngFmt);
+            if (!pngFmt) {
+                switchSaveMeta->setChecked(false);
+                labelSaveMetaState->setText(ComfyTr::tr("Off"));
+            }
         };
         updateSaveFormatSideEffects();
-        auto saveIfaceSettings = [this, comboFinishedAction, comboApplyBehavior, comboApplyBehaviorLive, checkNewSeedAfterApply, comboApplyRegionBehavior,
-                                   comboApplyRegionBehaviorLive, comboLanguage, comboPromptTranslation, spinPromptLines, spinPromptLinesLive,
-                                   checkPromptResizeHandle, spinNegativeLines, checkShowNegative, checkShowSteps, comboSaveFormat, checkSaveMeta,
-                                   spinSaveJpegQuality, spinSaveWebpQuality, editSaveImageNameFormat, checkDumpWorkflow, editTagDir, chkTagDanbooru,
-                                   chkTagDanbooruNsfw, chkTagE621, chkTagE621Nsfw]() {
+
+        auto saveIfaceSettings = [this, comboFinishedAction, comboApplyBehavior, comboApplyBehaviorLive, switchNewSeedAfterApply,
+                                  comboApplyRegionBehavior, comboApplyRegionBehaviorLive, comboLanguage,
+                                  comboPromptTranslation, spinPromptLines, switchShowNegative, switchShowSteps,
+                                  spinRecentStyles, comboSaveFormat, switchSaveMeta, switchDumpWorkflow,
+                                  chkTagDanbooru, chkTagDanbooruNsfw, chkTagE621, chkTagE621Nsfw, tagStateLabel]() {
             QJsonObject s = ComfyUIUtils::loadSettingsJson();
             const QString langId = comboLanguage->currentData().toString();
             s.insert(QStringLiteral("interface_language"), langId);
             s.insert(QStringLiteral("language"), langId);
-            s.insert(QStringLiteral("prompt_translation"), comboPromptTranslation->currentData().toString());
+            QString pt = comboPromptTranslation->currentData().toString();
+            if (pt.isEmpty())
+                pt = QStringLiteral("disabled");
+            s.insert(QStringLiteral("prompt_translation"), pt);
             s.insert(QStringLiteral("prompt_line_count"), spinPromptLines->value());
-            s.insert(QStringLiteral("prompt_line_count_live"), spinPromptLinesLive->value());
-            s.insert(QStringLiteral("prompt_resize_handle"), checkPromptResizeHandle->isChecked());
-            s.insert(QStringLiteral("negative_prompt_line_count"), spinNegativeLines->value());
-            s.insert(QStringLiteral("show_negative_prompt"), checkShowNegative->isChecked());
-            s.insert(QStringLiteral("show_steps"), checkShowSteps->isChecked());
-            s.insert(QStringLiteral("save_image_file_name_format"), editSaveImageNameFormat->text().trimmed());
-            s.insert(QStringLiteral("tag_directory"), editTagDir->text().trimmed());
+            s.insert(QStringLiteral("show_negative_prompt"), switchShowNegative->isChecked());
+            s.insert(QStringLiteral("show_steps"), switchShowSteps->isChecked());
+            s.insert(QStringLiteral("recent_styles_count"), spinRecentStyles->value());
             QJsonArray tagFiles;
-            if (chkTagDanbooru->isChecked())
-                tagFiles.append(QStringLiteral("Danbooru"));
-            if (chkTagDanbooruNsfw->isChecked())
-                tagFiles.append(QStringLiteral("Danbooru NSFW"));
-            if (chkTagE621->isChecked())
-                tagFiles.append(QStringLiteral("e621"));
-            if (chkTagE621Nsfw->isChecked())
-                tagFiles.append(QStringLiteral("e621 NSFW"));
+            const auto appendIfChecked = [&tagFiles](QCheckBox *cb) {
+                if (cb && cb->isChecked()) {
+                    const QString stem = cb->property("tagStem").toString();
+                    tagFiles.append(stem.isEmpty() ? cb->text() : stem);
+                }
+            };
+            appendIfChecked(chkTagDanbooru);
+            appendIfChecked(chkTagDanbooruNsfw);
+            appendIfChecked(chkTagE621);
+            appendIfChecked(chkTagE621Nsfw);
             s.insert(QStringLiteral("tag_files"), tagFiles);
+            if (tagStateLabel) {
+                tagStateLabel->setText(tagFiles.isEmpty() ? ComfyTr::tr("Disabled") : ComfyTr::tr("Enabled"));
+            }
             s.insert(QStringLiteral("save_image_format"), comboSaveFormat->currentData().toString());
-            s.insert(QStringLiteral("save_image_quality_jpeg"), spinSaveJpegQuality->value());
-            s.insert(QStringLiteral("save_image_quality_webp"), spinSaveWebpQuality->value());
-            s.insert(QStringLiteral("save_image_metadata"), checkSaveMeta->isChecked());
-            s.insert(QStringLiteral("dump_workflow"), checkDumpWorkflow->isChecked());
+            s.insert(QStringLiteral("save_image_metadata"), switchSaveMeta->isChecked());
+            s.insert(QStringLiteral("debug_dump_workflow"), switchDumpWorkflow->isChecked());
+            s.remove(QStringLiteral("dump_workflow"));
             s.insert(QStringLiteral("generation_finished_action"), comboFinishedAction->currentData().toString());
             s.insert(QStringLiteral("apply_behavior"), comboApplyBehavior->currentData().toString());
             s.insert(QStringLiteral("apply_behavior_live"), comboApplyBehaviorLive->currentData().toString());
-            s.insert(QStringLiteral("new_seed_after_apply"), checkNewSeedAfterApply->isChecked());
+            s.insert(QStringLiteral("new_seed_after_apply"), switchNewSeedAfterApply->isChecked());
             s.insert(QStringLiteral("apply_region_behavior"), comboApplyRegionBehavior->currentData().toString());
             s.insert(QStringLiteral("apply_region_behavior_live"), comboApplyRegionBehaviorLive->currentData().toString());
             ComfyUIUtils::saveSettingsJson(s);
             applyInterfaceAppearanceSettings();
             refreshPromptTagCompleter();
-            persistDocumentDefaultsToSettings();  // §13.194: translation fields in document_defaults
+            persistDocumentDefaultsToSettings();
         };
+
         connect(comboLanguage, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
                 [comboLanguage, saveIfaceSettings](int) {
                     const QString newId = comboLanguage->currentData().toString();
@@ -1689,221 +1680,353 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 });
         connect(comboPromptTranslation, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, saveIfaceSettings);
         connect(spinPromptLines, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveIfaceSettings);
-        connect(spinPromptLinesLive, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveIfaceSettings);
-        connect(checkPromptResizeHandle, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(spinNegativeLines, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveIfaceSettings);
-        connect(checkShowNegative, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(checkShowSteps, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(editTagDir, &QLineEdit::textChanged, dlg, saveIfaceSettings);
-        connect(chkTagDanbooru, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(chkTagDanbooruNsfw, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(chkTagE621, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(chkTagE621Nsfw, &QCheckBox::toggled, dlg, saveIfaceSettings);
+        connect(switchShowNegative, &QAbstractButton::toggled, dlg, saveIfaceSettings);
+        connect(switchShowSteps, &QAbstractButton::toggled, dlg, saveIfaceSettings);
+        connect(spinRecentStyles, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveIfaceSettings);
         connect(comboSaveFormat, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, [saveIfaceSettings, updateSaveFormatSideEffects](int) {
             updateSaveFormatSideEffects();
             saveIfaceSettings();
         });
-        connect(spinSaveJpegQuality, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveIfaceSettings);
-        connect(spinSaveWebpQuality, QOverload<int>::of(&QSpinBox::valueChanged), dlg, saveIfaceSettings);
-        connect(checkSaveMeta, &QCheckBox::toggled, dlg, saveIfaceSettings);
-        connect(editSaveImageNameFormat, &QLineEdit::textChanged, dlg, saveIfaceSettings);
-        connect(checkDumpWorkflow, &QCheckBox::toggled, dlg, saveIfaceSettings);
+        connect(switchSaveMeta, &QAbstractButton::toggled, dlg, saveIfaceSettings);
+        connect(switchDumpWorkflow, &QAbstractButton::toggled, dlg, saveIfaceSettings);
         connect(comboFinishedAction, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, saveIfaceSettings);
         connect(comboApplyBehavior, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, saveIfaceSettings);
         connect(comboApplyBehaviorLive, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, saveIfaceSettings);
-        connect(checkNewSeedAfterApply, &QCheckBox::toggled, dlg, saveIfaceSettings);
+        connect(switchNewSeedAfterApply, &QAbstractButton::toggled, dlg, saveIfaceSettings);
         connect(comboApplyRegionBehavior, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, saveIfaceSettings);
         connect(comboApplyRegionBehaviorLive, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, saveIfaceSettings);
+        connect(chkTagDanbooru, &QCheckBox::toggled, dlg, saveIfaceSettings);
+        connect(chkTagDanbooruNsfw, &QCheckBox::toggled, dlg, saveIfaceSettings);
+        connect(chkTagE621, &QCheckBox::toggled, dlg, saveIfaceSettings);
+        connect(chkTagE621Nsfw, &QCheckBox::toggled, dlg, saveIfaceSettings);
+
+        refreshInterfacePromptTranslationCombo();
+        {
+            QString pt = ifaceSettings.value(QStringLiteral("prompt_translation")).toString().trimmed();
+            if (pt.isEmpty() || pt == QLatin1String("disabled"))
+                comboPromptTranslation->setCurrentIndex(0);
+            else {
+                const int pti = comboPromptTranslation->findData(pt);
+                if (pti >= 0)
+                    comboPromptTranslation->setCurrentIndex(pti);
+            }
+        }
+
         interfaceLayout->addStretch();
+        ifaceScroll->setWidget(ifaceInner);
+        interfaceOuter->addWidget(ifaceScroll);
         stack->addWidget(interfacePage);
 
-        // Performance tab (index 4) — §4.8 Performance Settings
+        // Performance tab (index 4) — Python PerformanceSettings (settings.py L826–937)
         QWidget *perfPage = new QWidget(dlg);
-        QVBoxLayout *perfLayout = new QVBoxLayout(perfPage);
-        QLabel *perfHeading = new QLabel(ComfyTr::tr("Performance Settings"), perfPage);
+        QVBoxLayout *perfOuter = new QVBoxLayout(perfPage);
+        perfOuter->setContentsMargins(0, 0, 0, 0);
+        QScrollArea *perfScroll = new QScrollArea(perfPage);
+        perfScroll->setWidgetResizable(true);
+        perfScroll->setFrameShape(QFrame::NoFrame);
+        perfScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        QWidget *perfInner = new QWidget();
+        QVBoxLayout *perfLayout = new QVBoxLayout(perfInner);
+        QLabel *perfHeading = new QLabel(ComfyTr::tr("Performance Settings"), perfInner);
         QFont perfHeadingFont = perfHeading->font();
         perfHeadingFont.setBold(true);
+        perfHeadingFont.setPointSize(perfHeadingFont.pointSize() + 2);
         perfHeading->setFont(perfHeadingFont);
         perfLayout->addWidget(perfHeading);
-        QFormLayout *perfForm = new QFormLayout();
-        perfForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-        perfForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        perfForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-        perfForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        perfForm->setHorizontalSpacing(12);
-        perfForm->setVerticalSpacing(6);
-        QLabel *activeHistDesc = new QLabel(ComfyTr::tr("Main memory (RAM) used for the history of generated images."), perfPage);
-        activeHistDesc->setWordWrap(true);
-        m_d->labelHistoryUsageMb = new QLabel(ComfyTr::tr("Currently using %1 MB", QStringLiteral("0.0")), perfPage);
-        m_d->labelHistoryUsageMb->setStyleSheet(QStringLiteral("color: green;"));
-        m_d->labelHistoryUsageMb->setToolTip(ComfyTr::tr("Total size of result images in the session history cache."));
+        perfLayout->addSpacing(6);
+
+        auto makePerfLabelColumn = [](QWidget *parent, const QString &title, const QString &description) -> QWidget * {
+            auto *col = new QWidget(parent);
+            auto *colLayout = new QVBoxLayout(col);
+            colLayout->setContentsMargins(0, 0, 0, 0);
+            colLayout->setSpacing(2);
+            auto *titleLabel = new QLabel(title, col);
+            QFont titleFont = titleLabel->font();
+            titleFont.setBold(true);
+            titleLabel->setFont(titleFont);
+            colLayout->addWidget(titleLabel);
+            if (!description.isEmpty()) {
+                auto *descLabel = new QLabel(description, col);
+                descLabel->setWordWrap(true);
+                colLayout->addWidget(descLabel);
+            }
+            col->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            return col;
+        };
+        auto addPerfHistoryBlock = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                         QSpinBox **outSpin, QLabel **outUsageLabel, int min, int max,
+                                                         int step) -> QWidget * {
+            auto *block = new QWidget(parent);
+            auto *blockLayout = new QVBoxLayout(block);
+            blockLayout->setContentsMargins(0, 4, 0, 4);
+            blockLayout->setSpacing(4);
+            blockLayout->addWidget(makePerfLabelColumn(block, title, description));
+            auto *usageRow = new QWidget(block);
+            auto *usageLayout = new QHBoxLayout(usageRow);
+            usageLayout->setContentsMargins(0, 0, 0, 0);
+            auto *spin = new QSpinBox(usageRow);
+            spin->setRange(min, max);
+            spin->setSingleStep(step);
+            spin->setSuffix(ComfyTr::tr(" MB"));
+            auto *usageLabel = new QLabel(ComfyTr::tr("Currently using %1 MB", QStringLiteral("0.0")), usageRow);
+            usageLabel->setStyleSheet(QStringLiteral("color: green; font-style: italic;"));
+            usageLayout->addWidget(spin);
+            usageLayout->addWidget(usageLabel, 1);
+            blockLayout->addWidget(usageRow);
+            *outSpin = spin;
+            *outUsageLabel = usageLabel;
+            return block;
+        };
+        auto addPerfSliderRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                    QSlider **outSlider, QLabel **outValueLabel, int min, int max,
+                                                    const QString &valueFormat) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
+            auto *sliderBox = new QWidget(row);
+            auto *sliderLayout = new QHBoxLayout(sliderBox);
+            sliderLayout->setContentsMargins(0, 0, 0, 0);
+            auto *slider = new QSlider(Qt::Horizontal, sliderBox);
+            slider->setMinimumWidth(200);
+            slider->setMaximumWidth(300);
+            slider->setRange(min, max);
+            auto *valueLabel = new QLabel(sliderBox);
+            const QFontMetrics fm(valueLabel->font());
+            valueLabel->setMinimumWidth(fm.horizontalAdvance(QStringLiteral("1.5×")));
+            valueLabel->setText(valueFormat);
+            sliderLayout->addWidget(slider);
+            sliderLayout->addWidget(valueLabel);
+            rowLayout->addWidget(sliderBox, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outSlider = slider;
+            *outValueLabel = valueLabel;
+            return row;
+        };
+        auto addPerfSpinRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                    QSpinBox **outSpin, int min, int max, const QString &suffix) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
+            auto *spin = new QSpinBox(row);
+            spin->setMinimumWidth(100);
+            spin->setRange(min, max);
+            if (!suffix.isEmpty())
+                spin->setSuffix(suffix);
+            rowLayout->addWidget(spin, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outSpin = spin;
+            return row;
+        };
+        auto addPerfSwitchRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                      const QString &onLabel, const QString &offLabel,
+                                                      ComfySwitchWidget **outSwitch, QLabel **outStateLabel) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
+            auto *stateLabel = new QLabel(onLabel, row);
+            auto *sw = new ComfySwitchWidget(row);
+            rowLayout->addWidget(stateLabel, 0, Qt::AlignRight | Qt::AlignVCenter);
+            rowLayout->addWidget(sw, 0, Qt::AlignRight | Qt::AlignVCenter);
+            connect(sw, &QAbstractButton::toggled, row, [stateLabel, onLabel, offLabel](bool on) {
+                stateLabel->setText(on ? onLabel : offLabel);
+            });
+            *outSwitch = sw;
+            *outStateLabel = stateLabel;
+            return row;
+        };
+        auto addPerfComboRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
+                                                     QComboBox **outCombo) -> QWidget * {
+            auto *row = new QWidget(parent);
+            auto *rowLayout = new QHBoxLayout(row);
+            rowLayout->setContentsMargins(0, 4, 0, 4);
+            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
+            auto *combo = new QComboBox(row);
+            combo->setMinimumWidth(230);
+            rowLayout->addWidget(combo, 0, Qt::AlignRight | Qt::AlignVCenter);
+            *outCombo = combo;
+            return row;
+        };
+
         QJsonObject perfSettings = ComfyUIUtils::loadSettingsJson();
-        QSpinBox *spinActiveHistoryMb = new QSpinBox(perfPage);
-        spinActiveHistoryMb->setRange(5, 20000);
-        spinActiveHistoryMb->setSingleStep(100);
-        spinActiveHistoryMb->setSuffix(ComfyTr::tr(" MB"));
+        QSpinBox *spinActiveHistoryMb = nullptr;
+        QSpinBox *spinStoredHistoryMb = nullptr;
+        perfLayout->addWidget(addPerfHistoryBlock(
+            perfInner,
+            ComfyTr::tr("Active History Size"),
+            ComfyTr::tr("Main memory (RAM) used for the history of generated images."),
+            &spinActiveHistoryMb,
+            &m_d->labelHistoryUsageMb,
+            5,
+            20000,
+            100));
         {
-            int amb = perfSettings.value(QStringLiteral("history_active_mb")).toInt(0);
-            if (amb <= 0) amb = perfSettings.value(QStringLiteral("history_storage")).toInt(20);
+            int amb = perfSettings.value(QStringLiteral("history_size")).toInt(0);
+            if (amb <= 0)
+                amb = perfSettings.value(QStringLiteral("history_active_mb")).toInt(0);
+            if (amb <= 0)
+                amb = perfSettings.value(QStringLiteral("history_storage")).toInt(1000);
             spinActiveHistoryMb->setValue(qBound(5, amb, 20000));
+            spinActiveHistoryMb->setToolTip(ComfyTr::tr("Oldest history entries are removed when over this limit."));
         }
-        spinActiveHistoryMb->setToolTip(ComfyTr::tr("Oldest history entries are removed when over this limit."));
-        QHBoxLayout *activeHistRow = new QHBoxLayout();
-        activeHistRow->addWidget(spinActiveHistoryMb);
-        activeHistRow->addWidget(m_d->labelHistoryUsageMb, 1);
-        QWidget *activeHistWrap = new QWidget(perfPage);
-        QVBoxLayout *activeHistVBox = new QVBoxLayout(activeHistWrap);
-        activeHistVBox->setContentsMargins(0, 0, 0, 0);
-        activeHistVBox->addWidget(activeHistDesc);
-        activeHistVBox->addLayout(activeHistRow);
-        perfForm->addRow(ComfyTr::tr("Active History Size:"), activeHistWrap);
-        QLabel *storedHistDesc = new QLabel(ComfyTr::tr("Memory used to store generated images in .kra files on disk."), perfPage);
-        storedHistDesc->setWordWrap(true);
-        QLabel *labelStoredKraMb = new QLabel(perfPage);
-        labelStoredKraMb->setStyleSheet(QStringLiteral("color: green;"));
-        m_d->labelStoredHistoryMb = labelStoredKraMb;
-        labelStoredKraMb->setText(ComfyTr::tr("Currently using %1 MB", QStringLiteral("0.0")));
-        QSpinBox *spinStoredHistoryMb = new QSpinBox(perfPage);
-        spinStoredHistoryMb->setRange(5, 2000);
-        spinStoredHistoryMb->setSingleStep(5);
-        spinStoredHistoryMb->setSuffix(ComfyTr::tr(" MB"));
-        spinStoredHistoryMb->setValue(qBound(5, perfSettings.value(QStringLiteral("history_document_storage_mb")).toInt(20), 2000));
-        spinStoredHistoryMb->setToolTip(ComfyTr::tr("Reserved for document-embedded history quota."));
-        QHBoxLayout *storedHistRow = new QHBoxLayout();
-        storedHistRow->addWidget(spinStoredHistoryMb);
-        storedHistRow->addWidget(labelStoredKraMb, 1);
-        QWidget *storedHistWrap = new QWidget(perfPage);
-        QVBoxLayout *storedHistVBox = new QVBoxLayout(storedHistWrap);
-        storedHistVBox->setContentsMargins(0, 0, 0, 0);
-        storedHistVBox->addWidget(storedHistDesc);
-        storedHistVBox->addLayout(storedHistRow);
-        perfForm->addRow(ComfyTr::tr("Stored History Size:"), storedHistWrap);
-        QLabel *perfPresetDesc = new QLabel(
-            ComfyTr::tr("Configures performance settings to match available hardware."), perfPage);
-        perfPresetDesc->setWordWrap(true);
-        m_d->labelPerfDevice = new QLabel(perfPage);
+        perfLayout->addWidget(addPerfHistoryBlock(
+            perfInner,
+            ComfyTr::tr("Stored History Size"),
+            ComfyTr::tr("Memory used to store generated images in .kra files on disk."),
+            &spinStoredHistoryMb,
+            &m_d->labelStoredHistoryMb,
+            5,
+            2000,
+            5));
+        {
+            int stored = perfSettings.value(QStringLiteral("history_storage")).toInt(0);
+            if (stored <= 0)
+                stored = perfSettings.value(QStringLiteral("history_document_storage_mb")).toInt(20);
+            spinStoredHistoryMb->setValue(qBound(5, stored, 2000));
+            spinStoredHistoryMb->setToolTip(ComfyTr::tr("Reserved for document-embedded history quota."));
+        }
+
+        QComboBox *comboPerfPreset = new QComboBox(perfInner);
+        comboPerfPreset->setMinimumWidth(230);
+        perfLayout->addWidget(makePerfLabelColumn(
+            perfInner,
+            ComfyTr::tr("Performance Preset"),
+            ComfyTr::tr("Configures performance settings to match available hardware.")));
+        m_d->labelPerfDevice = new QLabel(perfInner);
         m_d->labelPerfDevice->setWordWrap(true);
+        m_d->labelPerfDevice->setStyleSheet(QStringLiteral("font-style: italic;"));
         m_d->labelPerfDevice->setText(m_d->comfyDeviceSummary.isEmpty()
                                           ? ComfyTr::tr("Device: (connect to server)")
                                           : m_d->comfyDeviceSummary);
-        QComboBox *comboPerfPreset = new QComboBox(perfPage);
+        perfLayout->addWidget(m_d->labelPerfDevice);
         comboPerfPreset->addItem(ComfyTr::tr("Automatic"), QStringLiteral("auto"));
         comboPerfPreset->addItem(ComfyTr::tr("CPU"), QStringLiteral("cpu"));
         comboPerfPreset->addItem(ComfyTr::tr("GPU low (up to 6GB)"), QStringLiteral("low"));
         comboPerfPreset->addItem(ComfyTr::tr("GPU medium (6GB to 12GB)"), QStringLiteral("medium"));
         comboPerfPreset->addItem(ComfyTr::tr("GPU high (more than 12GB)"), QStringLiteral("high"));
+        comboPerfPreset->addItem(ComfyTr::tr("Cloud"), QStringLiteral("cloud"));
         comboPerfPreset->addItem(ComfyTr::tr("Custom"), QStringLiteral("custom"));
-        QString pp = perfSettings.value(QStringLiteral("performance_preset")).toString();
-        if (pp.isEmpty()) pp = QStringLiteral("auto");
-        int ppi = comboPerfPreset->findData(pp);
-        comboPerfPreset->setCurrentIndex(ppi >= 0 ? ppi : 0);
-        comboPerfPreset->setToolTip(ComfyTr::tr("Configures performance settings to match available hardware."));
-        QComboBox *comboDiffusionScaleMode = new QComboBox(perfPage);
-        comboDiffusionScaleMode->addItem(ComfyTr::tr("Resize (default)"), QStringLiteral("resize"));
-        comboDiffusionScaleMode->addItem(ComfyTr::tr("None — no performance resolution scaling"), QStringLiteral("none"));
-        comboDiffusionScaleMode->addItem(ComfyTr::tr("Upscale small (under ~1.5×)"), QStringLiteral("upscale_small"));
-        comboDiffusionScaleMode->addItem(ComfyTr::tr("Upscale fast"), QStringLiteral("upscale_fast"));
-        comboDiffusionScaleMode->addItem(ComfyTr::tr("Upscale quality"), QStringLiteral("upscale_quality"));
-        comboDiffusionScaleMode->setToolTip(
-            ComfyTr::tr("Controls whether the performance preset applies a resolution multiplier to generation, and selects the "
-                 "ImageScale interpolation used in the Upscale workspace. "
-                 "\"Upscale small\" caps the multiplier at 1.5× (light upscale)."));
         {
-            QString dsm = perfSettings.value(QStringLiteral("diffusion_scale_mode")).toString();
-            if (dsm.isEmpty())
-                dsm = QStringLiteral("resize");
-            const int dsIx = comboDiffusionScaleMode->findData(dsm);
-            comboDiffusionScaleMode->setCurrentIndex(dsIx >= 0 ? dsIx : 0);
+            QString pp = perfSettings.value(QStringLiteral("performance_preset")).toString();
+            if (pp.isEmpty())
+                pp = QStringLiteral("auto");
+            const int ppi = comboPerfPreset->findData(pp);
+            comboPerfPreset->setCurrentIndex(ppi >= 0 ? ppi : 0);
         }
-        perfForm->addRow(QString(), perfPresetDesc);
-        perfForm->addRow(QString(), m_d->labelPerfDevice);
-        perfForm->addRow(ComfyTr::tr("Performance Preset:"), comboPerfPreset);
-        perfForm->addRow(ComfyTr::tr("Diffusion input scale:"), comboDiffusionScaleMode);
-        QSpinBox *spinUpscaleTileExtent = new QSpinBox(perfPage);
-        spinUpscaleTileExtent->setRange(256, 2048);
-        spinUpscaleTileExtent->setSingleStep(64);
-        spinUpscaleTileExtent->setSuffix(ComfyTr::tr(" px"));
-        spinUpscaleTileExtent->setValue(
-            qBound(256, perfSettings.value(QStringLiteral("upscale_tile_estimate_extent")).toInt(512), 2048));
-        spinUpscaleTileExtent->setToolTip(
-            ComfyTr::tr("Tile size used to estimate how many tiles a large upscaled output would need (memory planning). "
-                 "The built-in upscale workflow is still a single ImageScale pass."));
-        perfForm->addRow(ComfyTr::tr("Upscale tile estimate:"), spinUpscaleTileExtent);
-        QWidget *customPerfWidget = new QWidget(perfPage);
-        QFormLayout *customPerfForm = new QFormLayout(customPerfWidget);
-        customPerfForm->setContentsMargins(0, 0, 0, 0);
-        QSlider *sliderPerfBatch = new QSlider(Qt::Horizontal, customPerfWidget);
-        sliderPerfBatch->setRange(1, 16);
-        QLabel *labelPerfBatchVal = new QLabel(QStringLiteral("1"), customPerfWidget);
-        QHBoxLayout *batchRow = new QHBoxLayout();
-        batchRow->addWidget(sliderPerfBatch);
-        batchRow->addWidget(labelPerfBatchVal);
+        comboPerfPreset->setToolTip(ComfyTr::tr("Configures performance settings to match available hardware."));
+        perfLayout->addWidget(comboPerfPreset, 0, Qt::AlignLeft);
+
+        QWidget *customPerfWidget = new QWidget(perfInner);
+        auto *customPerfLayout = new QVBoxLayout(customPerfWidget);
+        customPerfLayout->setContentsMargins(8, 0, 0, 4);
+        customPerfLayout->setSpacing(0);
+
+        QSlider *sliderPerfBatch = nullptr;
+        QLabel *labelPerfBatchVal = nullptr;
+        customPerfLayout->addWidget(addPerfSliderRow(
+            customPerfWidget,
+            ComfyTr::tr("Maximum Batch Size"),
+            ComfyTr::tr("Increase efficiency by generating multiple images at once."),
+            &sliderPerfBatch,
+            &labelPerfBatchVal,
+            1,
+            16,
+            QStringLiteral("1")));
         sliderPerfBatch->setToolTip(ComfyTr::tr("Increase efficiency by generating multiple images at once."));
-        customPerfForm->addRow(ComfyTr::tr("Maximum Batch Size:"), batchRow);
-        QSlider *sliderPerfRes = new QSlider(Qt::Horizontal, customPerfWidget);
-        sliderPerfRes->setRange(3, 15);
-        QLabel *labelPerfResVal = new QLabel(QStringLiteral("1.0×"), customPerfWidget);
-        QHBoxLayout *resRow = new QHBoxLayout();
-        resRow->addWidget(sliderPerfRes);
-        resRow->addWidget(labelPerfResVal);
+
+        QSlider *sliderPerfRes = nullptr;
+        QLabel *labelPerfResVal = nullptr;
+        customPerfLayout->addWidget(addPerfSliderRow(
+            customPerfWidget,
+            ComfyTr::tr("Resolution Multiplier"),
+            ComfyTr::tr("Scaling factor for generation. Values below 1.0 improve performance for high resolution canvas."),
+            &sliderPerfRes,
+            &labelPerfResVal,
+            3,
+            15,
+            QStringLiteral("1.0×")));
         sliderPerfRes->setToolTip(
             ComfyTr::tr("Scaling factor for generation. Values below 1.0 improve performance for high resolution canvas."));
-        customPerfForm->addRow(ComfyTr::tr("Resolution Multiplier:"), resRow);
-        QSpinBox *spinMaxMp = new QSpinBox(customPerfWidget);
-        spinMaxMp->setRange(1, 99);
-        spinMaxMp->setSuffix(ComfyTr::tr(" MP"));
-        spinMaxMp->setValue(qBound(1, perfSettings.value(QStringLiteral("max_pixel_count_mp")).toInt(8), 99));
-        spinMaxMp->setToolTip(ComfyTr::tr("Maximum resolution to generate images at, in megapixels (FullHD ~ 2MP, 4k ~ 8MP)."));
-        QCheckBox *checkMaxMpAuto = new QCheckBox(ComfyTr::tr("Automatic"), customPerfWidget);
-        checkMaxMpAuto->setToolTip(ComfyTr::tr("When enabled, megapixel limit follows the performance preset or server defaults."));
-        const bool maxMpAutoInit = perfSettings.value(QStringLiteral("max_pixel_auto")).toBool(true);
-        checkMaxMpAuto->setChecked(maxMpAutoInit);
-        spinMaxMp->setEnabled(!maxMpAutoInit);
-        QHBoxLayout *maxMpRow = new QHBoxLayout();
-        maxMpRow->addWidget(spinMaxMp);
-        maxMpRow->addWidget(checkMaxMpAuto);
-        maxMpRow->addStretch();
-        customPerfForm->addRow(ComfyTr::tr("Maximum Pixel Count:"), maxMpRow);
-        QWidget *tiledVaeWidget = new QWidget(customPerfWidget);
-        QHBoxLayout *tiledVaeLay = new QHBoxLayout(tiledVaeWidget);
-        tiledVaeLay->setContentsMargins(0, 0, 0, 0);
-        QRadioButton *radioTiledAutomatic = new QRadioButton(ComfyTr::tr("Automatic"), tiledVaeWidget);
-        QRadioButton *radioTiledAlways = new QRadioButton(ComfyTr::tr("Always"), tiledVaeWidget);
-        auto *bgTiledVae = new QButtonGroup(tiledVaeWidget);
-        bgTiledVae->addButton(radioTiledAutomatic);
-        bgTiledVae->addButton(radioTiledAlways);
-        tiledVaeWidget->setToolTip(ComfyTr::tr("Conserve memory by processing output images in smaller tiles."));
-        tiledVaeLay->addWidget(radioTiledAutomatic);
-        tiledVaeLay->addWidget(radioTiledAlways);
-        tiledVaeLay->addStretch();
+
+        QSpinBox *spinMaxMp = nullptr;
+        customPerfLayout->addWidget(addPerfSpinRow(
+            customPerfWidget,
+            ComfyTr::tr("Maximum Pixel Count"),
+            ComfyTr::tr("Maximum resolution to generate images at, in megapixels (FullHD ~ 2MP, 4k ~ 8MP)."),
+            &spinMaxMp,
+            1,
+            99,
+            ComfyTr::tr(" MP")));
         {
-            QString tvm = perfSettings.value(QStringLiteral("tiled_vae_mode")).toString();
-            if (tvm.isEmpty())
-                tvm = perfSettings.value(QStringLiteral("tiled_vae_always")).toBool(false) ? QStringLiteral("always")
-                                                                                          : QStringLiteral("automatic");
-            if (tvm == QLatin1String("always"))
-                radioTiledAlways->setChecked(true);
-            else
-                radioTiledAutomatic->setChecked(true);
+            int maxMp = perfSettings.value(QStringLiteral("max_pixel_count")).toInt(0);
+            if (maxMp <= 0)
+                maxMp = perfSettings.value(QStringLiteral("max_pixel_count_mp")).toInt(8);
+            spinMaxMp->setValue(qBound(1, maxMp, 99));
         }
-        customPerfForm->addRow(ComfyTr::tr("Tiled VAE:"), tiledVaeWidget);
-        QCheckBox *checkDynCache = new QCheckBox(ComfyTr::tr("Dynamic Caching"), customPerfWidget);
-        checkDynCache->setChecked(perfSettings.value(QStringLiteral("dynamic_caching")).toBool(false));
-        checkDynCache->setToolTip(
+
+        ComfySwitchWidget *switchTiledVae = nullptr;
+        QLabel *labelTiledVaeState = nullptr;
+        customPerfLayout->addWidget(addPerfSwitchRow(
+            customPerfWidget,
+            ComfyTr::tr("Tiled VAE"),
+            ComfyTr::tr("Conserve memory by processing output images in smaller tiles."),
+            ComfyTr::tr("Always"),
+            ComfyTr::tr("Automatic"),
+            &switchTiledVae,
+            &labelTiledVaeState));
+        {
+            bool tiledAlways = perfSettings.value(QStringLiteral("tiled_vae")).toBool(false);
+            if (!perfSettings.contains(QStringLiteral("tiled_vae"))) {
+                QString tvm = perfSettings.value(QStringLiteral("tiled_vae_mode")).toString();
+                if (tvm.isEmpty())
+                    tvm = perfSettings.value(QStringLiteral("tiled_vae_always")).toBool(false)
+                        ? QStringLiteral("always")
+                        : QStringLiteral("automatic");
+                tiledAlways = (tvm == QLatin1String("always"));
+            }
+            switchTiledVae->setChecked(tiledAlways);
+            labelTiledVaeState->setText(tiledAlways ? ComfyTr::tr("Always") : ComfyTr::tr("Automatic"));
+        }
+
+        perfLayout->addWidget(customPerfWidget);
+
+        ComfySwitchWidget *switchDynCache = nullptr;
+        QLabel *labelDynCacheState = nullptr;
+        perfLayout->addWidget(addPerfSwitchRow(
+            perfInner,
+            ComfyTr::tr("Dynamic Caching"),
+            ComfyTr::tr("Re-use outputs of previous steps (First Block Cache) to speed up generation."),
+            ComfyTr::tr("On"),
+            ComfyTr::tr("Off"),
+            &switchDynCache,
+            &labelDynCacheState));
+        switchDynCache->setChecked(perfSettings.value(QStringLiteral("dynamic_caching")).toBool(false));
+        labelDynCacheState->setText(switchDynCache->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+        switchDynCache->setToolTip(
             ComfyTr::tr("Re-use outputs of previous steps (First Block Cache) to speed up generation.\n\n"
-                 "When enabled, the dock turns on common enable toggles on workflow nodes whose class names look like "
-                 "First Block / Block / FB / Tea cache nodes (if those nodes are already in the graph)."));
-        customPerfForm->addRow(QString(), checkDynCache);
-        QCheckBox *checkMultiThread = new QCheckBox(ComfyTr::tr("Multi-Threading"), customPerfWidget);
-        checkMultiThread->setChecked(perfSettings.value(QStringLiteral("multi_threading")).toBool(true));
-        checkMultiThread->setToolTip(
+                        "When enabled, the dock turns on common enable toggles on workflow nodes whose class names look like "
+                        "First Block / Block / FB / Tea cache nodes (if those nodes are already in the graph)."));
+
+        ComfySwitchWidget *switchMultiThread = nullptr;
+        QLabel *labelMultiThreadState = nullptr;
+        perfLayout->addWidget(addPerfSwitchRow(
+            perfInner,
+            ComfyTr::tr("Multi-Threading"),
+            ComfyTr::tr("Perform certain plugin operations in background threads."),
+            ComfyTr::tr("On"),
+            ComfyTr::tr("Off"),
+            &switchMultiThread,
+            &labelMultiThreadState));
+        switchMultiThread->setChecked(perfSettings.value(QStringLiteral("multi_threading")).toBool(true));
+        labelMultiThreadState->setText(switchMultiThread->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+        switchMultiThread->setToolTip(
             ComfyTr::tr("Perform certain plugin operations in background threads.\n\n"
-                 "When enabled: Import Workflow reads and strips comments off the UI thread, and large \"Dump workflow\" "
-                 "writes to last_comfy_prompt.json are written on a worker thread."));
-        customPerfForm->addRow(QString(), checkMultiThread);
+                        "When enabled: Import Workflow reads and strips comments off the UI thread, and large \"Dump workflow\" "
+                        "writes to last_comfy_prompt.json are written on a worker thread."));
+
         auto syncPerfSlidersFromDock = [this, sliderPerfBatch, labelPerfBatchVal, sliderPerfRes, labelPerfResVal, spinMaxMp,
-                                        checkMaxMpAuto, radioTiledAutomatic, radioTiledAlways, comboDiffusionScaleMode,
-                                        spinUpscaleTileExtent]() {
+                                        switchTiledVae, labelTiledVaeState, switchDynCache, labelDynCacheState,
+                                        switchMultiThread, labelMultiThreadState]() {
             if (m_d->spinBatchCount) {
                 sliderPerfBatch->blockSignals(true);
                 sliderPerfBatch->setValue(qBound(1, m_d->spinBatchCount->value(), 16));
@@ -1918,78 +2041,75 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             }
             const QJsonObject s = ComfyUIUtils::loadSettingsJson();
             spinMaxMp->blockSignals(true);
-            spinMaxMp->setValue(qBound(1, s.value(QStringLiteral("max_pixel_count_mp")).toInt(8), 99));
+            int maxMp = s.value(QStringLiteral("max_pixel_count")).toInt(0);
+            if (maxMp <= 0)
+                maxMp = s.value(QStringLiteral("max_pixel_count_mp")).toInt(8);
+            spinMaxMp->setValue(qBound(1, maxMp, 99));
             spinMaxMp->blockSignals(false);
-            const bool autoMp = s.value(QStringLiteral("max_pixel_auto")).toBool(true);
-            checkMaxMpAuto->blockSignals(true);
-            checkMaxMpAuto->setChecked(autoMp);
-            checkMaxMpAuto->blockSignals(false);
-            spinMaxMp->setEnabled(!autoMp);
-            QString tvm = s.value(QStringLiteral("tiled_vae_mode")).toString();
-            if (tvm.isEmpty())
-                tvm = s.value(QStringLiteral("tiled_vae_always")).toBool(false) ? QStringLiteral("always")
-                                                                              : QStringLiteral("automatic");
-            radioTiledAutomatic->blockSignals(true);
-            radioTiledAlways->blockSignals(true);
-            if (tvm == QLatin1String("always"))
-                radioTiledAlways->setChecked(true);
-            else
-                radioTiledAutomatic->setChecked(true);
-            radioTiledAutomatic->blockSignals(false);
-            radioTiledAlways->blockSignals(false);
-            QString dsm2 = s.value(QStringLiteral("diffusion_scale_mode")).toString();
-            if (dsm2.isEmpty())
-                dsm2 = QStringLiteral("resize");
-            const int dsmIx = comboDiffusionScaleMode->findData(dsm2);
-            comboDiffusionScaleMode->blockSignals(true);
-            comboDiffusionScaleMode->setCurrentIndex(dsmIx >= 0 ? dsmIx : 0);
-            comboDiffusionScaleMode->blockSignals(false);
-            spinUpscaleTileExtent->blockSignals(true);
-            spinUpscaleTileExtent->setValue(
-                qBound(256, s.value(QStringLiteral("upscale_tile_estimate_extent")).toInt(512), 2048));
-            spinUpscaleTileExtent->blockSignals(false);
+            bool tiledAlways = s.value(QStringLiteral("tiled_vae")).toBool(false);
+            if (!s.contains(QStringLiteral("tiled_vae"))) {
+                QString tvm = s.value(QStringLiteral("tiled_vae_mode")).toString();
+                if (tvm.isEmpty())
+                    tvm = s.value(QStringLiteral("tiled_vae_always")).toBool(false) ? QStringLiteral("always")
+                                                                                  : QStringLiteral("automatic");
+                tiledAlways = (tvm == QLatin1String("always"));
+            }
+            switchTiledVae->blockSignals(true);
+            switchTiledVae->setChecked(tiledAlways);
+            switchTiledVae->blockSignals(false);
+            labelTiledVaeState->setText(tiledAlways ? ComfyTr::tr("Always") : ComfyTr::tr("Automatic"));
+            switchDynCache->blockSignals(true);
+            switchDynCache->setChecked(s.value(QStringLiteral("dynamic_caching")).toBool(false));
+            switchDynCache->blockSignals(false);
+            labelDynCacheState->setText(switchDynCache->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+            switchMultiThread->blockSignals(true);
+            switchMultiThread->setChecked(s.value(QStringLiteral("multi_threading")).toBool(true));
+            switchMultiThread->blockSignals(false);
+            labelMultiThreadState->setText(switchMultiThread->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
             if (m_d->labelPerfDevice)
                 m_d->labelPerfDevice->setText(m_d->comfyDeviceSummary.isEmpty()
                                                   ? ComfyTr::tr("Device: (connect to server)")
                                                   : m_d->comfyDeviceSummary);
         };
         syncPerfSlidersFromDock();
-        auto updateCustomPerfVisible = [comboPerfPreset, customPerfWidget]() {
-            customPerfWidget->setVisible(comboPerfPreset->currentData().toString() == QLatin1String("custom"));
+        auto updateCustomPerfEnabled = [comboPerfPreset, customPerfWidget]() {
+            customPerfWidget->setEnabled(comboPerfPreset->currentData().toString() == QLatin1String("custom"));
         };
-        updateCustomPerfVisible();
-        auto savePerfSettings = [this, comboPerfPreset, comboDiffusionScaleMode, spinUpscaleTileExtent, spinActiveHistoryMb,
-                                 spinStoredHistoryMb, spinMaxMp, checkMaxMpAuto, radioTiledAlways, checkDynCache,
-                                 checkMultiThread]() {
+        updateCustomPerfEnabled();
+        auto savePerfSettings = [this, comboPerfPreset, spinActiveHistoryMb, spinStoredHistoryMb, spinMaxMp, switchTiledVae,
+                                 switchDynCache, switchMultiThread]() {
             QJsonObject s = ComfyUIUtils::loadSettingsJson();
             s.insert(QStringLiteral("performance_preset"), comboPerfPreset->currentData().toString());
-            {
-                QString dsm = comboDiffusionScaleMode->currentData().toString();
-                if (dsm.isEmpty())
-                    dsm = QStringLiteral("resize");
-                s.insert(QStringLiteral("diffusion_scale_mode"), dsm);
-            }
-            s.insert(QStringLiteral("upscale_tile_estimate_extent"), spinUpscaleTileExtent->value());
-            s.insert(QStringLiteral("history_active_mb"), spinActiveHistoryMb->value());
-            s.insert(QStringLiteral("history_document_storage_mb"), spinStoredHistoryMb->value());
-            s.insert(QStringLiteral("max_pixel_count_mp"), spinMaxMp->value());
-            s.insert(QStringLiteral("max_pixel_auto"), checkMaxMpAuto->isChecked());
-            const QString tiledMode = radioTiledAlways->isChecked() ? QStringLiteral("always") : QStringLiteral("automatic");
-            s.insert(QStringLiteral("tiled_vae_mode"), tiledMode.isEmpty() ? QStringLiteral("automatic") : tiledMode);
-            s.insert(QStringLiteral("tiled_vae_always"), tiledMode == QLatin1String("always"));
-            s.insert(QStringLiteral("dynamic_caching"), checkDynCache->isChecked());
-            s.insert(QStringLiteral("multi_threading"), checkMultiThread->isChecked());
+            const int activeMb = spinActiveHistoryMb->value();
+            const int storedMb = spinStoredHistoryMb->value();
+            s.insert(QStringLiteral("history_size"), activeMb);
+            s.insert(QStringLiteral("history_active_mb"), activeMb);
+            s.insert(QStringLiteral("history_storage"), storedMb);
+            s.insert(QStringLiteral("history_document_storage_mb"), storedMb);
+            const int maxMp = spinMaxMp->value();
+            s.insert(QStringLiteral("max_pixel_count"), maxMp);
+            s.insert(QStringLiteral("max_pixel_count_mp"), maxMp);
+            const bool tiledAlways = switchTiledVae->isChecked();
+            s.insert(QStringLiteral("tiled_vae"), tiledAlways);
+            const QString tiledMode = tiledAlways ? QStringLiteral("always") : QStringLiteral("automatic");
+            s.insert(QStringLiteral("tiled_vae_mode"), tiledMode);
+            s.insert(QStringLiteral("tiled_vae_always"), tiledAlways);
+            s.insert(QStringLiteral("dynamic_caching"), switchDynCache->isChecked());
+            s.insert(QStringLiteral("multi_threading"), switchMultiThread->isChecked());
+            s.insert(QStringLiteral("batch_size"), m_d->spinBatchCount ? m_d->spinBatchCount->value() : 1);
+            s.insert(QStringLiteral("resolution_multiplier"), m_d->resolutionMultiplier <= 0.0 ? 1.0 : m_d->resolutionMultiplier);
             ComfyUIUtils::saveSettingsJson(s);
             refreshQueueResolutionRowVisibility();
             updateUpscaleTargetSize();
         };
-        connect(comboPerfPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, [savePerfSettings, updateCustomPerfVisible](int) {
-            updateCustomPerfVisible();
-            savePerfSettings();
-        });
+        connect(comboPerfPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                [savePerfSettings, updateCustomPerfEnabled](int) {
+                    updateCustomPerfEnabled();
+                    savePerfSettings();
+                });
         connect(comboPerfPreset, QOverload<int>::of(&QComboBox::activated), this,
                 [this, comboPerfPreset, sliderPerfBatch, labelPerfBatchVal, sliderPerfRes, labelPerfResVal, spinMaxMp,
-                 checkMaxMpAuto, radioTiledAutomatic, radioTiledAlways, savePerfSettings, syncPerfSlidersFromDock](int) {
+                 switchTiledVae, labelTiledVaeState, savePerfSettings, syncPerfSlidersFromDock](int) {
                     const QString key = comboPerfPreset->currentData().toString();
                     if (key == QLatin1String("custom")) {
                         savePerfSettings();
@@ -2003,35 +2123,37 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     }
                     int batch = 4;
                     int maxMp = 8;
-                    QString tiledMode = QStringLiteral("automatic");
+                    bool tiledAlways = false;
                     if (key == QLatin1String("cpu")) {
                         batch = 1;
                         maxMp = 2;
-                        tiledMode = QStringLiteral("automatic");
                     } else if (key == QLatin1String("low")) {
                         batch = 2;
                         maxMp = 2;
-                        tiledMode = QStringLiteral("always");
+                        tiledAlways = true;
                     } else if (key == QLatin1String("medium")) {
                         batch = 4;
                         maxMp = 6;
-                        tiledMode = QStringLiteral("automatic");
                     } else if (key == QLatin1String("high")) {
                         batch = 6;
                         maxMp = 8;
-                        tiledMode = QStringLiteral("automatic");
+                    } else if (key == QLatin1String("cloud")) {
+                        batch = 8;
+                        maxMp = 6;
                     } else {
                         savePerfSettings();
                         return;
                     }
-                    if (m_d->spinBatchCount) m_d->spinBatchCount->setValue(batch);
+                    if (m_d->spinBatchCount)
+                        m_d->spinBatchCount->setValue(batch);
                     m_d->resolutionMultiplier = 1.0;
                     if (m_d->sliderResolutionMultiplier) {
                         m_d->sliderResolutionMultiplier->blockSignals(true);
                         m_d->sliderResolutionMultiplier->setValue(10);
                         m_d->sliderResolutionMultiplier->blockSignals(false);
                     }
-                    if (m_d->labelResolutionMultiplier) m_d->labelResolutionMultiplier->setText(QStringLiteral("1.0×"));
+                    if (m_d->labelResolutionMultiplier)
+                        m_d->labelResolutionMultiplier->setText(QStringLiteral("1.0×"));
                     KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("BatchCount", batch);
                     KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("ResolutionMultiplier", 1.0);
                     sliderPerfBatch->blockSignals(true);
@@ -2045,18 +2167,10 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     spinMaxMp->blockSignals(true);
                     spinMaxMp->setValue(maxMp);
                     spinMaxMp->blockSignals(false);
-                    checkMaxMpAuto->blockSignals(true);
-                    checkMaxMpAuto->setChecked(false);
-                    checkMaxMpAuto->blockSignals(false);
-                    spinMaxMp->setEnabled(true);
-                    radioTiledAutomatic->blockSignals(true);
-                    radioTiledAlways->blockSignals(true);
-                    if (tiledMode == QLatin1String("always"))
-                        radioTiledAlways->setChecked(true);
-                    else
-                        radioTiledAutomatic->setChecked(true);
-                    radioTiledAutomatic->blockSignals(false);
-                    radioTiledAlways->blockSignals(false);
+                    switchTiledVae->blockSignals(true);
+                    switchTiledVae->setChecked(tiledAlways);
+                    switchTiledVae->blockSignals(false);
+                    labelTiledVaeState->setText(tiledAlways ? ComfyTr::tr("Always") : ComfyTr::tr("Automatic"));
                     savePerfSettings();
                 });
         connect(spinActiveHistoryMb, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, savePerfSettings](int) {
@@ -2066,18 +2180,13 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         });
         connect(spinStoredHistoryMb, QOverload<int>::of(&QSpinBox::valueChanged), dlg, savePerfSettings);
         connect(spinMaxMp, QOverload<int>::of(&QSpinBox::valueChanged), dlg, savePerfSettings);
-        connect(checkMaxMpAuto, &QCheckBox::toggled, dlg, [spinMaxMp, savePerfSettings](bool on) {
-            spinMaxMp->setEnabled(!on);
-            savePerfSettings();
-        });
-        connect(bgTiledVae, &QButtonGroup::idClicked, dlg, [savePerfSettings](int) { savePerfSettings(); });
-        connect(checkDynCache, &QCheckBox::toggled, dlg, savePerfSettings);
-        connect(checkMultiThread, &QCheckBox::toggled, dlg, savePerfSettings);
-        connect(comboDiffusionScaleMode, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg, savePerfSettings);
-        connect(spinUpscaleTileExtent, QOverload<int>::of(&QSpinBox::valueChanged), dlg, savePerfSettings);
+        connect(switchTiledVae, &QAbstractButton::toggled, dlg, savePerfSettings);
+        connect(switchDynCache, &QAbstractButton::toggled, dlg, savePerfSettings);
+        connect(switchMultiThread, &QAbstractButton::toggled, dlg, savePerfSettings);
         connect(sliderPerfBatch, &QSlider::valueChanged, this, [this, labelPerfBatchVal, savePerfSettings](int v) {
             labelPerfBatchVal->setText(QString::number(v));
-            if (m_d->spinBatchCount) m_d->spinBatchCount->setValue(v);
+            if (m_d->spinBatchCount)
+                m_d->spinBatchCount->setValue(v);
             KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("BatchCount", v);
             savePerfSettings();
         });
@@ -2095,9 +2204,10 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("ResolutionMultiplier", mul);
             savePerfSettings();
         });
-        perfLayout->addLayout(perfForm);
-        perfLayout->addWidget(customPerfWidget);
+
         perfLayout->addStretch();
+        perfScroll->setWidget(perfInner);
+        perfOuter->addWidget(perfScroll);
         stack->addWidget(perfPage);
 
         // Plugin tab removed on Android (per FAITHFUL_PORT note above). The
@@ -2111,7 +2221,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             m_d->btnRefreshCheckpoints->hide();
         }
 
-        // Footer (Restore Defaults, version text, open settings folder, Ok)
+        // Footer (Restore Defaults, version text, Ok)
         QHBoxLayout *footerLayout = new QHBoxLayout();
         QPushButton *restoreButton = new QPushButton(ComfyTr::tr("Restore Defaults"), dlg);
         connect(restoreButton, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRestoreDefaults);
@@ -2121,12 +2231,6 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         footerVersion->setAlignment(Qt::AlignCenter);
         footerVersion->setStyleSheet(QStringLiteral("color: gray; font-style: italic;"));
         footerLayout->addWidget(footerVersion, 1);
-        QPushButton *openSettingsFolder = new QPushButton(ComfyTr::tr("Open Settings folder"), dlg);
-        connect(openSettingsFolder, &QPushButton::clicked, this, [this](bool) {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(ComfyUIUtils::pluginUserDataDir()));
-        });
-        footerLayout->addWidget(openSettingsFolder);
-        // §4.3: "Open Settings folder", then "Ok" on the right of the same footer row
         QPushButton *okButton = new QPushButton(ComfyTr::tr("Ok"), dlg);
         okButton->setDefault(true);
         okButton->setAutoDefault(true);
@@ -2139,9 +2243,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
 
         connect(navList, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
         connect(navList, &QListWidget::currentRowChanged, this, [this, syncStylesFromDock, syncPerfSlidersFromDock](int row) {
-            if (row == 0) {
-                refreshConnectionActionButton();
-            }
+            if (row == 0)
+                refreshConnectionTabUi();
             if (row == 1)
                 syncStylesFromDock();
             if (row == 4) {
@@ -2153,7 +2256,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         updateHistoryUsageLabel();
         navList->setCurrentRow(0);
 
-        refreshConnectionActionButton();
+        refreshConnectionTabUi();
         refreshCustomWorkflowParameterPanel();
     }
 
@@ -2171,7 +2274,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         }
         refreshCustomWorkflowParameterPanel();
         syncPluginUpdateUi();
-        refreshConnectionActionButton();
+        refreshConnectionTabUi();
         m_d->settingsDialog->show();
         m_d->settingsDialog->raise();
         m_d->settingsDialog->activateWindow();

@@ -1,5 +1,9 @@
 # Building Krita for Android
 
+**This file is outdated.** Use [ANDROID_BUILD.md](ANDROID_BUILD.md) for this machine (Linux build host + Mac emulator). Official upstream guide: https://docs.krita.org/en/untranslatable_pages/building/build_krita_for_android.html
+
+---
+
 First of all, I use linux to do my builds and testing. Although,
 they _should_ work on Windows/macOS, I cannot give any guarantee 
 that it will.
@@ -52,6 +56,12 @@ That's all!
 To install run `adb install -d -r <build-root>/krita_build_apk/build/outputs/apk/debug/krita_build_apk-debug.apk`.
 
 `adb` should be in `<sdk-root>/platform-tools/`
+
+## Mac emulator from Linux build host
+
+Emulator on Mac; build on Linux. Tunnel, build, package, and deploy commands for
+this setup (including pitfalls — do not edit Gradle/CMake configs):
+[packaging/android/REMOTE_MAC_EMULATOR.md](packaging/android/REMOTE_MAC_EMULATOR.md).
 
 ## Crash
 

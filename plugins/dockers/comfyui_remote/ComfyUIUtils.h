@@ -24,6 +24,8 @@
 #include <QUrl>
 #include <QtGlobal>  // qBound
 
+#include "ComfyStyleCollection.h"
+
 #include "ComfyResources.h"
 
 #include "ComfyControlLayer.h"
@@ -68,6 +70,8 @@ QJsonArray loadLorasJsonArray();
 bool saveLorasJsonArray(const QJsonArray &arr);
 // §8.5: Append `<lora:filename:weight>` for each enabled library entry (weight = strength_percent / 100).
 QString mergeLibraryLoraTagsIntoPositivePrompt(const QString &positivePrompt);
+/// Python v1.23+: append `lora_triggers` metadata for enabled style LoRAs (workflow applies weights via LoraLoader).
+QString mergeStyleLoraTriggersIntoPositivePrompt(const QString &positivePrompt, const QJsonArray &styleLoras);
 
 // §13.165: On load, check plugin is in expected location (e.g. under dockers/ or .git); if not, log warning. Call once from plugin constructor.
 void checkPluginInstallationPath();
@@ -80,6 +84,8 @@ void migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(const KSharedConfi
 QString settingsFilePath();
 QJsonObject loadSettingsJson();
 bool saveSettingsJson(const QJsonObject &obj);
+/// Persisted ComfyUI server URL from settings.json or KConfig (empty when never configured).
+QString savedServerUrl();
 // §4.8: Performance → Multi-Threading (subset of operations honor this flag).
 inline bool multiThreadingEnabled()
 {
@@ -208,6 +214,8 @@ inline QString documentUiJsonAnnotationKey() {
     return documentAnnotationKey(QStringLiteral("ui.json"));
 }
 
+/// Ensure host:port or partial URL has http/https scheme for QNetworkRequest.
+QString normalizeComfyServerBaseUrl(const QString &hostOrUrl);
 // Resolve ComfyUI base URL + relative API path (e.g. api/etn/workflow/subscribe) for HTTP requests
 QUrl comfyResolveApiUrl(const QString &baseUrlTrimmed, const QString &relativeApiPath);
 // Build ws/wss URL for ComfyUI /ws endpoint (scheme/host/port from HTTP URL)
@@ -285,7 +293,14 @@ bool samplerPresetLookup(const QJsonObject &root,
                          QString *outScheduler,
                          int *outSteps,
                          int *outMinimumSteps,
-                         double *outCfg);
+                         double *outCfg,
+                         QString *outLora = nullptr);
+/// Preset names for sampler combos (non-hidden, plus ensureIncluded and presets referenced by styles).
+QStringList visibleSamplerPresetNames(const QString &ensureIncluded = QString());
+/// Python StylePresets._set_checkpoint_warning messages (best-effort without full workload API).
+QStringList styleCheckpointWarnings(const struct ComfyStyleEntry &style,
+                                    const QStringList &serverCheckpointNames,
+                                    const QJsonObject &objectInfoRoot);
 struct ResolvedSamplerInputs {
     QString sampler;
     QString scheduler;
@@ -293,7 +308,8 @@ struct ResolvedSamplerInputs {
     double cfg = 8.0;
 };
 // §4.5: Live uses live_sampler_preset when set; otherwise dock sampler row.
-ResolvedSamplerInputs resolveSamplerForLive(const QJsonObject &settings,
+ResolvedSamplerInputs resolveSamplerForLive(const ComfyStyleEntry *styleEntry,
+                                            const QJsonObject &settings,
                                             const QString &dockSamplerText,
                                             int dockSteps,
                                             double dockCfg);
@@ -569,13 +585,15 @@ bool extractZipToDirectory(const QString &zipPath, const QString &destDir, QStri
 QStringList loadTagCsvTags(const QString &filePath);
 // §13.48: `user_data_dir/tags` (created on demand); CSVs named `{stem}.csv` per settings tag_files
 QString tagsStorageDir();
+/// Stems of `*.csv` tag files in plugin install `tags/` and `tagsStorageDir()` (Python `_tag_files()`).
+QStringList discoverTagFileStems();
 // §13.48: Merge tags from tag_directory (or default tags dir) + stems in tag_files (default Danbooru, e621)
 QStringList tagKeywordsForAutocomplete(const QJsonObject &settings = QJsonObject());
 
 // §13.4: Prompt import from image file — read A1111 "parameters" from PNG (tEXt chunk); returns (positive, negative) or (empty, empty)
 QPair<QString, QString> readPromptFromImageFile(const QString &filePath);
 
-// §13.125: Edit mode + linked_edit_style — KSampler/checkpoint/style/negative from named custom preset (settings.json + KConfig)
+// Edit mode + per-style linked_edit_style — KSampler/checkpoint/style/negative from linked style entry
 struct LinkedEditStyleOverride {
     bool active = false;
     QString checkpoint;
@@ -587,8 +605,9 @@ struct LinkedEditStyleOverride {
     QString stylePositiveTemplate;
     QString styleNegative;
 };
-LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QString &dockCkpt, int dockSteps, double dockCfg,
-                                                double dockDenoise, const QString &dockSampler, const QString &dockScheduler);
+LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QString &linkedStyleId, const QString &dockCkpt,
+                                                int dockSteps, double dockCfg, double dockDenoise, const QString &dockSampler,
+                                                const QString &dockScheduler);
 
 // §13.125: Merge style template with user/region instruction; {prompt} placeholder per spec style JSON
 QString mergeStylePromptWithInstruction(const QString &styleTemplate, const QString &userInstruction);

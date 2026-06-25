@@ -7,6 +7,7 @@
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyStyleCollection.h"
+#include "ComfyStyleLoraListWidget.h"
 #include "ComfyWorkflowEngine.h"
 #include "ComfyFileLibrary.h"
 #include "ComfyControlLayer.h"
@@ -787,7 +788,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->welcomeErrorLabel->setStyleSheet(QStringLiteral("color: #b58900;"));  // Yellow for error line (§13.73)
     m_d->welcomeErrorLabel->hide();
     QPushButton *btnConfigure = new QPushButton(ComfyTr::tr("Configure"), m_d->welcomeConnectionWidget);
-    btnConfigure->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("settings"))));
+    btnConfigure->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
     connect(btnConfigure, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
     connWidgetLayout->addWidget(m_d->welcomeStatusLabel);
     connWidgetLayout->addWidget(m_d->welcomeErrorLabel);
@@ -809,18 +810,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QGroupBox *connGroup = new QGroupBox(ComfyTr::tr("Connection"));
     QVBoxLayout *connLayout = new QVBoxLayout(connGroup);
     m_d->editServerUrl = new QLineEdit();
-    {
-        // §3.1: Prefer user_data_dir/settings.json, fallback to KConfig
-        QJsonObject settings = ComfyUIUtils::loadSettingsJson();
-        QString savedUrl;
-        if (settings.contains(QStringLiteral("server_url")))
-            savedUrl = settings.value(QStringLiteral("server_url")).toString();
-        if (savedUrl.isEmpty()) {
-            KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-            savedUrl = cfg.readEntry("ServerUrl", QStringLiteral("127.0.0.1:8188"));
-        }
-        m_d->editServerUrl->setText(savedUrl);
-    }
+    m_d->editServerUrl->setText(ComfyUIUtils::savedServerUrl());
     m_d->editServerUrl->setPlaceholderText(ComfyTr::tr("e.g. 127.0.0.1:8188"));
     m_d->editServerUrl->setClearButtonEnabled(true);
     connect(m_d->editServerUrl, &QLineEdit::editingFinished, this, [this]() {
@@ -889,8 +879,11 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->editCustomWorkflow->setPlaceholderText(
         ComfyTr::tr("Paste ComfyUI workflow: API export (File → Export), or saved UI JSON (nodes/links) after connecting to the server."));
     m_d->editCustomWorkflow->setMaximumHeight(80);
-    m_d->btnLoadWorkflow = new QPushButton(ComfyTr::tr("Load from file…"));
-    connect(m_d->btnLoadWorkflow, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
+    m_d->customWorkflowParamsGroup = new QGroupBox(ComfyTr::tr("Workflow parameters (ETN)"));
+    m_d->customWorkflowParamsForm = new QFormLayout(m_d->customWorkflowParamsGroup);
+    m_d->customWorkflowParamsGroup->setLayout(m_d->customWorkflowParamsForm);
+    m_d->customWorkflowParamsGroup->setVisible(false);
+    m_d->customWorkflowParamsGroup->setParent(nullptr);
     m_d->customWorkflowDocumentSaveTimer = new QTimer(this);
     m_d->customWorkflowDocumentSaveTimer->setSingleShot(true);
     connect(m_d->customWorkflowDocumentSaveTimer, &QTimer::timeout, this, [this]() {
@@ -907,7 +900,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // Open settings dialog (connection + workflow) instead of exposing config directly
     QPushButton *btnSettings = new QPushButton(ComfyTr::tr("Settings…"));
-    btnSettings->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("settings"))));
+    btnSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
     connect(btnSettings, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotConfigureHelp);
     connLayout->addWidget(btnSettings);
     scrollLayout->addWidget(connGroup);
@@ -930,15 +923,15 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     m_d->comboWorkspace = new QComboBox();
     m_d->comboWorkspace->addItem(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-generation"))), ComfyTr::tr("Generate"));
+        ComfyTheme::icon(QStringLiteral("workspace-generation")), ComfyTr::tr("Generate"));
     m_d->comboWorkspace->addItem(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-upscaling"))), ComfyTr::tr("Upscale"));
+        ComfyTheme::icon(QStringLiteral("workspace-upscaling")), ComfyTr::tr("Upscale"));
     m_d->comboWorkspace->addItem(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-live"))), ComfyTr::tr("Live"));
+        ComfyTheme::icon(QStringLiteral("workspace-live")), ComfyTr::tr("Live"));
     m_d->comboWorkspace->addItem(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-animation"))), ComfyTr::tr("Animation"));
+        ComfyTheme::icon(QStringLiteral("workspace-animation")), ComfyTr::tr("Animation"));
     m_d->comboWorkspace->addItem(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-custom"))), ComfyTr::tr("Graph"));
+        ComfyTheme::icon(QStringLiteral("workspace-custom")), ComfyTr::tr("Graph"));
     m_d->comboWorkspace->setToolTip(ComfyTr::tr("Choose workspace: image generation, upscaling, live painting, animation, or custom graph workflow."));
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -1046,8 +1039,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         topRow->addWidget(m_d->comboWorkspace);
         topRow->addWidget(m_d->comboPreset, 1);
         QToolButton *btnTopSettings = new QToolButton(genGroup);
-        btnTopSettings->setIcon(KisIconUtils::loadIcon(
-            ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("settings"))));
+        btnTopSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
         btnTopSettings->setToolTip(ComfyTr::tr("Settings…"));
         btnTopSettings->setAutoRaise(true);
         connect(btnTopSettings, &QToolButton::clicked,
@@ -1260,7 +1252,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->labelNegativePromptAlert = new QLabel(m_d->negativePromptBlock);
     m_d->labelNegativePromptAlert->setToolTip(ComfyTr::tr("The selected Style does not use the negative prompt."));
     m_d->labelNegativePromptAlert->setPixmap(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("alert"))).pixmap(16, 16));
+        ComfyTheme::icon(QStringLiteral("alert")).pixmap(16, 16));
     m_d->labelNegativePromptAlert->setVisible(false);
     negativePromptRow->addWidget(m_d->labelNegativePromptAlert);
     negBlockLayout->addLayout(negativePromptRow);
@@ -1420,7 +1412,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->spinSeed->setValue(0);
     m_d->btnRandomSeed = new QPushButton();
     m_d->btnRandomSeed->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("random"))));  // §5.4: dice icon for random seed
+        ComfyTheme::icon(QStringLiteral("random")));  // §5.4: dice icon for random seed
     m_d->btnRandomSeed->setToolTip(ComfyTr::tr("Pick a new random seed."));
     m_d->btnRandomSeed->setAccessibleName(ComfyTr::tr("Random seed"));
     connect(m_d->btnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
@@ -1472,7 +1464,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     m_d->btnGenerate = new QPushButton(ComfyTr::tr("Generate"));
     m_d->btnGenerate->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("generate"))));  // §5.4: sparkle / magic-style icon
+        ComfyTheme::icon(QStringLiteral("generate")));  // §5.4: sparkle / magic-style icon
     connect(m_d->btnGenerate, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerate);
     genContentLayout->addWidget(m_d->btnGenerate);
 
@@ -1945,7 +1937,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->queueCheckFixedSeed->setChecked(m_d->checkFixedSeed->isChecked());
     m_d->queueBtnRandomSeed = new QPushButton(queueWidget);
     m_d->queueBtnRandomSeed->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("random"))));
+        ComfyTheme::icon(QStringLiteral("random")));
     m_d->queueBtnRandomSeed->setToolTip(ComfyTr::tr("Pick a new random seed."));
     m_d->queueBtnRandomSeed->setAccessibleName(ComfyTr::tr("Random seed"));
     connect(m_d->queueBtnRandomSeed, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRandomSeed);
@@ -1986,7 +1978,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     queueLayout->addWidget(m_d->queueEnqueueModeRow);
 
     QPushButton *popupCancel = new QPushButton(ComfyTr::tr("Cancel all"), queueWidget);
-    popupCancel->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("cancel"))));
+    popupCancel->setIcon(ComfyTheme::icon(QStringLiteral("cancel")));
     popupCancel->setToolTip(ComfyTr::tr("Stop the running job and clear the queue (Cancel All)."));
     connect(popupCancel, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotCancelQueue);
     queueLayout->addWidget(popupCancel);
@@ -2090,11 +2082,13 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     QLabel *graphLabel = new QLabel(ComfyTr::tr("Paste ComfyUI API JSON below, then click Generate (results in History)."));
     graphLabel->setWordWrap(true);
     m_d->graphWorkflowEditorLayout->addWidget(graphLabel);
+    m_d->graphWorkflowEditorLayout->addWidget(m_d->checkUseReferenceImage);
     QPushButton *btnGraphLoadWorkflow = new QPushButton(ComfyTr::tr("Load from file…"), m_d->graphPlaceholderWidget);
     connect(btnGraphLoadWorkflow, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
     m_d->graphWorkflowEditorLayout->addWidget(btnGraphLoadWorkflow);
-    m_d->graphWorkflowEditorLayout->insertWidget(1, m_d->editCustomWorkflow);
-    m_d->editCustomWorkflow->setVisible(true);
+    m_d->graphWorkflowEditorLayout->addWidget(m_d->editCustomWorkflow);
+    m_d->customWorkflowParamsGroup->setParent(m_d->graphPlaceholderWidget);
+    m_d->graphWorkflowEditorLayout->addWidget(m_d->customWorkflowParamsGroup);
     // §13.170: Open Web UI — open client.url in default browser (QDesktopServices::openUrl)
     QPushButton *btnOpenWebUI = new QPushButton(ComfyTr::tr("Open Web UI"));
     btnOpenWebUI->setToolTip(ComfyTr::tr("Open Web UI to create custom workflows"));
@@ -2418,15 +2412,7 @@ void ComfyUIRemoteDock::reparentCustomWorkflowEditor(bool toGraphWorkspace)
 {
     if (!m_d->editCustomWorkflow)
         return;
-    QVBoxLayout *from = toGraphWorkspace ? m_d->customWorkflowSettingsLayout : m_d->graphWorkflowEditorLayout;
-    QVBoxLayout *to = toGraphWorkspace ? m_d->graphWorkflowEditorLayout : m_d->customWorkflowSettingsLayout;
-    if (!to)
-        return;
-    if (from)
-        from->removeWidget(m_d->editCustomWorkflow);
-    to->insertWidget(toGraphWorkspace ? 1 : 2, m_d->editCustomWorkflow);
     m_d->editCustomWorkflow->setMaximumHeight(toGraphWorkspace ? 160 : 80);
-    m_d->editCustomWorkflow->setVisible(true);
     if (toGraphWorkspace)
         refreshCustomWorkflowParameterPanel();
 }
@@ -2769,6 +2755,16 @@ QString ComfyUIRemoteDock::encodeStyleIdFromPresetCombo(const QComboBox *cb) con
     if (data.isValid() && !data.toString().isEmpty())
         return data.toString();
     return QStringLiteral("custom:") + cb->currentText();
+}
+
+QJsonArray ComfyUIRemoteDock::currentStyleLoras() const
+{
+    if (!m_d->comboPreset || m_d->comboPreset->currentIndex() <= 0)
+        return {};
+    const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+    if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+        return st->loras;
+    return {};
 }
 
 void ComfyUIRemoteDock::applyStyleIdFromDocumentDefaults(const QString &styleId)
@@ -3626,34 +3622,44 @@ void ComfyUIRemoteDock::updateWelcomeVisibility()
     if (showWelcome)
         refreshWelcomeAutoUpdatePanel();
     if (m_d->welcomeStatusLabel) {
+        const auto resetWelcomeStatusStyle = [](QLabel *label) {
+            if (label)
+                label->setStyleSheet(QString());
+        };
         if (m_d->updateCheckInProgress) {
+            resetWelcomeStatusStyle(m_d->welcomeStatusLabel);
             m_d->welcomeStatusLabel->setText(ComfyTr::tr("Checking for updates..."));
             if (m_d->welcomeErrorLabel) {
                 m_d->welcomeErrorLabel->clear();
                 m_d->welcomeErrorLabel->hide();
             }
         } else if (m_d->isConnecting) {
+            resetWelcomeStatusStyle(m_d->welcomeStatusLabel);
             m_d->welcomeStatusLabel->setText(ComfyTr::tr("Connecting to server..."));
             if (m_d->welcomeErrorLabel) {
                 m_d->welcomeErrorLabel->clear();
                 m_d->welcomeErrorLabel->hide();
             }
         } else if (m_d->isConnected && !m_d->editServerUrl->text().trimmed().isEmpty()) {
+            resetWelcomeStatusStyle(m_d->welcomeStatusLabel);
             m_d->welcomeStatusLabel->setText(ComfyTr::tr("Connected to server at %1. Create a new document or open an existing image to start!", m_d->editServerUrl->text().trimmed()));
             if (m_d->welcomeErrorLabel) {
                 m_d->welcomeErrorLabel->clear();
                 m_d->welcomeErrorLabel->hide();
             }
+        } else if (m_d->connectionErrorOccurred) {
+            m_d->welcomeStatusLabel->setText(ComfyTr::tr("Connection attempt failed! Click below to configure and reconnect."));
+            m_d->welcomeStatusLabel->setStyleSheet(QStringLiteral("color: #b58900;"));  // §13.73 alert yellow
+            if (m_d->welcomeErrorLabel) {
+                m_d->welcomeErrorLabel->clear();
+                m_d->welcomeErrorLabel->hide();
+            }
         } else {
+            resetWelcomeStatusStyle(m_d->welcomeStatusLabel);
             m_d->welcomeStatusLabel->setText(ComfyTr::tr("Not connected to server."));
             if (m_d->welcomeErrorLabel) {
-                if (m_d->connectionErrorOccurred) {
-                    m_d->welcomeErrorLabel->setText(ComfyTr::tr("Connection attempt failed! Click below to configure and reconnect."));
-                    m_d->welcomeErrorLabel->show();
-                } else {
-                    m_d->welcomeErrorLabel->clear();
-                    m_d->welcomeErrorLabel->hide();
-                }
+                m_d->welcomeErrorLabel->clear();
+                m_d->welcomeErrorLabel->hide();
             }
         }
     }
@@ -4830,7 +4836,7 @@ void ComfyUIRemoteDock::refreshHistoryList()
     const int starX = thumbW - 28;
     const int starY = 4;
     const int starSize = 24;
-    QIcon starIcon = KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("star")));  // §13.153 / §13.28a
+    QIcon starIcon = ComfyTheme::icon(QStringLiteral("star"));  // §13.153 / §13.28a
     QPixmap starPix = starIcon.pixmap(starSize, starSize);
     // §13.131: One row per image (job_id + index); multi-image entries show multiple rows
     for (const Private::HistoryEntry &e : m_d->historyEntries) {
@@ -4893,7 +4899,7 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
         const int nh = qBound(28, fn.lineSpacing() * negLines + fn.height() / 2, 400);
         m_d->editNegative->setFixedHeight(nh);
     }
-    const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(true);
+    const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(false);
     if (m_d->negativePromptBlock)
         m_d->negativePromptBlock->setVisible(showNeg);
     const bool showResizeHandle = s.value(QStringLiteral("prompt_resize_handle")).toBool(true);
@@ -4967,6 +4973,80 @@ void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
 int ComfyUIRemoteDock::legacyKConfigPresetCount() const
 {
     return KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote")).readEntry(QStringLiteral("PresetNames"), QStringList()).size();
+}
+
+const ComfyStyleEntry *ComfyUIRemoteDock::currentJsonStyleEntry() const
+{
+    if (!m_d->comboPreset)
+        return nullptr;
+    const int idx = m_d->comboPreset->currentIndex();
+    if (idx <= 0 || idx >= firstCustomPresetIndex())
+        return nullptr;
+    return ComfyStyleCollection::instance().findByStyleId(encodeStyleIdFromPresetCombo(m_d->comboPreset));
+}
+
+bool ComfyUIRemoteDock::isCurrentJsonStyleBuiltin() const
+{
+    const ComfyStyleEntry *st = currentJsonStyleEntry();
+    return !st || st->isBuiltin;
+}
+
+bool ComfyUIRemoteDock::saveStyleEntry(const ComfyStyleEntry &entry, bool rebuildCombo)
+{
+    if (entry.styleId.isEmpty())
+        return false;
+    if (ComfyStyleCollection::instance().saveEntryToUserStyles(entry).isEmpty())
+        return false;
+    if (rebuildCombo)
+        rebuildPresetComboItems();
+    else
+        updateStyleComboItemLabel(entry.styleId);
+    if (const ComfyStyleEntry *saved = ComfyStyleCollection::instance().findByStyleId(entry.styleId))
+        applyComfyStyleEntry(*saved);
+    return true;
+}
+
+void ComfyUIRemoteDock::updateStyleComboItemLabel(const QString &styleId)
+{
+    if (!m_d->comboPreset || styleId.isEmpty())
+        return;
+    for (int i = 1; i < m_d->comboPreset->count(); ++i) {
+        if (m_d->comboPreset->itemData(i).toString() == styleId) {
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                m_d->comboPreset->setItemText(i, ComfyStyleCollection::comboDisplayName(*st));
+            break;
+        }
+    }
+}
+
+bool ComfyUIRemoteDock::createJsonStyle(const QString &checkpoint, const QString &copyFromStyleId)
+{
+    const QString styleId = ComfyStyleCollection::instance().createStyle(checkpoint, copyFromStyleId);
+    if (styleId.isEmpty())
+        return false;
+    rebuildPresetComboItems();
+    applyStyleIdToPresetCombo(m_d->comboPreset, styleId);
+    if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+        applyComfyStyleEntry(*st);
+    persistDocumentDefaultsToSettings();
+    return true;
+}
+
+bool ComfyUIRemoteDock::duplicateJsonStyle()
+{
+    if (!m_d->comboPreset)
+        return false;
+    const QString from = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+    if (from.isEmpty() || from == QLatin1String("none"))
+        return false;
+    QString ckpt;
+    if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(from)) {
+        if (!st->checkpoints.isEmpty())
+            ckpt = st->checkpoints.first();
+    }
+    if (ckpt.isEmpty() && m_d->comboCheckpoint)
+        ckpt = m_d->comboCheckpoint->currentText().trimmed();
+    return createJsonStyle(ckpt, from);
 }
 
 int ComfyUIRemoteDock::firstCustomPresetIndex() const
@@ -5054,7 +5134,7 @@ void ComfyUIRemoteDock::rebuildPresetComboItems()
     const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
     const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
     for (const ComfyStyleEntry *s : styles) {
-        m_d->comboPreset->addItem(s->name);
+        m_d->comboPreset->addItem(ComfyStyleCollection::comboDisplayName(*s));
         const int idx = m_d->comboPreset->count() - 1;
         m_d->comboPreset->setItemData(idx, s->styleId);
         const QString ckpt = s->checkpoints.isEmpty() ? QString() : s->checkpoints.first();
@@ -5069,9 +5149,20 @@ void ComfyUIRemoteDock::rebuildPresetComboItems()
         const int idx = m_d->comboPreset->count() - 1;
         m_d->comboPreset->setItemData(idx, QString(QStringLiteral("custom:") + name));
     }
+    // Determine which style id to restore. On initial build the combo was empty
+    // and prevStyleId comes back as "none"; consult document_defaults.style in
+    // settings.json so the user's last selection survives Krita restarts.
+    QString idToApply = prevStyleId;
+    if (idToApply.isEmpty() || idToApply == QLatin1String("none")) {
+        const QJsonObject dd =
+            ComfyUIUtils::documentDefaultsFromSettingsRoot(ComfyUIUtils::loadSettingsJson());
+        const QString saved = dd.value(QStringLiteral("style")).toString().trimmed();
+        if (!saved.isEmpty() && saved != QLatin1String("none"))
+            idToApply = saved;
+    }
     int restoreIdx = 0;
-    if (!prevStyleId.isEmpty() && prevStyleId != QLatin1String("none"))
-        applyStyleIdToPresetCombo(m_d->comboPreset, prevStyleId);
+    if (!idToApply.isEmpty() && idToApply != QLatin1String("none"))
+        applyStyleIdToPresetCombo(m_d->comboPreset, idToApply);
     restoreIdx = m_d->comboPreset->currentIndex();
     if (restoreIdx < 0)
         restoreIdx = 0;
@@ -5149,8 +5240,11 @@ bool ComfyUIRemoteDock::renameCustomPreset(const QString &oldName, const QString
 
 void ComfyUIRemoteDock::applyQualitySamplerPresetFromSettings()
 {
-    const QString key =
-        ComfyUIUtils::loadSettingsJson().value(QStringLiteral("quality_sampler_preset")).toString().trimmed();
+    QString key;
+    if (const ComfyStyleEntry *st = currentJsonStyleEntry())
+        key = st->samplerPresetName;
+    if (key.isEmpty())
+        key = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("quality_sampler_preset")).toString().trimmed();
     applyQualitySamplerPresetKey(key);
 }
 
@@ -5181,59 +5275,18 @@ void ComfyUIRemoteDock::applyQualitySamplerPresetKey(const QString &presetName)
 
 void ComfyUIRemoteDock::refreshStylesTabLoraWarning()
 {
-    QLabel *w = m_d->stylesTabLoraWarningLabel.data();
-    QListWidget *list = m_d->stylesTabLoraListWidget.data();
-    if (!w || !list) {
+    ComfyStyleLoraListWidget *list = m_d->stylesTabLoraListWidget.data();
+    if (!list)
         return;
-    }
-    QListWidgetItem *it = list->currentItem();
-    if (!it) {
-        w->hide();
-        return;
-    }
-    const QString fn = it->data(Qt::UserRole).toString().trimmed();
-    if (fn.isEmpty() || !m_d->isConnected || m_d->comfyServerLoraFilenames.isEmpty()) {
-        w->hide();
-        return;
-    }
-    const bool onServer = ComfyUIUtils::loraFilenameKnownOnServer(fn, m_d->comfyServerLoraFilenames);
-    if (fn.startsWith(QStringLiteral("lora-"), Qt::CaseInsensitive)) {
-        w->setText(ComfyTr::tr("This LoRA is a reserved or server-managed resource."));
-        w->setStyleSheet(QStringLiteral("color: #b8860b;"));
-        w->setWordWrap(true);
-        w->show();
-    } else if (!onServer) {
-        w->setText(ComfyTr::tr("The LoRA file is not installed on the server."));
-        w->setStyleSheet(QStringLiteral("color: #b8860b;"));
-        w->setWordWrap(true);
-        w->show();
-    } else {
-        w->hide();
-    }
+    list->setServerLoraFilenames(m_d->comfyServerLoraFilenames);
 }
 
 void ComfyUIRemoteDock::applyStylesTabLoraListFilter()
 {
-    QListWidget *list = m_d->stylesTabLoraListWidget.data();
-    if (!list) {
+    ComfyStyleLoraListWidget *list = m_d->stylesTabLoraListWidget.data();
+    if (!list)
         return;
-    }
-    const int mode = m_d->stylesTabLoraFilterMode;
-    const bool haveServer = m_d->isConnected && !m_d->comfyServerLoraFilenames.isEmpty();
-    for (int i = 0; i < list->count(); ++i) {
-        QListWidgetItem *it = list->item(i);
-        if (!it) {
-            continue;
-        }
-        const QString fn = it->data(Qt::UserRole).toString();
-        const bool onServer = ComfyUIUtils::loraFilenameKnownOnServer(fn, m_d->comfyServerLoraFilenames);
-        bool hide = false;
-        if (mode == 1 && haveServer && !onServer)
-            hide = true;
-        else if (mode == 2 && haveServer && onServer)
-            hide = true;
-        list->setRowHidden(i, hide);
-    }
+    list->refreshFilters();
 }
 
 qint64 ComfyUIRemoteDock::historyResultStorageBytes() const
@@ -5256,8 +5309,10 @@ qint64 ComfyUIRemoteDock::historyResultStorageBytes() const
 void ComfyUIRemoteDock::pruneHistoryToStorageLimit()
 {
     QJsonObject s = ComfyUIUtils::loadSettingsJson();
-    // §4.8: Active history size (RAM cache of thumbnails) — prefer history_active_mb, else legacy history_storage
-    int limitMb = s.value(QStringLiteral("history_active_mb")).toInt(0);
+    // §4.8: Active history size (RAM cache) — history_size (Python), then legacy keys
+    int limitMb = s.value(QStringLiteral("history_size")).toInt(0);
+    if (limitMb <= 0)
+        limitMb = s.value(QStringLiteral("history_active_mb")).toInt(0);
     if (limitMb <= 0)
         limitMb = s.value(QStringLiteral("history_storage")).toInt(20);
     limitMb = qBound(5, limitMb, 20000);
@@ -5333,7 +5388,7 @@ void ComfyUIRemoteDock::applyPromptHeader()
         m_d->regionsGroupBox->setTitle(QString());
         m_d->regionHeaderLabel->setText(QString());
         m_d->regionHeaderLabel->setPixmap(
-            KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-prompt"))).pixmap(16, 16));
+            ComfyTheme::icon(QStringLiteral("region-prompt")).pixmap(16, 16));
         m_d->regionHeaderLabel->show();
     } else {
         m_d->regionsGroupBox->setTitle(QString());

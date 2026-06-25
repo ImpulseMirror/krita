@@ -9,6 +9,7 @@
 #include "ComfyControlLayer.h"
 #include "ComfyPromptResizeHandle.h"
 #include "ComfyUIUtils.h"
+#include "ComfyTheme.h"
 
 #include <QGuiApplication>
 
@@ -77,7 +78,7 @@ public:
         const int iconSize = qMax(14, static_cast<int>(fontMetrics().height() * 1.2));
         for (const QString &stem : controlModeStems) {
             auto *ic = new QLabel(this);
-            ic->setPixmap(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(stem)).pixmap(iconSize, iconSize));
+            ic->setPixmap(ComfyTheme::icon(stem).pixmap(iconSize, iconSize));
             m_icons->addWidget(ic);
         }
         updateClippedText();
@@ -114,7 +115,7 @@ QPixmap thumbnailForRegion(const ComfyUIRemoteDock::Private::RegionEntry &entry,
                            bool isRoot)
 {
     if (isRoot) {
-        return KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-prompt")))
+        return ComfyTheme::icon(QStringLiteral("region-prompt"))
             .pixmap(32, 32);
     }
     if (image && !entry.layerIds.isEmpty()) {
@@ -139,7 +140,7 @@ QPixmap thumbnailForRegion(const ComfyUIRemoteDock::Private::RegionEntry &entry,
             }
         }
     }
-    return KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-prompt")))
+    return ComfyTheme::icon(QStringLiteral("region-prompt"))
         .pixmap(32, 32);
 }
 
@@ -196,12 +197,12 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     m_btnLink = new QPushButton(m_activeFrame);
     m_btnLink->setFlat(true);
     m_btnLink->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("link"))));
+        ComfyTheme::icon(QStringLiteral("link")));
     m_btnRemove = new QPushButton(m_activeFrame);
     m_btnRemove->setFlat(true);
     m_btnRemove->setToolTip(ComfyTr::tr("Remove this region"));
     m_btnRemove->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("remove"))));
+        ComfyTheme::icon(QStringLiteral("remove")));
     headerRow->addWidget(m_headerIcon);
     headerRow->addWidget(m_headerLabel, 1);
     headerRow->addWidget(m_btnLink);
@@ -267,10 +268,10 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     m_noRegionLabel->setStyleSheet(QStringLiteral("font-style: italic; color: palette(mid);"));
     m_btnNewRegion = new QPushButton(ComfyTr::tr("New region"), m_noRegionStrip);
     m_btnNewRegion->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-add"))));
+        ComfyTheme::icon(QStringLiteral("region-add")));
     m_btnLinkRegionMenu = new QPushButton(ComfyTr::tr("Link region"), m_noRegionStrip);
     m_btnLinkRegionMenu->setIcon(
-        KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("link"))));
+        ComfyTheme::icon(QStringLiteral("link")));
     noLay->addWidget(m_noRegionLabel, 1);
     noLay->addWidget(m_btnNewRegion);
     noLay->addWidget(m_btnLinkRegionMenu);
@@ -642,7 +643,7 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
         KisImageSP image = m_viewManager ? KisImageSP(m_viewManager->image()) : KisImageSP();
         if (m_promptHeaderMode == 1) {
             m_headerIcon->setPixmap(
-                KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("region-prompt")))
+                ComfyTheme::icon(QStringLiteral("region-prompt"))
                     .pixmap(16, 16));
         }
         if (m_promptHeaderMode == 0)
@@ -684,7 +685,7 @@ void ComfyRegionPromptWidget::updateLinkButton()
         return;
     const ComfyRegionLink::ActiveLayerLinkUi ui = ComfyRegionLink::linkUiForRegion(
         &m_regions->at(idx), *m_regions, idx, m_viewManager->image(), m_viewManager->activeLayer());
-    m_btnLink->setIcon(KisIconUtils::loadIcon(ComfyUIUtils::kritaIconNameForThemeStem(ui.iconStem)));
+    m_btnLink->setIcon(ComfyTheme::icon(ui.iconStem));
     m_btnLink->setEnabled(ui.canToggleLink);
     m_btnLink->setToolTip(ui.toolTip);
 }

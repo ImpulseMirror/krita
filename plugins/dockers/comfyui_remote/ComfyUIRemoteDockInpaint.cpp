@@ -297,7 +297,7 @@ void ComfyUIRemoteDock::slotInpaint()
             posPrompt = ComfyUIUtils::evalWildcards(posPrompt, inpaintSeed);
             ComfyUIUtils::extractLayerPlaceholders(posPrompt);  // §13.35: <layer:name> → "Picture {n}"
             posPrompt = ComfyUIUtils::prependInpaintPromptInstructions(posPrompt, effectiveMode, arch);
-            posPrompt = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(posPrompt);
+            posPrompt = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(posPrompt, currentStyleLoras());
             QString styleArch;
             if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
                 const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
@@ -308,6 +308,7 @@ void ComfyUIRemoteDock::slotInpaint()
             bp.imageName = m_d->inpaintUploadedImageName;
             bp.maskImageName = m_d->inpaintUploadedMaskName;
             bp.checkpoint = ckptName;
+            bp.styleLoras = currentStyleLoras();
             bp.positivePrompt = posPrompt;
             bp.negativePrompt =
                 ComfyUIUtils::evalWildcards(ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed(),
@@ -344,6 +345,21 @@ void ComfyUIRemoteDock::slotInpaint()
             m_d->inpaintPendingWorkflow = workflow;
             m_d->inpaintPendingArch = bp.arch;
             m_d->inpaintControlLayersActive = jobControls;
+            // Stash params so slotInpaintPoll can build a HistoryEntry on completion.
+            Private::HistoryEntry pending;
+            pending.prompt = m_d->editPrompt ? m_d->editPrompt->toPlainText() : QString();
+            pending.negative = m_d->editNegative ? m_d->editNegative->toPlainText() : QString();
+            pending.checkpoint = bp.checkpoint;
+            pending.styleName = (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0)
+                ? m_d->comboPreset->currentText() : QString();
+            pending.width = m_d->inpaintCurrentImage.width();
+            pending.height = m_d->inpaintCurrentImage.height();
+            pending.steps = bp.steps;
+            pending.cfg = bp.cfg;
+            pending.strength = m_d->spinStrength ? m_d->spinStrength->value() : 100;
+            pending.samplerName = bp.sampler;
+            pending.seed = bp.seed;
+            m_d->inpaintPendingEntry = pending;
             qCWarning(KIS_COMFYUI_REMOTE)
                 << "slotInpaint: dispatching beginInpaintUploadPipeline() pendingNodeCount="
                 << m_d->inpaintPendingWorkflow.size()
@@ -763,19 +779,42 @@ void ComfyUIRemoteDock::slotInpaintPoll()
             } else if (!result.isNull()) {
                 m_d->inpaintCurrentImage = result.convertToFormat(QImage::Format_ARGB32);
             }
-            QTemporaryFile tmp;
-            tmp.setFileTemplate(tmp.fileTemplate() + ".png");
-            if (!tmp.open() || !m_d->inpaintCurrentImage.save(tmp.fileName())) {
+            const QString promptId = m_d->inpaintPromptId;
+            const QString cachePath = ComfyUIUtils::historyCacheDir() + QStringLiteral("/")
+                + (promptId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : promptId)
+                + QStringLiteral(".png");
+            if (QFile::exists(cachePath)) QFile::remove(cachePath);
+            if (!m_d->inpaintCurrentImage.save(cachePath)) {
                 m_d->inpaintPromptId.clear();
+                m_d->inpaintPendingEntry = Private::HistoryEntry();
                 m_d->btnInpaint->setEnabled(true);
                 m_d->progressBar->setValue(0);
                 return;
             }
-            tmp.close();
             if (m_d->viewManager->imageManager()) {
-                m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
+                m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(cachePath), "KisPaintLayer");
                 if (m_d->canvas) m_d->canvas->updateCanvas();
             }
+            // §13.131/13.136: record completed inpaint in history (was missing — "success" status
+            // appeared but history list was never refreshed).
+            Private::HistoryEntry entry = m_d->inpaintPendingEntry;
+            entry.jobId = promptId;
+            entry.resultImagePath = cachePath;
+            entry.resultImagePaths = QStringList() << cachePath;
+            m_d->historyEntries.prepend(entry);
+            while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
+                Private::HistoryEntry old = m_d->historyEntries.takeLast();
+                evictDocumentEmbeddedSlotIfAny(old.documentSlot);
+                QStringList paths = old.resultImagePaths;
+                if (paths.isEmpty() && !old.resultImagePath.isEmpty()) paths << old.resultImagePath;
+                for (const QString &p : paths) { if (!p.isEmpty() && QFile::exists(p)) QFile::remove(p); }
+            }
+            pruneHistoryToStorageLimit();
+            persistTopHistoryEntryToDocument(false);
+            // skipAutoActions=true: inpaint already imported the result as a layer above; don't
+            // re-apply via handleGenerationFinished's generation_finished_action path.
+            handleGenerationFinished(cachePath, true);
+            m_d->inpaintPendingEntry = Private::HistoryEntry();
             m_d->labelStatus->setText(ComfyTr::tr("Inpaint done. Result added as new layer."));
             m_d->progressBar->setValue(100);
             m_d->inpaintPromptId.clear();

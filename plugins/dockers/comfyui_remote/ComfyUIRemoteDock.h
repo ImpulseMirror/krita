@@ -8,6 +8,7 @@
 
 #include <QDockWidget>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QScopedPointer>
 #include <kis_mainwindow_observer.h>
 
@@ -120,6 +121,12 @@ private:
     int firstCustomPresetIndex() const;
     int legacyKConfigPresetCount() const;
     void applyComfyStyleEntry(const struct ComfyStyleEntry &style);
+    bool saveStyleEntry(const struct ComfyStyleEntry &entry, bool rebuildCombo = false);
+    void updateStyleComboItemLabel(const QString &styleId);
+    bool createJsonStyle(const QString &checkpoint = QString(), const QString &copyFromStyleId = QString());
+    bool duplicateJsonStyle();
+    const struct ComfyStyleEntry *currentJsonStyleEntry() const;
+    bool isCurrentJsonStyleBuiltin() const;
     // §4.5: Rename a custom preset in KConfig (Styles tab Name field).
     bool renameCustomPreset(const QString &oldName, const QString &newName);
     // §4.5 / §13.56: Apply quality_sampler_preset from settings.json to dock + ksamplerScheduler.
@@ -145,10 +152,21 @@ private:
     void syncQueueSeedWidgetsFromMain();
     /// §5.7 / §13.92: Hide batch + enqueue mode in queue popup on Animation (supports_batch=False).
     void refreshQueuePopupSupportsBatch();
-    /// §13.81: When `server_mode` is undefined, probe `settings.server_url` then `127.0.0.1:8000`.
+    /// §13.81 / §13.198: Auto-connect on startup when a server URL is saved in settings.
     void tryAutostartServerFallback();
     /// §13.89: Connect vs Disconnect button label (Configure dialog).
     void refreshConnectionActionButton();
+    /// Connection tab status line + detected models from m_d->isConnected / lastObjectInfoRoot.
+    void refreshConnectionTabUi();
+    void refreshInterfacePromptTranslationCombo();
+    void cancelConnectionAutostartRetry();
+    void scheduleConnectionAutostartRetry(const QString &reason);
+    void handleConnectionProbeFailure(uint session,
+                                      const QString &retryReason,
+                                      const QString &userMessage,
+                                      bool isError = true,
+                                      bool allowAutostartRetry = true);
+    void handleConnectionEstablished(uint session, const QJsonObject &objectInfoRoot, const QString &base);
 
 protected:
     // §13.196: Shift+Enter in prompt widget triggers Generate
@@ -166,6 +184,8 @@ private Q_SLOTS:
     void applyImportedWorkflowBytes(const QByteArray &raw, const QString &openError);
     void slotPresetChanged(int index);
     void slotSaveAsPreset();
+    /// Persist current dock settings as a new custom preset; returns false if name empty or taken.
+    bool saveCustomPresetAsNew(const QString &name);
     void slotSaveCurrentPreset();
     void slotDeletePreset();
     void slotGenerate();
@@ -278,6 +298,7 @@ private:
     void schedulePersistDocumentDefaults();
     QString encodeStyleIdForDocumentDefaults() const;
     QString encodeStyleIdFromPresetCombo(const QComboBox *cb) const;
+    QJsonArray currentStyleLoras() const;
     void applyStyleIdToPresetCombo(QComboBox *cb, const QString &styleId);
     void applyStyleIdFromDocumentDefaults(const QString &styleId);
     /// §5.5: Checkpoint filename for upscale refinement preset (built-in → current Styles checkpoint; custom → preset KConfig).

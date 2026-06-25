@@ -304,6 +304,16 @@ void ComfyFileCollection::setMeta(ComfyFileRecord *file, const QString &key, con
     save();
 }
 
+bool ComfyFileCollection::setMetaById(const QString &id, const QString &key, const QJsonValue &value)
+{
+    const int idx = findIndex(id);
+    if (idx < 0)
+        return false;
+    m_files[idx].setMeta(key, value);
+    save();
+    return true;
+}
+
 void ComfyFileCollection::removeMissingLocalFiles()
 {
     for (int i = m_files.size() - 1; i >= 0; --i) {

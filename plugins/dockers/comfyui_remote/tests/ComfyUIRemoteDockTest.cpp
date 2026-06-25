@@ -1270,6 +1270,8 @@ void ComfyUIRemoteDockTest::testComfyThemePaletteAndIcons()
     const bool dark = QGuiApplication::palette().color(QPalette::Window).lightness() < 128;
     QCOMPARE(ComfyTheme::isDarkTheme(), dark);
     QVERIFY(!ComfyTheme::icon(QStringLiteral("inpaint-fill")).isNull());
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("settings")).isNull());
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("star")).isNull());
     QVERIFY(!ComfyTheme::checkpointIcon(ComfyResources::Arch::Sdxl).isNull());
     QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-active")),
              ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")));

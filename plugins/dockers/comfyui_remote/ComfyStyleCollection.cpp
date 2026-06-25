@@ -4,7 +4,7 @@
  */
 
 #include "ComfyStyleCollection.h"
-
+#include "ComfyLocalization.h"
 #include "ComfyUIUtils.h"
 
 #include <algorithm>
@@ -13,6 +13,16 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+
+QString comfyDefaultStylePrompt()
+{
+    return QStringLiteral("best quality, highres");
+}
+
+QString comfyDefaultNegativeStylePrompt()
+{
+    return QStringLiteral("bad quality, low resolution, blurry");
+}
 
 ComfyStyleCollection &ComfyStyleCollection::instance()
 {
@@ -192,6 +202,63 @@ QString ComfyStyleCollection::saveEntryToUserStyles(const ComfyStyleEntry &entry
     f.close();
     reload();
     return dest;
+}
+
+QString ComfyStyleCollection::comboDisplayName(const ComfyStyleEntry &entry)
+{
+    return QStringLiteral("%1 (%2)").arg(entry.name, entry.styleId);
+}
+
+QString ComfyStyleCollection::createStyle(const QString &checkpoint, const QString &copyFromStyleId)
+{
+    ComfyStyleEntry e;
+    if (!copyFromStyleId.trimmed().isEmpty()) {
+        if (const ComfyStyleEntry *src = findByStyleId(copyFromStyleId)) {
+            e = *src;
+            e.name = QStringLiteral("%1 (%2)").arg(src->name, ComfyTr::tr("Copy"));
+        }
+    } else {
+        e.name = ComfyTr::tr("New Style");
+        e.stylePrompt = comfyDefaultStylePrompt();
+        e.negativePrompt = comfyDefaultNegativeStylePrompt();
+    }
+    e.isBuiltin = false;
+        e.checkpoints = QStringList{checkpoint.trimmed()};
+
+    QDir dir(userStylesDir());
+    QString filename = QStringLiteral("style.json");
+    int n = 0;
+    while (QFile::exists(dir.filePath(filename))) {
+        ++n;
+        filename = QStringLiteral("style-%1.json").arg(n);
+    }
+    e.filepath = dir.filePath(filename);
+    e.styleId = filename;
+    if (saveEntryToUserStyles(e).isEmpty())
+        return QString();
+    return e.styleId;
+}
+
+bool ComfyStyleCollection::deleteUserStyle(const QString &styleId)
+{
+    const ComfyStyleEntry *st = findByStyleId(styleId);
+    if (!st || st->isBuiltin)
+        return false;
+    const QString path = userStylesDir() + QLatin1Char('/') + QFileInfo(st->filepath).fileName();
+    if (!QFile::remove(path))
+        return false;
+    reload();
+    return true;
+}
+
+bool ComfyStyleCollection::renameStyle(const QString &styleId, const QString &newName)
+{
+    const ComfyStyleEntry *st = findByStyleId(styleId);
+    if (!st || st->isBuiltin || newName.trimmed().isEmpty())
+        return false;
+    ComfyStyleEntry e = *st;
+    e.name = newName.trimmed();
+    return !saveEntryToUserStyles(e).isEmpty();
 }
 
 const ComfyStyleEntry *ComfyStyleCollection::findByComboIndex(int comboIndex,

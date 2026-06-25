@@ -628,8 +628,8 @@ void ComfyUIRemoteDock::slotHistorySaveImage()
         writer.setQuality(quality);
     if (pngMeta) {
         // §13.36: full prompt with LoRA tags (same merge as workflow build)
-        const QString posMeta =
-            ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(ComfyUIUtils::stripPromptComments(e.prompt).trimmed());
+        const QString posMeta = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(
+            ComfyUIUtils::stripPromptComments(e.prompt).trimmed(), currentStyleLoras());
         const QString negMeta = ComfyUIUtils::stripPromptComments(e.negative).trimmed();
         QString metadata = ComfyUIUtils::createImgMetadata(posMeta, negMeta, e.steps, e.cfg, e.seed, e.width, e.height,
                                                             e.strength, e.samplerName, e.checkpoint);

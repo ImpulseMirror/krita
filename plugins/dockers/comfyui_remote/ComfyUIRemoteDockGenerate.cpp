@@ -143,7 +143,8 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
                                                                        int frameIndex,
                                                                        qint64 batchBaseSeed,
                                                                        int batchSeedStep,
-                                                                       const QString &styleArch)
+                                                                       const QString &styleArch,
+                                                                       const QJsonArray &styleLoras)
 {
     ComfyWorkflowEngine::AnimationFrameParams af;
     const QString ckpt = d->comboCheckpoint->currentText().trimmed().isEmpty()
@@ -155,7 +156,9 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
     QString promptText = ComfyUIUtils::stripPromptComments(d->editPrompt->toPlainText()).trimmed();
     promptText = ComfyUIUtils::evalWildcards(promptText, static_cast<quint32>(seed & 0xFFFFFFFFu));
     ComfyUIUtils::extractLayerPlaceholders(promptText);
-    af.base.positivePrompt = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(promptText);
+    af.base.positivePrompt =
+        ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(promptText, styleLoras);
+    af.base.styleLoras = styleLoras;
     af.base.negativePrompt = ComfyUIUtils::evalWildcards(
         ComfyUIUtils::stripPromptComments(d->editNegative->toPlainText()).trimmed(), static_cast<quint32>(seed & 0xFFFFFFFFu));
     af.base.promptTranslationLanguage = ComfyUIUtils::activePromptTranslationLanguage();
@@ -169,7 +172,12 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
         d->comboWorkspace && d->comboWorkspace->currentIndex() == 3 && d->comboQuality
         && d->comboQuality->currentIndex() == 0;
     if (animationFastSampling) {
+        QString styleId;
+        if (d->comboPreset && d->comboPreset->currentIndex() > 0)
+            styleId = d->comboPreset->itemData(d->comboPreset->currentIndex()).toString();
+        const ComfyStyleEntry *styleEntry = ComfyStyleCollection::instance().findByStyleId(styleId);
         const ComfyUIUtils::ResolvedSamplerInputs si = ComfyUIUtils::resolveSamplerForLive(
+            styleEntry,
             ComfyUIUtils::loadSettingsJson(),
             d->comboSampler ? d->comboSampler->currentText() : QString(),
             d->spinSteps ? d->spinSteps->value() : 20,
@@ -583,8 +591,16 @@ void ComfyUIRemoteDock::slotGenerate()
         if (!m_d->checkFixedSeed->isChecked()) {
             m_d->spinSeed->setValue(static_cast<int>(seed));
         }
+        const bool editMode = m_d->checkEditMode && m_d->checkEditMode->isChecked();
+        QString linkedEditStyleId;
+        if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                linkedEditStyleId = st->linkedEditStyle;
+        }
         const ComfyUIUtils::LinkedEditStyleOverride link = ComfyUIUtils::linkedEditStyleOverride(
-            m_d->checkEditMode && m_d->checkEditMode->isChecked(),
+            editMode,
+            linkedEditStyleId,
             m_d->comboCheckpoint->currentText().trimmed(),
             m_d->spinSteps->value(),
             m_d->spinCfg->value(),
@@ -627,7 +643,9 @@ void ComfyUIRemoteDock::slotGenerate()
             : userPos;
         promptText = ComfyUIUtils::evalWildcards(promptText, static_cast<quint32>(seed & 0xFFFFFFFFu));
         ComfyUIUtils::extractLayerPlaceholders(promptText);
-        genParams.positivePrompt = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(promptText);
+        genParams.styleLoras = currentStyleLoras();
+        genParams.positivePrompt =
+            ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(promptText, genParams.styleLoras);
 
         KisImageSP genImage = m_d->viewManager->image();
         const ComfyRegionProcess::ProcessRegionsResult processed =
@@ -920,8 +938,9 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
             if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
                 styleArch = st->architecture;
         }
+        const QJsonArray styleLoras = currentStyleLoras();
         const ComfyWorkflowEngine::AnimationFrameParams af = animationFrameParamsFromDock(
-            m_d.data(), m_d->batchSubmitIndex, m_d->batchBaseSeed, m_d->batchSeedStep, styleArch);
+            m_d.data(), m_d->batchSubmitIndex, m_d->batchBaseSeed, m_d->batchSeedStep, styleArch, styleLoras);
         workflow = ComfyWorkflowEngine::buildAnimationFrame(af);
         if (workflow.isEmpty())
             return;
@@ -2237,8 +2256,15 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
             m_d->spinSeed->setValue(static_cast<int>(seed));
 
         const bool editMode = m_d->checkEditMode && m_d->checkEditMode->isChecked();
+        QString linkedEditStyleId;
+        if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+                linkedEditStyleId = st->linkedEditStyle;
+        }
         const ComfyUIUtils::LinkedEditStyleOverride link = ComfyUIUtils::linkedEditStyleOverride(
             editMode,
+            linkedEditStyleId,
             m_d->comboCheckpoint->currentText().trimmed(),
             m_d->spinSteps->value(),
             m_d->spinCfg->value(),
@@ -2270,7 +2296,9 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
         rp.denoise = link.denoise;
         rp.sampler = link.sampler;
         rp.scheduler = link.scheduler;
-        rp.positivePrompt = ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(promptText);
+        rp.styleLoras = currentStyleLoras();
+        rp.positivePrompt =
+            ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(promptText, rp.styleLoras);
         const QString negSrc =
             link.active ? link.styleNegative : ComfyUIUtils::stripPromptComments(m_d->editNegative->toPlainText()).trimmed();
         rp.negativePrompt = ComfyUIUtils::evalWildcards(negSrc, static_cast<quint32>(seed & 0xFFFFFFFFu));
@@ -2285,8 +2313,8 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
         const ComfyRegionProcess::ProcessRegionsResult processed =
             ComfyRegionProcess::processRegions(regsForRefine, image, m_d->viewManager, promptText);
         if (processed.mode == ComfyRegionProcess::ProcessRegionsResult::Mode::SingleRegion)
-            rp.positivePrompt =
-                ComfyUIUtils::mergeLibraryLoraTagsIntoPositivePrompt(processed.effectivePositive);
+            rp.positivePrompt = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(processed.effectivePositive,
+                                                                                       rp.styleLoras);
 
         if (processed.mode == ComfyRegionProcess::ProcessRegionsResult::Mode::MultiRegion
             && ComfyResources::supportsRegions(rp.arch)) {

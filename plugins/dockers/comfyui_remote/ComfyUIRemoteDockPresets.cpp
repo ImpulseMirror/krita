@@ -84,15 +84,29 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
 void ComfyUIRemoteDock::slotSaveAsPreset()
 {
     qCWarning(KIS_COMFYUI_REMOTE) << "slotSaveAsPreset ENTER";
-    QString name = QInputDialog::getText(this, ComfyTr::tr("Save preset"), ComfyTr::tr("Preset name:"), QLineEdit::Normal, QString());
-    if (name.trimmed().isEmpty()) {
+    bool ok = false;
+    QString name = QInputDialog::getText(this, ComfyTr::tr("Save preset"), ComfyTr::tr("Preset name:"), QLineEdit::Normal, QString(), &ok);
+    if (!ok || name.trimmed().isEmpty()) {
         qCWarning(KIS_COMFYUI_REMOTE) << "slotSaveAsPreset: user cancelled or empty name; aborting";
         return;
     }
-    name = name.trimmed();
+    saveCustomPresetAsNew(name.trimmed());
+}
+
+bool ComfyUIRemoteDock::saveCustomPresetAsNew(const QString &nameIn)
+{
+    const QString name = nameIn.trimmed();
+    if (name.isEmpty()) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "saveCustomPresetAsNew: empty name; aborting";
+        return false;
+    }
     KConfigGroup mainCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
     QStringList names = mainCfg.readEntry("PresetNames", QStringList());
-    if (!names.contains(name)) names << name;
+    if (names.contains(name)) {
+        setStatusMessage(ComfyTr::tr("A preset named \"%1\" already exists.", name), true);
+        return false;
+    }
+    names << name;
     mainCfg.writeEntry("PresetNames", names);
     KConfigGroup presetCfg = KSharedConfig::openConfig()->group("ComfyUIRemote_Preset_" + name);
     presetCfg.writeEntry("Prompt", m_d->editPrompt->toPlainText());
@@ -113,13 +127,14 @@ void ComfyUIRemoteDock::slotSaveAsPreset()
         m_d->comboPreset->addItem(name);
     m_d->comboPreset->setCurrentText(name);
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotSaveAsPreset SAVED name=" << name
+        << "saveCustomPresetAsNew SAVED name=" << name
         << " checkpoint=" << m_d->comboCheckpoint->currentText()
         << " promptLen=" << m_d->editPrompt->toPlainText().size()
         << " negLen=" << m_d->editNegative->toPlainText().size()
         << " w=" << m_d->spinWidth->value() << " h=" << m_d->spinHeight->value()
         << " steps=" << m_d->spinSteps->value() << " cfg=" << m_d->spinCfg->value();
     setStatusMessage(ComfyTr::tr("Saved preset \"%1\".", name));
+    return true;
 }
 
 void ComfyUIRemoteDock::slotSaveCurrentPreset()
@@ -176,7 +191,21 @@ void ComfyUIRemoteDock::slotSaveCurrentPreset()
 void ComfyUIRemoteDock::slotDeletePreset()
 {
     int idx = m_d->comboPreset->currentIndex();
-    if (idx < firstCustomPresetIndex()) return;
+    if (idx <= 0)
+        return;
+    if (idx < firstCustomPresetIndex()) {
+        const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+        const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId);
+        if (!st || st->isBuiltin)
+            return;
+        const QString name = st->name;
+        if (!ComfyStyleCollection::instance().deleteUserStyle(styleId))
+            return;
+        rebuildPresetComboItems();
+        m_d->comboPreset->setCurrentIndex(0);
+        m_d->labelStatus->setText(ComfyTr::tr("Deleted style \"%1\".", name));
+        return;
+    }
     QString name = m_d->comboPreset->currentText();
     KConfigGroup mainCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
     QStringList names = mainCfg.readEntry("PresetNames", QStringList());
