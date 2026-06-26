@@ -12,6 +12,7 @@
 #include "ComfyStyleCollection.h"
 #include "ComfyFileLibrary.h"
 #include "ComfyWorkflowEngine.h"
+#include "ComfyRegionProcess.h"
 
 #include <QUrl>
 #include <QUrlQuery>
@@ -27,12 +28,50 @@
 #include <QFileInfo>
 #include <QLoggingCategory>
 
+#include <cmath>
+
 #include <klocalizedstring.h>
 #include <KisViewManager.h>
 #include <kis_image_manager.h>
 #include <kis_selection.h>
 
 Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
+
+namespace {
+
+static QImage cropContextResultToTarget(const QImage &image, const QRect &contextBounds, const QRect &targetBounds)
+{
+    if (image.isNull() || contextBounds.isEmpty() || targetBounds.isEmpty())
+        return image;
+
+    const QSize contextSize(contextBounds.width(), contextBounds.height());
+    const QRect targetLocal = targetBounds.translated(-contextBounds.topLeft());
+
+    // Server already returned the masked target patch (buildInpaint targetBoundsRelative path).
+    if (image.size() == targetBounds.size())
+        return image;
+
+    // Full context canvas — copy the target sub-rectangle in context coordinates.
+    if (image.size() == contextSize) {
+        if (targetLocal.isEmpty())
+            return image;
+        QRect local = targetLocal & QRect(QPoint(0, 0), image.size());
+        if (local.isEmpty())
+            return image;
+        QImage cropped = image.copy(local);
+        if (cropped.size() != targetBounds.size())
+            cropped = cropped.scaled(targetBounds.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        return cropped;
+    }
+
+    // Near-target output (rounding) — scale to expected patch size.
+    if (qAbs(image.width() - targetBounds.width()) <= 8 && qAbs(image.height() - targetBounds.height()) <= 8)
+        return image.scaled(targetBounds.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+
+    return image;
+}
+
+} // namespace
 
 void ComfyUIRemoteDock::slotInpaint()
 {
@@ -57,6 +96,7 @@ void ComfyUIRemoteDock::slotInpaint()
         setStatusMessage(ComfyTr::tr("Not connected to ComfyUI server. Open Settings and connect first."), true);
         return;
     }
+    commitPromptEditorsFromUi();
     KisImageSP image = m_d->viewManager->image();
     // §13.42: Block generation if document color mode is not RGBA 8-bit
     auto colorCheck = ComfyUIUtils::checkColorMode(image);
@@ -66,30 +106,39 @@ void ComfyUIRemoteDock::slotInpaint()
         return;
     }
     KisSelectionSP sel = m_d->viewManager->selection();
-    if (!sel || !sel->pixelSelection()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: no selection";
-        setStatusMessage(ComfyTr::tr("Make a selection to inpaint."), true);
-        return;
-    }
-    QRect rect = sel->pixelSelection()->selectedExactRect();
-    if (rect.isEmpty()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: selection rect empty";
-        setStatusMessage(ComfyTr::tr("Selection is empty. Draw a selection first."), true);
-        return;
-    }
+    QRect rect;
+    QImage maskImg;
+    m_d->inpaintFromRegionLayer = false;
     const int extentW = image->width();
     const int extentH = image->height();
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: selection rect=" << rect
-                                  << "image=" << QSize(extentW, extentH);
-    // §13.102: SelectionModifiers.square — force bounds to square for workflow
-    if (ComfyUIUtils::getSelectionModifiersSquare())
-        rect = ComfyUIUtils::makeRectSquare(rect, extentW, extentH);
-    // §13.154: Full-document selection → run full-image generation (no mask)
-    if (ComfyUIUtils::isSelectionEntireDocument(image, m_d->viewManager)) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: full-doc selection, falling back to slotGenerate";
-        slotGenerate();
+    const bool hasPartialSelection =
+        sel && sel->pixelSelection() && !sel->pixelSelection()->selectedExactRect().isEmpty()
+        && !ComfyUIUtils::isSelectionEntireDocument(image, m_d->viewManager);
+    if (hasPartialSelection) {
+        rect = sel->pixelSelection()->selectedExactRect();
+        maskImg = ComfyUIUtils::getMaskAsQImage(image, m_d->viewManager, QStringLiteral("selection"),
+                                                ComfyUIUtils::getSelectionModifiersInvert());
+    } else {
+        const bool regionOnly = m_d->checkRegionOnly && m_d->checkRegionOnly->isChecked();
+        const QList<Private::RegionEntry> regs = comfyActiveRegionEntries(m_d.data());
+        const int row = comfyActiveRegionRow(m_d.data());
+        if (regionOnly && row >= 0 && row < regs.size()) {
+            const ComfyRegionProcess::RegionInpaintMask rim =
+                ComfyRegionProcess::getRegionInpaintMask(image, m_d->viewManager, regs.at(row));
+            if (rim.valid) {
+                maskImg = rim.maskGray;
+                rect = rim.bounds;
+                m_d->inpaintFromRegionLayer = true;
+            }
+        }
+    }
+    if (rect.isEmpty() || maskImg.isNull()) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: no selection or region mask";
+        setStatusMessage(ComfyTr::tr("Make a selection or enable region-only mode on an active region."), true);
         return;
     }
+    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: mask rect=" << rect << "fromRegion=" << m_d->inpaintFromRegionLayer
+                                  << "image=" << QSize(extentW, extentH);
     QString urlStr = m_d->editServerUrl->text().trimmed();
     if (urlStr.isEmpty()) {
         qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: server URL empty";
@@ -109,22 +158,121 @@ void ComfyUIRemoteDock::slotInpaint()
         return;
     }
     m_d->inpaintCurrentImage = m_d->inpaintCurrentImage.convertToFormat(QImage::Format_ARGB32);
-    // §13.102: SelectionModifiers.invert — invert selection before creating mask
-    QImage maskImg = ComfyUIUtils::getMaskAsQImage(image, m_d->viewManager, QString("selection"), ComfyUIUtils::getSelectionModifiersInvert());
-    if (maskImg.isNull()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: getMaskAsQImage returned null";
-        setStatusMessage(ComfyTr::tr("Could not get selection mask."), true);
+    const QRect docBounds = image->bounds();
+    const double strength0to1Early = (m_d->spinStrength ? m_d->spinStrength->value() : 100) / 100.0;
+    int selFeather = 10;
+    double selMinTransition = 0.0;
+    int selGrowOffset = 0;
+    ComfyUIUtils::getSelectionModifierSettings(&selFeather, &selMinTransition, &selGrowOffset);
+    QString effectiveModeEarly;
+    if (m_d->inpaintFromRegionLayer)
+        effectiveModeEarly = QStringLiteral("add_object");
+    else if (m_d->comboInpaintMode && m_d->comboInpaintMode->currentData().toString() != QLatin1String("automatic"))
+        effectiveModeEarly = m_d->comboInpaintMode->currentData().toString();
+    else
+        effectiveModeEarly =
+            ComfyUIUtils::detectInpaintMode(extentW, extentH, rect.x(), rect.y(), rect.width(), rect.height());
+    m_d->inpaintTargetBounds = m_d->inpaintFromRegionLayer
+        ? rect
+        : ComfyUIUtils::computePaddedSelectionBounds(
+              rect, docBounds, strength0to1Early, selFeather, selMinTransition, selGrowOffset,
+              ComfyUIUtils::getSelectionPaddingPercent(), effectiveModeEarly,
+              ComfyUIUtils::getSelectionModifiersSquare());
+    QString contextKey = QStringLiteral("automatic");
+    if (effectiveModeEarly == QLatin1String("custom") && m_d->comboInpaintContext)
+        contextKey = m_d->comboInpaintContext->currentData().toString();
+    const bool fullStrengthInpaint = strength0to1Early >= 1.0 && effectiveModeEarly != QLatin1String("custom");
+    if (m_d->inpaintFromRegionLayer) {
+        m_d->inpaintContextBounds = rect;
+    } else if (fullStrengthInpaint) {
+        // Upstream compute_bounds(): 100% inpaint sends a larger square context so
+        // local details (for example eye shape) inform the generated replacement.
+        const QRect target = m_d->inpaintTargetBounds.isEmpty() ? rect : m_d->inpaintTargetBounds;
+        const int avgSide = (target.width() + target.height()) / 2;
+        const int pad = qMax(qMax(extentW, extentH) / 16, avgSide / 2);
+        QRect ctx = target.adjusted(-pad, -pad, pad, pad);
+        const int side = qMax(512, qMax(ctx.width(), ctx.height()));
+        ctx = QRect(ctx.center().x() - side / 2, ctx.center().y() - side / 2, side, side);
+        ctx = ctx.intersected(docBounds);
+        m_d->inpaintContextBounds = ctx;
+    } else if (effectiveModeEarly == QLatin1String("custom")) {
+        // Custom inpaint context (mask_bounds / layer_bounds / entire_image) from settings.
+        m_d->inpaintContextBounds =
+            ComfyUIUtils::computeInpaintContextBounds(image, m_d->viewManager, m_d->inpaintTargetBounds, contextKey);
+    } else {
+        // Upstream compute_bounds(): strength < 100% uses padded mask bounds only (no extra context pad).
+        m_d->inpaintContextBounds = m_d->inpaintTargetBounds;
+    }
+    m_d->inpaintFullCanvasImage = m_d->inpaintCurrentImage;
+    m_d->inpaintCompositingMaskCropped =
+        ComfyUIUtils::cropImageToDocumentRect(maskImg, m_d->inpaintContextBounds, docBounds);
+    m_d->inpaintCurrentImage =
+        ComfyUIUtils::cropImageToDocumentRect(m_d->inpaintFullCanvasImage, m_d->inpaintContextBounds, docBounds);
+    if (m_d->inpaintCurrentImage.isNull() || m_d->inpaintCompositingMaskCropped.isNull()) {
+        setStatusMessage(ComfyTr::tr("Could not crop inpaint context."), true);
         return;
     }
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: canvas size=" << m_d->inpaintCurrentImage.size()
-                                  << "mask size=" << maskImg.size();
-    // Mask for ComfyUI VAEEncodeForInpaint: white = area to inpaint
-    QImage maskPng(maskImg.size(), QImage::Format_ARGB32);
-    for (int y = 0; y < maskImg.height(); y++)
-        for (int x = 0; x < maskImg.width(); x++) {
-            int g = qGray(maskImg.pixel(x, y));
-            maskPng.setPixel(x, y, qRgba(255, 255, 255, 255 - g));
+    // §13.205–206: resolve mode/fill before upload so fill pre-process can run on the context crop
+    const QString ckptNameEarly = checkpointForGenerate();
+    const QString archEarly = ComfyUIUtils::classifyCheckpointArch(ckptNameEarly);
+    const QString posPromptRawEarly = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
+    const bool positiveEmptyEarly = posPromptRawEarly.isEmpty();
+    const QList<ComfyControlLayerEntry> jobControlsEarly =
+        mergedJobControlLayers(m_d->rootControlLayers, comfyActiveRegionEntries(m_d.data()));
+    const bool hasStructuralControlEarly = ComfyControlLayer::hasStructuralControlAmong(jobControlsEarly);
+    ComfyUIUtils::InpaintParams inpaintParamsEarly = ComfyUIUtils::detectInpaintParams(
+        effectiveModeEarly, archEarly, strength0to1Early, positiveEmptyEarly, hasStructuralControlEarly, false);
+    if (!m_d->inpaintPersistUseModel)
+        inpaintParamsEarly.useInpaintModel = false;
+    inpaintParamsEarly.useConditionMask = inpaintParamsEarly.useConditionMask || m_d->inpaintPersistUsePromptFocus;
+    QString useFillKindEarly = inpaintParamsEarly.fillKind;
+    if (effectiveModeEarly == QLatin1String("custom")
+        && m_d->comboFillMode && m_d->comboFillMode->currentData().isValid()
+        && effectiveModeEarly != QLatin1String("replace_background"))
+        useFillKindEarly = m_d->comboFillMode->currentData().toString();
+    const ComfyUIUtils::SelectionPreProcess preprocess = ComfyUIUtils::calcSelectionPreProcess(
+        extentW, extentH, rect.width(), rect.height(), strength0to1Early, selFeather, selMinTransition, selGrowOffset,
+        ComfyUIUtils::getSelectionBlendPixels(), ComfyUIUtils::getSelectionModifiersInvert());
+    m_d->inpaintPreprocessGrow = preprocess.grow;
+    m_d->inpaintPreprocessFeather = preprocess.feather;
+    m_d->inpaintPreprocessBlend = preprocess.blend;
+    if (ComfyRegionProcess::maskAverage(m_d->inpaintCompositingMaskCropped) < 0.001) {
+        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: compositing mask empty after crop";
+        setStatusMessage(ComfyTr::tr("Selection mask is empty. Re-select the area and try again."), true);
+        return;
+    }
+    QString styleArchEarly;
+    if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+        const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+        if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+            styleArchEarly = st->architecture;
+    }
+    m_d->inpaintNativeContextImage = m_d->inpaintCurrentImage;
+    m_d->inpaintNativeCompositingMask = m_d->inpaintCompositingMaskCropped;
+    m_d->inpaintNativeContextSize = m_d->inpaintNativeContextImage.size();
+    m_d->inpaintUseRefineRegionWorkflow = !inpaintParamsEarly.useInpaintModel;
+    const ComfyResources::Arch archForScale = ComfyWorkflowEngine::resolveArch(ckptNameEarly, styleArchEarly);
+    m_d->inpaintDiffusionExtent = m_d->inpaintNativeContextSize;
+    if (m_d->inpaintUseRefineRegionWorkflow) {
+        const ComfyUIUtils::DiffusionPreparedExtent prep =
+            ComfyUIUtils::prepareDiffusionInputExtent(m_d->inpaintNativeContextSize, archForScale);
+        m_d->inpaintDiffusionExtent = prep.initial;
+        if (prep.initial.isValid() && prep.initial != m_d->inpaintNativeContextSize) {
+            m_d->inpaintCurrentImage = m_d->inpaintCurrentImage.scaled(
+                prep.initial, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            m_d->inpaintCompositingMaskCropped = m_d->inpaintCompositingMaskCropped.scaled(
+                prep.initial, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         }
+    }
+    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: contextBounds=" << m_d->inpaintContextBounds
+                                  << "croppedCanvas=" << m_d->inpaintCurrentImage.size()
+                                  << "nativeContext=" << m_d->inpaintNativeContextSize
+                                  << "diffusionExtent=" << m_d->inpaintDiffusionExtent
+                                  << "contextKey=" << contextKey << "effectiveMode=" << effectiveModeEarly;
+    // Upstream sends mask as Grayscale8: white = area to inpaint.
+    QImage maskPng = m_d->inpaintCompositingMaskCropped.format() == QImage::Format_Grayscale8
+                         ? m_d->inpaintCompositingMaskCropped
+                         : m_d->inpaintCompositingMaskCropped.convertToFormat(QImage::Format_Grayscale8);
     QTemporaryFile *tmpImage = new QTemporaryFile(this);
     tmpImage->setFileTemplate(tmpImage->fileTemplate() + ".png");
     tmpImage->open();
@@ -149,6 +297,8 @@ void ComfyUIRemoteDock::slotInpaint()
                                   << "maskSize=" << QFileInfo(tmpMask->fileName()).size();
     if (m_d->btnInpaint)
         m_d->btnInpaint->setEnabled(false);
+    if (m_d->btnGenerate)
+        m_d->btnGenerate->setEnabled(false);
     m_d->progressBar->setValue(0);
     QString path = baseUrl.path();
     if (path.isEmpty() || path == "/") baseUrl.setPath("/upload/image");
@@ -180,7 +330,8 @@ void ComfyUIRemoteDock::slotInpaint()
     multiPart->setParent(reply);
     m_d->labelStatus->setText(ComfyTr::tr("Uploading image…"));
     setProgressBarKind(true);  // §13.18
-    connect(reply, &QNetworkReply::finished, this, [this, reply, tmpMask, baseUrl, extentW, extentH, areaX, areaY, areaW, areaH]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, tmpMask, baseUrl, extentW, extentH, areaX, areaY, areaW, areaH,
+                                                  effectiveModeEarly, useFillKindEarly, inpaintParamsEarly, jobControlsEarly]() {
         reply->deleteLater();
         setProgressBarKind(false);  // §13.18: image upload finished
         const QVariant codeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
@@ -230,7 +381,9 @@ void ComfyUIRemoteDock::slotInpaint()
         maskPart->setParent(replyMask);
         m_d->labelStatus->setText(ComfyTr::tr("Uploading mask…"));
         setProgressBarKind(true);  // §13.18: mask upload
-        connect(replyMask, &QNetworkReply::finished, this, [this, replyMask, extentW, extentH, areaX, areaY, areaW, areaH]() {
+        connect(replyMask, &QNetworkReply::finished, this, [this, replyMask, extentW, extentH, areaX, areaY, areaW, areaH,
+                                                            effectiveModeEarly, useFillKindEarly, inpaintParamsEarly,
+                                                            jobControlsEarly]() {
             replyMask->deleteLater();
             setProgressBarKind(false);  // §13.18: upload finished
             const QVariant codeVar2 = replyMask->attribute(QNetworkRequest::HttpStatusCodeAttribute);
@@ -254,44 +407,16 @@ void ComfyUIRemoteDock::slotInpaint()
                 m_d->progressBar->setValue(0);
                 return;
             }
-            // §13.205: Automatic inpaint mode — expand if selection touches/exceeds doc bounds, else fill.
-            // §13.206: detect_inpaint() — InpaintParams from mode, arch, strength, conditioning
-            const QString ckptName = m_d->comboCheckpoint->currentText().trimmed().isEmpty()
-                ? QStringLiteral("v1-5-pruned-emaonly.safetensors") : m_d->comboCheckpoint->currentText().trimmed();
+            // §13.205–206: mode/arch/strength already resolved before context crop + fill pre-process
+            const QString ckptName = checkpointForGenerate();
             const QString arch = ComfyUIUtils::classifyCheckpointArch(ckptName);
-            // §13.206: When InpaintMode is not automatic, use explicit Fill or Expand; otherwise heuristic
-            QString effectiveMode;
-            if (m_d->comboInpaintMode && m_d->comboInpaintMode->currentData().toString() != QLatin1String("automatic"))
-                effectiveMode = m_d->comboInpaintMode->currentData().toString();
-            else
-                effectiveMode = ComfyUIUtils::detectInpaintMode(extentW, extentH, areaX, areaY, areaW, areaH);
+            const QString effectiveMode = effectiveModeEarly;
             const double strength0to1 = (m_d->spinStrength ? m_d->spinStrength->value() : 100) / 100.0;
-            QString posPromptRaw = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
-            const bool positiveEmpty = posPromptRaw.isEmpty();
-            const QList<ComfyControlLayerEntry> jobControls =
-                mergedJobControlLayers(m_d->rootControlLayers, comfyActiveRegionEntries(m_d.data()));
-            const bool hasStructuralControl = ComfyControlLayer::hasStructuralControlAmong(jobControls);
-            ComfyUIUtils::InpaintParams inpaintParams = ComfyUIUtils::detectInpaintParams(
-                effectiveMode, arch, strength0to1, positiveEmpty, hasStructuralControl, false);
-            // §13.169: CustomInpaint.use_inpaint — user can disable dedicated inpaint model path
-            if (!m_d->inpaintPersistUseModel)
-                inpaintParams.useInpaintModel = false;
-            // §13.169: use_prompt_focus → use_condition_mask (combined with §13.206 SD1.5 add_object rule)
-            inpaintParams.useConditionMask = inpaintParams.useConditionMask || m_d->inpaintPersistUsePromptFocus;
-            // §13.188: Use fill combo when set, else derived fillKind (five options: none, neutral, blur, border, inpaint)
-            QString useFillKind = inpaintParams.fillKind;
-            if (m_d->comboFillMode && m_d->comboFillMode->currentData().isValid()
-                && effectiveMode != QLatin1String("replace_background"))
-                useFillKind = m_d->comboFillMode->currentData().toString();
-            int selFeather = 50;
-            double selMinTransition = 0.0;
-            int selGrowOffset = 0;
-            ComfyUIUtils::getSelectionModifierSettings(&selFeather, &selMinTransition, &selGrowOffset);
-            const int baseGrow = ComfyUIUtils::calcSelectionPreProcessGrow(extentW, extentH, areaW, areaH, strength0to1, selFeather, selMinTransition, selGrowOffset);
-            // §13.206 / §13.188: border → more grow, else (blur/none/neutral/inpaint) → less; edit mode uses base grow
-            const int growMaskBy = inpaintParams.isEditMode ? baseGrow
-                : (useFillKind == QLatin1String("border"))
-                    ? qMax(12, baseGrow) : qMax(6, baseGrow);
+            ComfyUIUtils::InpaintParams inpaintParams = inpaintParamsEarly;
+            const QString useFillKind = useFillKindEarly;
+            const QList<ComfyControlLayerEntry> jobControls = jobControlsEarly;
+            const ComfyUIUtils::SelectionPreProcess preprocess{m_d->inpaintPreprocessGrow, m_d->inpaintPreprocessFeather,
+                                                             m_d->inpaintPreprocessBlend};
             quint32 inpaintSeed = static_cast<quint32>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
             QString posPrompt = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
             posPrompt = ComfyUIUtils::evalWildcards(posPrompt, inpaintSeed);
@@ -320,14 +445,47 @@ void ComfyUIRemoteDock::slotInpaint()
             bp.sampler = m_d->comboSampler->currentText().trimmed().isEmpty() ? QStringLiteral("euler")
                                                                               : m_d->comboSampler->currentText().trimmed();
             bp.scheduler = m_d->ksamplerScheduler.isEmpty() ? QStringLiteral("normal") : m_d->ksamplerScheduler;
-            bp.growMaskBy = ComfyUIUtils::clampInpaintGrowFeather(growMaskBy);
+            bp.growMaskBy = preprocess.grow;
+            bp.featherMaskBy = preprocess.feather;
+            bp.blendMaskBy = preprocess.blend;
+            bp.targetBoundsRelative = m_d->inpaintTargetBounds.translated(-m_d->inpaintContextBounds.topLeft());
+            bp.fillKind = useFillKind;
+            bp.useConditionMask = inpaintParams.useConditionMask;
+            bp.backgroundPrompt =
+                ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(QString(), currentStyleLoras());
             bp.arch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
             bp.promptTranslationLanguage = ComfyUIUtils::activePromptTranslationLanguage();
-            QJsonObject workflow = ComfyWorkflowEngine::buildInpaint(bp);
+            QJsonObject workflow;
+            if (inpaintParams.useInpaintModel) {
+                workflow = ComfyWorkflowEngine::buildInpaint(bp);
+            } else {
+                ComfyWorkflowEngine::RefineRegionParams rrp;
+                rrp.refine.imageName = bp.imageName;
+                rrp.maskImageName = bp.maskImageName;
+                rrp.refine.checkpoint = bp.checkpoint;
+                rrp.refine.positivePrompt = bp.positivePrompt;
+                rrp.refine.negativePrompt = bp.negativePrompt;
+                rrp.refine.promptTranslationLanguage = bp.promptTranslationLanguage;
+                rrp.refine.seed = bp.seed;
+                rrp.refine.steps = bp.steps;
+                rrp.refine.cfg = bp.cfg;
+                rrp.refine.denoise = bp.denoise;
+                rrp.refine.sampler = bp.sampler;
+                rrp.refine.scheduler = bp.scheduler;
+                rrp.refine.arch = bp.arch;
+                rrp.refine.styleLoras = bp.styleLoras;
+                rrp.growMaskBy = preprocess.grow;
+                rrp.featherMaskBy = preprocess.feather;
+                rrp.colorMatch = ComfyUIUtils::settingsColorMatchEnabled();
+                rrp.extentWidth = qMax(64, m_d->inpaintDiffusionExtent.width());
+                rrp.extentHeight = qMax(64, m_d->inpaintDiffusionExtent.height());
+                workflow = ComfyWorkflowEngine::buildRefineRegion(rrp);
+            }
             qCWarning(KIS_COMFYUI_REMOTE)
                 << "slotInpaint: built workflow nodeCount=" << workflow.size()
+                << "kind=" << (inpaintParams.useInpaintModel ? "inpaint" : "refine_region")
                 << "ckpt=" << bp.checkpoint << "arch=" << static_cast<int>(bp.arch)
-                << "denoise=" << bp.denoise << "growMaskBy=" << bp.growMaskBy
+                << "denoise=" << bp.denoise << "growMaskBy=" << bp.growMaskBy << "featherMaskBy=" << bp.featherMaskBy
                 << "effectiveMode=" << effectiveMode
                 << "useFillKind=" << useFillKind
                 << "useInpaintModel=" << inpaintParams.useInpaintModel
@@ -359,6 +517,9 @@ void ComfyUIRemoteDock::slotInpaint()
             pending.strength = m_d->spinStrength ? m_d->spinStrength->value() : 100;
             pending.samplerName = bp.sampler;
             pending.seed = bp.seed;
+            pending.hasMask = true;
+            pending.inpaintMode = effectiveMode;
+            pending.contextBounds = m_d->inpaintTargetBounds;
             m_d->inpaintPendingEntry = pending;
             qCWarning(KIS_COMFYUI_REMOTE)
                 << "slotInpaint: dispatching beginInpaintUploadPipeline() pendingNodeCount="
@@ -721,6 +882,13 @@ void ComfyUIRemoteDock::slotInpaintPoll()
             return;
         }
         QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->inpaintPromptId).toObject();
+        if (const QString execErr = ComfyUIUtils::comfyHistoryExecutionError(hist); !execErr.isEmpty()) {
+            setStatusMessage(execErr, true);
+            m_d->inpaintPromptId.clear();
+            m_d->btnInpaint->setEnabled(true);
+            m_d->progressBar->setValue(0);
+            return;
+        }
         QJsonObject outputs = hist.value("outputs").toObject();
         if (outputs.isEmpty()) {
             m_d->inpaintPollCount++;
@@ -772,35 +940,79 @@ void ComfyUIRemoteDock::slotInpaintPoll()
             }
             QImage result;
             result.loadFromData(replyView->readAll());
-            KisImageSP image = m_d->viewManager->image();
-            QImage maskImg = ComfyUIUtils::getMaskAsQImage(image, m_d->viewManager, QString("selection"), ComfyUIUtils::getSelectionModifiersInvert());
-            if (!result.isNull() && result.size() == m_d->inpaintCurrentImage.size() && !maskImg.isNull()) {
-                ComfyUIUtils::compositeWithMask(m_d->inpaintCurrentImage, result.convertToFormat(QImage::Format_ARGB32), maskImg);
-            } else if (!result.isNull()) {
-                m_d->inpaintCurrentImage = result.convertToFormat(QImage::Format_ARGB32);
+            const QSize nativeContextSize = m_d->inpaintNativeContextImage.isNull()
+                                                ? m_d->inpaintCurrentImage.size()
+                                                : m_d->inpaintNativeContextImage.size();
+            const QImage contextImage = m_d->inpaintNativeContextImage.isNull()
+                                            ? m_d->inpaintCurrentImage
+                                            : m_d->inpaintNativeContextImage;
+            const QImage compositingMask = m_d->inpaintNativeCompositingMask.isNull()
+                                               ? m_d->inpaintCompositingMaskCropped
+                                               : m_d->inpaintNativeCompositingMask;
+            QImage serverResult = result;
+            if (!serverResult.isNull() && nativeContextSize.isValid()
+                && serverResult.size() != nativeContextSize) {
+                serverResult = serverResult.scaled(nativeContextSize, Qt::IgnoreAspectRatio,
+                                                   Qt::SmoothTransformation);
             }
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaintPoll: rawResult=" << result.size()
+                                          << "scaledResult=" << serverResult.size()
+                                          << "nativeContext=" << nativeContextSize
+                                          << "diffusionExtent=" << m_d->inpaintDiffusionExtent
+                                          << "targetBounds=" << m_d->inpaintTargetBounds;
+            QImage outputImage = contextImage;
+            const QSize contextSize = nativeContextSize;
+            const QSize targetSize = m_d->inpaintTargetBounds.size();
+            if (!serverResult.isNull() && serverResult.size() == contextSize && !compositingMask.isNull()) {
+                QImage patch = contextImage;
+                const QImage compositeMask = ComfyUIUtils::denoiseToCompositingMask(
+                    compositingMask, m_d->inpaintPreprocessGrow, m_d->inpaintPreprocessFeather,
+                    m_d->inpaintPreprocessBlend);
+                ComfyUIUtils::compositeWithMask(patch, serverResult.convertToFormat(QImage::Format_RGB32),
+                                                compositeMask);
+                outputImage = patch;
+            } else if (!serverResult.isNull() && serverResult.size() == targetSize
+                       && !compositingMask.isNull()) {
+                const QRect targetLocal =
+                    m_d->inpaintTargetBounds.translated(-m_d->inpaintContextBounds.topLeft());
+                outputImage = contextImage;
+                QImage patch = outputImage.copy(targetLocal);
+                const QImage compositeMask = ComfyUIUtils::denoiseToCompositingMask(
+                    compositingMask, m_d->inpaintPreprocessGrow, m_d->inpaintPreprocessFeather,
+                    m_d->inpaintPreprocessBlend);
+                QImage maskRegion = compositeMask.copy(targetLocal);
+                if (result.size() != patch.size())
+                    patch = patch.scaled(result.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                if (maskRegion.size() != patch.size())
+                    maskRegion = maskRegion.scaled(patch.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+                ComfyUIUtils::compositeWithMask(patch, result.convertToFormat(QImage::Format_RGB32), maskRegion);
+                ComfyUIUtils::blitImageInto(outputImage, patch, targetLocal.topLeft());
+            } else if (!serverResult.isNull()) {
+                qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaintPoll: composite skipped, using scaled server result";
+                outputImage = serverResult.convertToFormat(QImage::Format_ARGB32);
+            }
+            outputImage = cropContextResultToTarget(outputImage, m_d->inpaintContextBounds, m_d->inpaintTargetBounds);
             const QString promptId = m_d->inpaintPromptId;
             const QString cachePath = ComfyUIUtils::historyCacheDir() + QStringLiteral("/")
                 + (promptId.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : promptId)
                 + QStringLiteral(".png");
             if (QFile::exists(cachePath)) QFile::remove(cachePath);
-            if (!m_d->inpaintCurrentImage.save(cachePath)) {
+            if (!outputImage.save(cachePath)) {
                 m_d->inpaintPromptId.clear();
                 m_d->inpaintPendingEntry = Private::HistoryEntry();
-                m_d->btnInpaint->setEnabled(true);
+                if (m_d->btnInpaint) m_d->btnInpaint->setEnabled(true);
+                if (m_d->btnGenerate) m_d->btnGenerate->setEnabled(true);
                 m_d->progressBar->setValue(0);
                 return;
             }
-            if (m_d->viewManager->imageManager()) {
-                m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(cachePath), "KisPaintLayer");
-                if (m_d->canvas) m_d->canvas->updateCanvas();
-            }
-            // §13.131/13.136: record completed inpaint in history (was missing — "success" status
-            // appeared but history list was never refreshed).
+            rememberHistoryPreviewImage(cachePath, outputImage);
+            // §13.131: record completed inpaint in history; preview/apply via shared generation_finished path
             Private::HistoryEntry entry = m_d->inpaintPendingEntry;
             entry.jobId = promptId;
             entry.resultImagePath = cachePath;
             entry.resultImagePaths = QStringList() << cachePath;
+            entry.width = outputImage.width();
+            entry.height = outputImage.height();
             m_d->historyEntries.prepend(entry);
             while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
                 Private::HistoryEntry old = m_d->historyEntries.takeLast();
@@ -811,14 +1023,26 @@ void ComfyUIRemoteDock::slotInpaintPoll()
             }
             pruneHistoryToStorageLimit();
             persistTopHistoryEntryToDocument(false);
-            // skipAutoActions=true: inpaint already imported the result as a layer above; don't
-            // re-apply via handleGenerationFinished's generation_finished_action path.
-            handleGenerationFinished(cachePath, true);
+            handleGenerationFinished(cachePath, false);
             m_d->inpaintPendingEntry = Private::HistoryEntry();
-            m_d->labelStatus->setText(ComfyTr::tr("Inpaint done. Result added as new layer."));
+            m_d->inpaintFullCanvasImage = QImage();
+            m_d->inpaintCompositingMaskCropped = QImage();
+            m_d->inpaintNativeContextImage = QImage();
+            m_d->inpaintNativeCompositingMask = QImage();
+            m_d->inpaintNativeContextSize = QSize();
+            m_d->inpaintDiffusionExtent = QSize();
+            m_d->inpaintUseRefineRegionWorkflow = false;
+            m_d->inpaintContextBounds = QRect();
+            m_d->inpaintTargetBounds = QRect();
+            m_d->inpaintPreprocessGrow = 0;
+            m_d->inpaintPreprocessFeather = 0;
+            m_d->inpaintPreprocessBlend = 0;
+            m_d->inpaintFromRegionLayer = false;
+            m_d->labelStatus->setText(ComfyTr::tr("Inpaint done."));
             m_d->progressBar->setValue(100);
             m_d->inpaintPromptId.clear();
-            m_d->btnInpaint->setEnabled(true);
+            if (m_d->btnInpaint) m_d->btnInpaint->setEnabled(true);
+            if (m_d->btnGenerate) m_d->btnGenerate->setEnabled(true);
         });
     });
 }

@@ -220,4 +220,46 @@ QList<ComfyWorkflowEngine::RegionalPromptInput> toRegionalWorkflowInputs(const Q
     return out;
 }
 
+RegionInpaintMask getRegionInpaintMask(KisImageSP image, KisViewManager *viewManager, const ComfyRegionEntry &region)
+{
+    RegionInpaintMask result;
+    if (!image)
+        return result;
+
+    const QString maskSrc = ComfyRegionLink::effectiveMaskSource(region, image);
+    QImage maskImg = ComfyUIUtils::getMaskAsQImage(image, viewManager, maskSrc);
+    if (maskImg.isNull())
+        return result;
+
+    QRect regionBounds = maskNonZeroBounds(maskImg);
+    if (regionBounds.isEmpty())
+        return result;
+
+    const QRect doc = image->bounds();
+    const double avgSide = (regionBounds.width() + regionBounds.height()) / 2.0;
+    const int padding = qMax(1, static_cast<int>(std::round(avgSide * ComfyUIUtils::getSelectionPaddingPercent() / 100.0)));
+    QRect bounds = regionBounds.adjusted(-padding, -padding, padding, padding);
+    bounds = bounds.intersected(doc);
+    if (bounds.isEmpty())
+        return result;
+
+    const QImage cropped = ComfyUIUtils::cropImageToDocumentRect(maskImg, bounds, doc);
+    QImage fullMask(doc.width(), doc.height(), QImage::Format_Grayscale8);
+    fullMask.fill(0);
+    if (!cropped.isNull()) {
+        for (int y = 0; y < cropped.height(); ++y) {
+            for (int x = 0; x < cropped.width(); ++x) {
+                const int gx = bounds.x() - doc.x() + x;
+                const int gy = bounds.y() - doc.y() + y;
+                if (gx >= 0 && gy >= 0 && gx < fullMask.width() && gy < fullMask.height())
+                    fullMask.setPixel(gx, gy, cropped.pixel(x, y));
+            }
+        }
+    }
+    result.maskGray = fullMask;
+    result.bounds = bounds;
+    result.valid = !result.maskGray.isNull();
+    return result;
+}
+
 } // namespace ComfyRegionProcess

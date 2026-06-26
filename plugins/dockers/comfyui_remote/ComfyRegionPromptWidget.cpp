@@ -173,6 +173,7 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("RegionPromptWidget"));
+    setFocusPolicy(Qt::NoFocus);
 
     auto *rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
@@ -184,7 +185,7 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
 
     m_activeFrame = new QFrame(this);
     m_activeFrame->setObjectName(QStringLiteral("ActiveRegionWidget"));
-    m_activeFrame->setFrameStyle(QFrame::StyledPanel);
+    m_activeFrame->setFrameStyle(QFrame::NoFrame);
     auto *activeLay = new QVBoxLayout(m_activeFrame);
     activeLay->setContentsMargins(4, 4, 4, 4);
     activeLay->setSpacing(4);
@@ -292,22 +293,13 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     connect(m_editPrompt, &QPlainTextEdit::textChanged, this, [this]() {
         if (m_syncingEditor || !m_regions || !m_activeIndex)
             return;
-        if (currentMode() == EditorMode::Root) {
-            pushRootPromptsToDock();
-            Q_EMIT regionEdited();
+        if (currentMode() == EditorMode::Root)
             return;
-        }
         if (currentMode() != EditorMode::Region)
             return;
         (*m_regions)[*m_activeIndex].prompt = m_editPrompt->toPlainText();
         Q_EMIT regionEdited();
         rebuildInactiveChips();
-    });
-    connect(m_editNegative, &QPlainTextEdit::textChanged, this, [this]() {
-        if (m_syncingEditor || currentMode() != EditorMode::Root)
-            return;
-        pushRootPromptsToDock();
-        Q_EMIT regionEdited();
     });
     connect(m_comboMask, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         if (m_syncingEditor || currentMode() != EditorMode::Region || !m_regions || !m_activeIndex)
@@ -363,7 +355,6 @@ bool ComfyRegionPromptWidget::eventFilter(QObject *obj, QEvent *event)
     }
     if (event->type() == QEvent::FocusIn && (obj == m_editPrompt || obj == m_editNegative)) {
         m_activeFrame->setStyleSheet(QStringLiteral("QFrame#ActiveRegionWidget { border: 1px solid palette(highlight); }"));
-        Q_EMIT activated();
     } else if (event->type() == QEvent::FocusOut && (obj == m_editPrompt || obj == m_editNegative)) {
         m_activeFrame->setStyleSheet(QString());
     }
@@ -402,18 +393,6 @@ void ComfyRegionPromptWidget::setRootPromptEditors(QPlainTextEdit *positive, QPl
 {
     m_dockRootPositive = positive;
     m_dockRootNegative = negative;
-    if (m_dockRootPositive) {
-        connect(m_dockRootPositive, &QPlainTextEdit::textChanged, this, [this]() {
-            if (currentMode() == EditorMode::Root && !m_syncingEditor)
-                syncRootPromptsFromDock();
-        });
-    }
-    if (m_dockRootNegative) {
-        connect(m_dockRootNegative, &QPlainTextEdit::textChanged, this, [this]() {
-            if (currentMode() == EditorMode::Root && !m_syncingEditor)
-                syncRootPromptsFromDock();
-        });
-    }
 }
 
 void ComfyRegionPromptWidget::embedRegionControlPanel(QWidget *panel)
@@ -477,14 +456,37 @@ void ComfyRegionPromptWidget::onActiveLayerChanged()
     updateNoRegionStrip();
 }
 
+void ComfyRegionPromptWidget::focusPromptEditor()
+{
+    if (m_editNegative && m_editNegative->isVisible() && m_editNegative->hasFocus())
+        return;
+    if (m_editPrompt && m_editPrompt->isVisible())
+        m_editPrompt->setFocus(Qt::OtherFocusReason);
+    else if (m_editNegative && m_editNegative->isVisible())
+        m_editNegative->setFocus(Qt::OtherFocusReason);
+}
+
+QVariant ComfyRegionPromptWidget::inputMethodQuery(Qt::InputMethodQuery query) const
+{
+    // Android IME uses QMetaObject::invokeMethod on the focus widget's ancestors;
+    // forward to the active prompt editor so soft keyboard / composition work.
+    if (m_editPrompt && m_editPrompt->hasFocus())
+        return m_editPrompt->inputMethodQuery(query);
+    if (m_editNegative && m_editNegative->hasFocus())
+        return m_editNegative->inputMethodQuery(query);
+    if (m_editPrompt && m_editPrompt->isVisible())
+        return m_editPrompt->inputMethodQuery(query);
+    return QWidget::inputMethodQuery(query);
+}
+
 ComfyRegionPromptWidget::EditorMode ComfyRegionPromptWidget::currentMode() const
 {
     if (!m_regions || !m_activeIndex)
         return EditorMode::Empty;
-    if (m_regions->isEmpty())
-        return EditorMode::Empty;
     if (*m_activeIndex == ComfyRegionLink::kRootRegionIndex)
         return EditorMode::Root;
+    if (m_regions->isEmpty())
+        return EditorMode::Empty;
     if (*m_activeIndex == ComfyRegionLink::kUnlinkedRegionIndex)
         return EditorMode::Unlinked;
     if (*m_activeIndex >= 0 && *m_activeIndex < m_regions->size())
@@ -548,6 +550,8 @@ void ComfyRegionPromptWidget::rebuildInactiveChips()
         pseudo.name = ComfyTr::tr("Common");
         if (m_dockRootPositive)
             pseudo.prompt = m_dockRootPositive->toPlainText();
+        if (pseudo.prompt.isEmpty() && m_editPrompt)
+            pseudo.prompt = m_editPrompt->toPlainText();
         auto *rootChip = new InactiveRegionChip(this);
         rootChip->setContent(thumbnailForRegion(pseudo, image, true), inactivePromptText(pseudo, true), {});
         placeChip(rootChip, ComfyRegionLink::kRootRegionIndex);
@@ -598,11 +602,28 @@ void ComfyRegionPromptWidget::populateMaskCombo()
 void ComfyRegionPromptWidget::syncRootPromptsFromDock()
 {
     m_syncingEditor = true;
-    if (m_dockRootPositive)
-        m_editPrompt->setPlainText(m_dockRootPositive->toPlainText());
-    if (m_dockRootNegative)
-        m_editNegative->setPlainText(m_dockRootNegative->toPlainText());
+    if (m_dockRootPositive && m_editPrompt) {
+        const QString t = m_dockRootPositive->toPlainText();
+        if (m_editPrompt->toPlainText() != t)
+            m_editPrompt->setPlainText(t);
+    }
+    if (m_dockRootNegative && m_editNegative) {
+        const QString t = m_dockRootNegative->toPlainText();
+        if (m_editNegative->toPlainText() != t)
+            m_editNegative->setPlainText(t);
+    }
     m_syncingEditor = false;
+}
+
+void ComfyRegionPromptWidget::refreshRootPromptFromDock()
+{
+    if (currentMode() == EditorMode::Root)
+        syncRootPromptsFromDock();
+}
+
+void ComfyRegionPromptWidget::commitRootPromptEditors()
+{
+    pushRootPromptsToDock();
 }
 
 void ComfyRegionPromptWidget::pushRootPromptsToDock()
@@ -622,8 +643,9 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
     const EditorMode mode = currentMode();
     const bool hasRegions = m_regions && !m_regions->isEmpty();
 
-    m_activeFrame->setVisible(hasRegions || mode == EditorMode::Empty);
-    m_emptyHint->setVisible(!hasRegions);
+    m_activeFrame->setVisible(mode == EditorMode::Root || mode == EditorMode::Region
+                              || mode == EditorMode::Unlinked || mode == EditorMode::Empty);
+    m_emptyHint->setVisible(!hasRegions && mode == EditorMode::Empty);
     m_noRegionStrip->setVisible(mode == EditorMode::Unlinked);
     m_editPrompt->setVisible(mode == EditorMode::Root || mode == EditorMode::Region);
     m_editNegative->setVisible(mode == EditorMode::Root && m_showNegativePrompt);
@@ -637,6 +659,8 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
 
     if (mode == EditorMode::Root) {
         m_headerLabel->setText(ComfyTr::tr("Text prompt common to all regions"));
+        m_editPrompt->setPlaceholderText(
+            ComfyTr::tr("Describe the content you want to see, or leave empty."));
         syncRootPromptsFromDock();
     } else if (mode == EditorMode::Region && m_regions && m_activeIndex) {
         const ComfyUIRemoteDock::Private::RegionEntry &r = m_regions->at(*m_activeIndex);

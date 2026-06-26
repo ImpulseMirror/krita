@@ -13,6 +13,7 @@
 
 #include <QSet>
 #include <algorithm>
+#include <cmath>
 #include <QApplication>
 #include <QDir>
 #include <QFile>
@@ -2813,6 +2814,8 @@ const QStringList &comfyUiSpecSection58NodeClassTypes()
         QStringLiteral("ETN_KritaStyleAndPrompt"),
         // INPAINT_ (comfyui-inpaint-nodes)
         QStringLiteral("INPAINT_LoadFooocusInpaint"),
+        QStringLiteral("INPAINT_MaskedFill"),
+        QStringLiteral("INPAINT_MaskedBlur"),
         QStringLiteral("INPAINT_ShrinkMask"),
         QStringLiteral("INPAINT_StabilizeMask"),
         QStringLiteral("INPAINT_ColorMatch"),
@@ -2839,6 +2842,8 @@ const QStringList &comfyUiSpecSection58NodeClassTypes()
         QStringLiteral("VAEDecodeTiled"),
         QStringLiteral("VAEEncode"),
         QStringLiteral("VAEEncodeForInpaint"),
+        QStringLiteral("ImageCrop"),
+        QStringLiteral("CropMask"),
         QStringLiteral("LoadImage"),
         QStringLiteral("SaveImage"),
         QStringLiteral("ImageScale"),
@@ -3285,21 +3290,166 @@ QString prependInpaintPromptInstructions(const QString &prompt, const QString &m
 }
 
 // §13.43: grow from get_selection_modifiers + calc_selection_pre_process (feather_rel × size + feather_min_px; grow = selection_grow_offset + feather/2)
-int calcSelectionPreProcessGrow(int extentWidth, int extentHeight, int areaWidth, int areaHeight, double strength0to1,
-                                int selectionFeatherPercent, double selectionMinTransition, int selectionGrowOffset)
+SelectionPreProcess calcSelectionPreProcess(int extentWidth, int extentHeight, int areaWidth, int areaHeight,
+                                             double strength0to1, int selectionFeatherPercent,
+                                             double selectionMinTransition, int selectionGrowOffset,
+                                             int selectionBlendPixels, bool invertSelection)
 {
-    if (strength0to1 <= 0.0) return clampInpaintGrowFeather(selectionGrowOffset);
+    SelectionPreProcess out;
+    if (selectionFeatherPercent <= 0)
+        return out;
+
     double diagonal = 0.0;
     if (areaWidth > 0 && areaHeight > 0)
         diagonal = std::sqrt(static_cast<double>(areaWidth) * areaWidth + static_cast<double>(areaHeight) * areaHeight);
     if (diagonal <= 0.0 && extentWidth > 0 && extentHeight > 0)
         diagonal = std::sqrt(static_cast<double>(extentWidth) * extentWidth + static_cast<double>(extentHeight) * extentHeight);
-    if (diagonal <= 0.0) return clampInpaintGrowFeather(selectionGrowOffset);
+    if (diagonal <= 0.0)
+        return out;
+
     const double featherRel = (selectionFeatherPercent / 100.0) * strength0to1;
+    int feather = static_cast<int>(std::round(featherRel * diagonal));
     const int featherMinPx = static_cast<int>(std::round(selectionMinTransition * strength0to1));
-    const double featherPx = featherRel * diagonal + featherMinPx;
-    const int grow = selectionGrowOffset + static_cast<int>(featherPx / 2.0);
-    return clampInpaintGrowFeather(grow);
+    if (!invertSelection)
+        feather = qMax(feather, featherMinPx);
+    feather = clampInpaintGrowFeather(feather);
+
+    int grow = selectionGrowOffset + feather / 2;
+    grow = clampInpaintGrowFeather(grow);
+
+    int blend = qMin(selectionBlendPixels, grow + feather / 2);
+    blend = clampInpaintGrowFeather(blend);
+
+    out.grow = grow;
+    out.feather = feather;
+    out.blend = blend;
+    return out;
+}
+
+int getSelectionBlendPixels()
+{
+    return qBound(0, loadSettingsJson().value(QStringLiteral("selection_blend")).toInt(25), 100);
+}
+
+static QImage rasterDilateGray(const QImage &maskGray, int radius)
+{
+    if (maskGray.isNull() || radius <= 0)
+        return maskGray;
+    QImage src = maskGray.format() == QImage::Format_Grayscale8
+                     ? maskGray
+                     : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    // Separable max-filter: O(w*h*r) per axis instead of O(w*h*r^2).
+    QImage horiz(src.size(), QImage::Format_Grayscale8);
+    for (int y = 0; y < src.height(); ++y) {
+        const uchar *inLine = src.constScanLine(y);
+        uchar *outLine = horiz.scanLine(y);
+        for (int x = 0; x < src.width(); ++x) {
+            int maxv = 0;
+            const int x0 = qMax(0, x - radius);
+            const int x1 = qMin(src.width() - 1, x + radius);
+            for (int nx = x0; nx <= x1; ++nx)
+                maxv = qMax(maxv, static_cast<int>(inLine[nx]));
+            outLine[x] = static_cast<uchar>(maxv);
+        }
+    }
+    QImage out(horiz.size(), QImage::Format_Grayscale8);
+    for (int x = 0; x < horiz.width(); ++x) {
+        for (int y = 0; y < horiz.height(); ++y) {
+            int maxv = 0;
+            const int y0 = qMax(0, y - radius);
+            const int y1 = qMin(horiz.height() - 1, y + radius);
+            for (int ny = y0; ny <= y1; ++ny)
+                maxv = qMax(maxv, static_cast<int>(horiz.constScanLine(ny)[x]));
+            out.scanLine(y)[x] = static_cast<uchar>(maxv);
+        }
+    }
+    return out;
+}
+
+static QImage rasterErodeGray(const QImage &maskGray, int radius)
+{
+    if (maskGray.isNull() || radius <= 0)
+        return maskGray;
+    QImage src = maskGray.format() == QImage::Format_Grayscale8
+                     ? maskGray
+                     : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    QImage horiz(src.size(), QImage::Format_Grayscale8);
+    for (int y = 0; y < src.height(); ++y) {
+        const uchar *inLine = src.constScanLine(y);
+        uchar *outLine = horiz.scanLine(y);
+        for (int x = 0; x < src.width(); ++x) {
+            int minv = 255;
+            const int x0 = qMax(0, x - radius);
+            const int x1 = qMin(src.width() - 1, x + radius);
+            for (int nx = x0; nx <= x1; ++nx)
+                minv = qMin(minv, static_cast<int>(inLine[nx]));
+            outLine[x] = static_cast<uchar>(minv);
+        }
+    }
+    QImage out(horiz.size(), QImage::Format_Grayscale8);
+    for (int x = 0; x < horiz.width(); ++x) {
+        for (int y = 0; y < horiz.height(); ++y) {
+            int minv = 255;
+            const int y0 = qMax(0, y - radius);
+            const int y1 = qMin(horiz.height() - 1, y + radius);
+            for (int ny = y0; ny <= y1; ++ny) {
+                const int v = static_cast<int>(horiz.constScanLine(ny)[x]);
+                minv = qMin(minv, v);
+            }
+            out.scanLine(y)[x] = static_cast<uchar>(minv);
+        }
+    }
+    return out;
+}
+
+static QImage rasterBlurGray(const QImage &maskGray, int blurRadius)
+{
+    if (maskGray.isNull() || blurRadius <= 0)
+        return maskGray;
+    QImage src = maskGray.format() == QImage::Format_Grayscale8
+                     ? maskGray
+                     : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    const int down = qMax(1, blurRadius);
+    return src.scaled(qMax(1, src.width() / down), qMax(1, src.height() / down), Qt::IgnoreAspectRatio,
+                      Qt::SmoothTransformation)
+        .scaled(src.width(), src.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+}
+
+QImage rasterExpandMask(const QImage &maskGray, int grow, int feather)
+{
+    QImage m = maskGray;
+    if (grow > 0)
+        m = rasterDilateGray(m, grow);
+    if (feather > 0)
+        m = rasterBlurGray(m, qMax(1, feather / 4));
+    return m;
+}
+
+QImage denoiseToCompositingMask(const QImage &maskGray, int grow, int feather, int blend)
+{
+    QImage m = rasterExpandMask(maskGray, grow, feather);
+    m = m.convertToFormat(QImage::Format_Grayscale8);
+    for (int y = 0; y < m.height(); ++y) {
+        uchar *line = m.scanLine(y);
+        for (int x = 0; x < m.width(); ++x)
+            line[x] = line[x] > 0 ? 255 : 0;
+    }
+    if (blend > 0) {
+        const int shrink = blend / 2;
+        if (shrink > 0)
+            m = rasterErodeGray(m, shrink);
+        m = rasterBlurGray(m, qMax(1, blend / 4));
+    }
+    return m;
+}
+
+int calcSelectionPreProcessGrow(int extentWidth, int extentHeight, int areaWidth, int areaHeight, double strength0to1,
+                                int selectionFeatherPercent, double selectionMinTransition, int selectionGrowOffset)
+{
+    const SelectionPreProcess p = calcSelectionPreProcess(
+        extentWidth, extentHeight, areaWidth, areaHeight, strength0to1, selectionFeatherPercent,
+        selectionMinTransition, selectionGrowOffset, getSelectionBlendPixels(), false);
+    return p.grow;
 }
 
 // §4.6 / §3.5: selection_feather stored as 0–25 (percent); default 10
@@ -3312,6 +3462,252 @@ void getSelectionModifierSettings(int *selectionFeatherPercent, double *selectio
         *selectionMinTransition = qBound(0.0, s.value(QStringLiteral("selection_min_transition")).toDouble(0.0), 100.0);
     if (selectionGrowOffset)
         *selectionGrowOffset = qBound(0, s.value(QStringLiteral("selection_grow_offset")).toInt(0), inpaintGrowFeatherMax);
+}
+
+int getSelectionPaddingPercent()
+{
+    return qBound(0, loadSettingsJson().value(QStringLiteral("selection_padding")).toInt(6), 25);
+}
+
+DiffusionPreparedExtent prepareDiffusionInputExtent(const QSize &inputExtent, ComfyResources::Arch arch)
+{
+    DiffusionPreparedExtent out;
+    const int w = inputExtent.width();
+    const int h = inputExtent.height();
+    if (w <= 0 || h <= 0)
+        return out;
+
+    out.initial = inputExtent;
+    out.scaleFromInput = 1.0;
+
+    const qint64 pixelCount = static_cast<qint64>(w) * static_cast<qint64>(h);
+    int minSize = 512;
+    qint64 minPixelCount = 512LL * 512;
+    if (ComfyResources::isSdxlLike(arch) || arch == ComfyResources::Arch::Sd3) {
+        minSize = 640;
+        minPixelCount = 800LL * 800;
+    }
+
+    const double minScale = std::sqrt(static_cast<double>(minPixelCount) / static_cast<double>(pixelCount));
+    int initialW = w;
+    int initialH = h;
+    if (minScale > 1.0 && w < minSize && h < minSize) {
+        initialW = static_cast<int>(std::round(w * minScale));
+        initialH = static_cast<int>(std::round(h * minScale));
+        out.scaleFromInput = minScale;
+    }
+
+    const int multiple = 16;
+    initialW = qMax(multiple, ((initialW + multiple - 1) / multiple) * multiple);
+    initialH = qMax(multiple, ((initialH + multiple - 1) / multiple) * multiple);
+    out.initial = QSize(initialW, initialH);
+    return out;
+}
+
+static int roundUpToMultiple(int number, int multiple)
+{
+    if (multiple <= 1)
+        return number;
+    return ((number + multiple - 1) / multiple) * multiple;
+}
+
+static QRect padBoundsLikeUpstream(const QRect &bounds, const QRect &docExtent, int padding, int minSize, int multiple,
+                                   bool square)
+{
+    if (bounds.isEmpty() || docExtent.isEmpty())
+        return bounds;
+
+    auto padScalar = [&](int x, int size, int pad) {
+        const int paddedSize = size + 2 * pad;
+        const int newSize = roundUpToMultiple(qMax(paddedSize, minSize), multiple);
+        const int newX = x - (newSize - size) / 2;
+        return std::pair<int, int>{newX, newSize};
+    };
+
+    int padX = padding;
+    int padY = padding;
+    if (square && bounds.width() > bounds.height())
+        padX = qMax(padX / 2, padX - (bounds.width() - bounds.height()) / 2);
+    else if (square && bounds.height() > bounds.width())
+        padY = qMax(padY / 2, padY - (bounds.height() - bounds.width()) / 2);
+
+    const auto [newX, newW] = padScalar(bounds.x(), bounds.width(), padX);
+    const auto [newY, newH] = padScalar(bounds.y(), bounds.height(), padY);
+    QRect result(newX, newY, newW, newH);
+
+    auto clampAxis = [](int off, int size, int maxSize) {
+        if (size >= maxSize)
+            return std::pair<int, int>{0, maxSize};
+        off = qMax(off, 0);
+        const int excess = qMax((off + size) - maxSize, 0);
+        return std::pair<int, int>{off - excess, size};
+    };
+    const auto [x, w] = clampAxis(result.x(), result.width(), docExtent.width());
+    const auto [y, h] = clampAxis(result.y(), result.height(), docExtent.height());
+    result = QRect(x, y, w, h);
+    return result.isEmpty() ? bounds.intersected(docExtent) : result;
+}
+
+QRect computePaddedSelectionBounds(const QRect &originalSelection, const QRect &docBounds, double strength0to1,
+                                   int selectionFeatherPercent, double selectionMinTransition,
+                                   int selectionGrowOffset, int selectionPaddingPercent, const QString &inpaintMode,
+                                   bool square)
+{
+    if (originalSelection.isEmpty() || docBounds.isEmpty())
+        return QRect();
+
+    const double diagonal =
+        std::hypot(static_cast<double>(originalSelection.width()), static_cast<double>(originalSelection.height()));
+    double featherRel = (selectionFeatherPercent / 100.0) * strength0to1;
+    if (inpaintMode == QLatin1String("replace_background") && strength0to1 >= 1.0)
+        featherRel = qMin(featherRel, 0.01);
+
+    int padPx = qMax(static_cast<int>(featherRel * diagonal),
+                     static_cast<int>(std::round(selectionMinTransition * strength0to1)));
+    padPx += selectionGrowOffset;
+    padPx += static_cast<int>((selectionPaddingPercent / 100.0) * diagonal);
+
+    return padBoundsLikeUpstream(originalSelection, docBounds, padPx, 256, 16, square);
+}
+
+QRect computeInpaintContextBounds(KisImageSP image, KisViewManager *viewManager, const QRect &selectionRect,
+                                  const QString &contextKey)
+{
+    const QRect doc = image ? image->bounds() : QRect();
+    if (doc.isEmpty())
+        return QRect();
+
+    QString ctx = contextKey.trimmed();
+    if (ctx.isEmpty())
+        ctx = QStringLiteral("automatic");
+
+    const int paddingPct = getSelectionPaddingPercent();
+    const auto padRect = [&](QRect r) -> QRect {
+        if (r.isEmpty())
+            return r;
+        const double diag = std::hypot(static_cast<double>(r.width()), static_cast<double>(r.height()));
+        const int pad = qMax(1, static_cast<int>(std::round(diag * paddingPct / 100.0)));
+        r.adjust(-pad, -pad, pad, pad);
+        return r.intersected(doc);
+    };
+
+    if (ctx == QLatin1String("automatic")) {
+        const double selArea = static_cast<double>(selectionRect.width()) * selectionRect.height();
+        const double docArea = static_cast<double>(doc.width()) * doc.height();
+        ctx = (docArea > 0.0 && selArea / docArea < 0.8) ? QStringLiteral("mask_bounds") : QStringLiteral("entire_image");
+    }
+
+    if (ctx == QLatin1String("entire_image"))
+        return doc;
+
+    if (ctx == QLatin1String("layer_bounds")) {
+        QRect layerR;
+        if (viewManager) {
+            if (KisLayerSP al = viewManager->activeLayer())
+                layerR = al->exactBounds() & doc;
+        }
+        const QRect r = layerR.isEmpty() ? selectionRect : layerR.united(selectionRect);
+        return padRect(r);
+    }
+
+    // mask_bounds: selectionRect is already padded (create_mask_from_selection equivalent).
+    return selectionRect.intersected(doc);
+}
+
+QImage cropImageToDocumentRect(const QImage &image, const QRect &cropInDocCoords, const QRect &docBounds)
+{
+    if (image.isNull() || cropInDocCoords.isEmpty())
+        return QImage();
+    QRect local = cropInDocCoords.translated(-docBounds.topLeft());
+    local &= QRect(0, 0, image.width(), image.height());
+    if (local.isEmpty())
+        return QImage();
+    return image.copy(local);
+}
+
+void blitImageInto(QImage &dest, const QImage &src, QPoint topLeft)
+{
+    if (dest.isNull() || src.isNull())
+        return;
+    if (dest.format() != QImage::Format_ARGB32)
+        dest = dest.convertToFormat(QImage::Format_ARGB32);
+    const QImage s = src.format() == QImage::Format_ARGB32 ? src : src.convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < s.height(); ++y) {
+        const int dy = topLeft.y() + y;
+        if (dy < 0 || dy >= dest.height())
+            continue;
+        for (int x = 0; x < s.width(); ++x) {
+            const int dx = topLeft.x() + x;
+            if (dx < 0 || dx >= dest.width())
+                continue;
+            dest.setPixel(dx, dy, s.pixel(x, y));
+        }
+    }
+}
+
+void applyInpaintFillPreprocess(QImage *canvas, const QImage &compositingMask, const QString &fillKind)
+{
+    if (!canvas || canvas->isNull() || compositingMask.isNull())
+        return;
+    const QString kind = fillKind.trimmed();
+    if (kind.isEmpty() || kind == QLatin1String("none") || kind == QLatin1String("inpaint")
+        || kind == QLatin1String("replace") || kind == QLatin1String("green"))
+        return;
+
+    QImage &c = *canvas;
+    if (c.format() != QImage::Format_ARGB32)
+        c = c.convertToFormat(QImage::Format_ARGB32);
+
+    if (kind == QLatin1String("neutral")) {
+        for (int y = 0; y < c.height(); ++y) {
+            for (int x = 0; x < c.width(); ++x) {
+                if (qGray(compositingMask.pixel(x, y)) <= 0)
+                    continue;
+                c.setPixel(x, y, qRgba(128, 128, 128, qAlpha(c.pixel(x, y))));
+            }
+        }
+        return;
+    }
+
+    if (kind == QLatin1String("blur")) {
+        const int sw = qMax(1, c.width() / 4);
+        const int sh = qMax(1, c.height() / 4);
+        QImage blurred = c.scaled(sw, sh, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                             .scaled(c.width(), c.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        compositeWithMask(c, blurred.convertToFormat(QImage::Format_RGB32), compositingMask);
+        return;
+    }
+
+    if (kind == QLatin1String("border")) {
+        QImage blurred = c;
+        const int sw = qMax(1, c.width() / 4);
+        const int sh = qMax(1, c.height() / 4);
+        blurred = c.scaled(sw, sh, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                      .scaled(c.width(), c.height(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        compositeWithMask(c, blurred.convertToFormat(QImage::Format_RGB32), compositingMask);
+        return;
+    }
+
+    if (kind == QLatin1String("replace")) {
+        for (int y = 0; y < c.height(); ++y) {
+            for (int x = 0; x < c.width(); ++x) {
+                if (qGray(compositingMask.pixel(x, y)) <= 0)
+                    continue;
+                c.setPixel(x, y, qRgba(128, 128, 128, qAlpha(c.pixel(x, y))));
+            }
+        }
+        return;
+    }
+
+    if (kind == QLatin1String("green")) {
+        for (int y = 0; y < c.height(); ++y) {
+            for (int x = 0; x < c.width(); ++x) {
+                if (qGray(compositingMask.pixel(x, y)) <= 0)
+                    continue;
+                c.setPixel(x, y, qRgba(0, 255, 0, qAlpha(c.pixel(x, y))));
+            }
+        }
+    }
 }
 
 // §13.102: SelectionModifiers.invert and .square
@@ -3411,20 +3807,50 @@ QImage getMaskAsQImage(KisImageSP image, KisViewManager *viewManager, const QStr
     if (maskSource == "selection") {
         KisSelectionSP sel = viewManager ? viewManager->selection() : nullptr;
         if (!sel || !sel->pixelSelection()) return QImage();
-        QRect rect = sel->selectedExactRect();
+        QRect rect = sel->pixelSelection()->selectedExactRect();
+        KisPaintDeviceSP dev = sel->pixelSelection();
         rect &= bounds;
         if (rect.isEmpty()) return QImage();
-        KisPaintDeviceSP dev = sel->pixelSelection();
-        int ps = dev->pixelSize();
-        QVector<quint8> data(rect.width() * rect.height() * ps);
-        dev->readBytes(data.data(), rect.x(), rect.y(), rect.width(), rect.height());
-        for (int y = 0; y < rect.height(); y++) {
-            for (int x = 0; x < rect.width(); x++) {
-                int srcIdx = (y * rect.width() + x) * ps;
-                quint8 v = ps > 0 ? data.value(srcIdx, 0) : 0;
-                if (invertSelection) v = 255 - v;
-                maskImage.setPixel(rect.x() + x, rect.y() + y, qRgb(v, v, v));
+
+        const KoColorProfile *profile = image->colorSpace() ? image->colorSpace()->profile() : nullptr;
+        QImage slice = dev->convertToQImage(profile, rect.x(), rect.y(), rect.width(), rect.height(),
+                                            KoColorConversionTransformation::internalRenderingIntent(),
+                                            KoColorConversionTransformation::internalConversionFlags());
+        if (!slice.isNull()) {
+            for (int y = 0; y < slice.height(); y++) {
+                for (int x = 0; x < slice.width(); x++) {
+                    int v = qAlpha(slice.pixel(x, y));
+                    if (v == 0) v = qGray(slice.pixel(x, y));
+                    if (invertSelection) v = 255 - v;
+                    maskImage.setPixel(rect.x() + x, rect.y() + y, qRgb(v, v, v));
+                }
             }
+        } else {
+            int ps = dev->pixelSize();
+            QVector<quint8> data(rect.width() * rect.height() * qMax(1, ps));
+            dev->readBytes(data.data(), rect.x(), rect.y(), rect.width(), rect.height());
+            for (int y = 0; y < rect.height(); y++) {
+                for (int x = 0; x < rect.width(); x++) {
+                    int srcIdx = (y * rect.width() + x) * qMax(1, ps);
+                    quint8 v = ps > 0 ? data.value(srcIdx, 0) : 0;
+                    if (invertSelection) v = 255 - v;
+                    maskImage.setPixel(rect.x() + x, rect.y() + y, qRgb(v, v, v));
+                }
+            }
+        }
+
+        // Rectangular / bounded-box selections sometimes expose bounds without readable
+        // interior pixels via readBytes; match upstream by treating the exact rect as filled.
+        quint64 sum = 0;
+        const int count = rect.width() * rect.height();
+        for (int y = rect.top(); y <= rect.bottom(); ++y) {
+            for (int x = rect.left(); x <= rect.right(); ++x)
+                sum += static_cast<quint64>(qGray(maskImage.pixel(x, y)));
+        }
+        if (count > 0 && sum < static_cast<quint64>(count) * 8 && !invertSelection) {
+            QPainter p(&maskImage);
+            p.setCompositionMode(QPainter::CompositionMode_Source);
+            p.fillRect(rect, QColor(255, 255, 255));
         }
         return maskImage;
     }
@@ -3794,6 +4220,51 @@ LinkedEditStyleOverride linkedEditStyleOverride(bool editModeEnabled, const QStr
         o.cfg = cfg;
     }
     return o;
+}
+
+QString comfyHistoryExecutionError(const QJsonObject &historyEntry)
+{
+    if (historyEntry.isEmpty())
+        return QString();
+
+    const QJsonObject status = historyEntry.value(QStringLiteral("status")).toObject();
+    const QJsonArray messages = status.value(QStringLiteral("messages")).toArray();
+    for (const QJsonValue &mv : messages) {
+        const QJsonArray msg = mv.toArray();
+        if (msg.size() < 2)
+            continue;
+        const QString kind = msg.at(0).toString();
+        if (kind != QLatin1String("execution_error") && kind != QLatin1String("execution_failed"))
+            continue;
+        const QJsonObject detail = msg.at(1).toObject();
+        QString text = detail.value(QStringLiteral("exception_message")).toString().trimmed();
+        if (text.isEmpty())
+            text = detail.value(QStringLiteral("message")).toString().trimmed();
+        const QString nodeType = detail.value(QStringLiteral("node_type")).toString();
+        const QString nodeId = detail.value(QStringLiteral("node_id")).toString();
+        QString where;
+        if (!nodeType.isEmpty() && !nodeId.isEmpty())
+            where = QStringLiteral("%1 (%2)").arg(nodeType, nodeId);
+        else if (!nodeType.isEmpty())
+            where = nodeType;
+        else if (!nodeId.isEmpty())
+            where = nodeId;
+        if (!where.isEmpty() && !text.isEmpty())
+            return ComfyTr::tr("%1: %2", where, text);
+        if (!text.isEmpty())
+            return text;
+        if (!where.isEmpty())
+            return ComfyTr::tr("Node %1 failed.", where);
+        break;
+    }
+
+    const QString statusStr = status.value(QStringLiteral("status_str")).toString();
+    if (statusStr == QLatin1String("error") || statusStr == QLatin1String("failed")) {
+        const QJsonObject outputs = historyEntry.value(QStringLiteral("outputs")).toObject();
+        if (outputs.isEmpty())
+            return ComfyTr::tr("ComfyUI reported an execution error.");
+    }
+    return QString();
 }
 
 void requestEtnPromptTranslation(QNetworkAccessManager *nam,

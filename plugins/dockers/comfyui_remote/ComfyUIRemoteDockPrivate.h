@@ -11,10 +11,13 @@
 #include "ComfyRegionEntry.h"
 #include "ComfyRegionProcess.h"
 #include "ComfyWorkflowEngine.h"
+#include "ComfyWorkspaceSelectButton.h"
+#include "ComfyHistoryListWidget.h"
 
 #include <QPointer>
 #include <QScopedPointer>
 #include <QMap>
+#include <QHash>
 #include <QSet>
 #include <QLineEdit>
 #include <QComboBox>
@@ -125,7 +128,7 @@ struct ComfyUIRemoteDock::Private
     QSpinBox *queueSpinSeed = nullptr;
     QPushButton *queueBtnRandomSeed = nullptr;
     QProgressBar *progressBar = nullptr;
-    QComboBox *comboWorkspace = nullptr;
+    ComfyWorkspaceSelectButton *comboWorkspace = nullptr;
     int lastWorkspaceIndex = -1;  // §13.149: track for Live strength persist on leave
     QComboBox *comboQueueMode = nullptr;
     QSpinBox *spinBatchCount = nullptr;
@@ -142,6 +145,23 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnCancelQueue = nullptr;
     QPushButton *btnInpaint = nullptr;
     QToolButton *btnGenerateViewOperations = nullptr; // §13.29: main action menu (Generate / Refine / Edit / …)
+    QLabel *labelPrompt = nullptr;
+    QSlider *sliderStrength = nullptr;
+    QWidget *strengthRowWidget = nullptr;
+    QToolButton *btnAddControlIcon = nullptr;
+    QToolButton *btnAddRegionIcon = nullptr;
+    QWidget *customInpaintRowWidget = nullptr;
+    QWidget *generateActionRowWidget = nullptr;
+    QToolButton *btnInpaintMode = nullptr;
+    QToolButton *btnRegionMask = nullptr;
+    QWidget *regionButtonsRowWidget = nullptr;
+    QMenu *menuGenerate = nullptr;
+    QMenu *menuInpaint = nullptr;
+    QMenu *menuRefine = nullptr;
+    QMenu *menuRefineSelection = nullptr;
+    QMenu *menuGenerateRegion = nullptr;
+    QMenu *menuRefineRegion = nullptr;
+    QMenu *menuEdit = nullptr;
     QComboBox *comboInpaintMode = nullptr;  // §13.206 / P4.1: all InpaintMode values (automatic … custom)
     QComboBox *comboFillMode = nullptr;    // §13.188: None | Neutral | Blur | Border | Inpaint (five options, replace/green internal only)
     QComboBox *comboInpaintContext = nullptr; // §13.169 / §13.194: selection/crop context (ETN_KritaSelection parity)
@@ -190,9 +210,10 @@ struct ComfyUIRemoteDock::Private
     // §13.170: transient WebSocket + timer (opaque QObject child of dock when active)
     QObject *webWorkflowSwitchSession = nullptr;
     QLabel *labelStatus = nullptr;
-    QListWidget *listHistory = nullptr;
+    ComfyHistoryListWidget *listHistory = nullptr;
     QPushButton *btnHistoryReRun = nullptr;
     QPushButton *btnHistoryApply = nullptr;
+    QWidget *historyButtonsRowWidget = nullptr;
     QPlainTextEdit *editCustomWorkflow = nullptr;
     QVBoxLayout *graphWorkflowEditorLayout = nullptr;
     // §13.25: ETN_Parameter / ETN_KritaStyle / ETN_KritaImageLayer / ETN_KritaMaskLayer — Configure → Workflow tab (layer slots keyed by Comfy node id)
@@ -209,6 +230,11 @@ struct ComfyUIRemoteDock::Private
 
     // §13.44: Preview layer ID (QUuid string) from document annotation; restored on setCanvas
     QString previewLayerId;
+    // History thumbnail currently shown as "[Preview] …" (job id + image index in resultImagePaths)
+    QString previewHistoryJobId;
+    int previewHistoryImageIndex = -1;
+    bool historyPreviewUpdateBlocked = false;
+    QHash<QString, QImage> historyPreviewImageCache;
 
     using RegionEntry = ComfyRegionEntry;
 
@@ -311,6 +337,10 @@ struct ComfyUIRemoteDock::Private
         QList<int> documentBlobEndOffsets; // §13.19: byte end offsets for segments inside the blob (same order as resultImagePaths)
         /// §13.74: document timeline frame when job was queued (Single Frame + animated doc); -1 if not tracked
         int animationSubmitTime = -1;
+        /// Inpaint JobParams parity: masked job + context bounds for apply
+        bool hasMask = false;
+        QString inpaintMode;
+        QRect contextBounds;
     };
     QList<HistoryEntry> historyEntries;
     QMap<QString, HistoryEntry> pendingHistoryByPromptId;
@@ -380,6 +410,19 @@ struct ComfyUIRemoteDock::Private
     QString inpaintUploadedMaskSubfolder;
     QString inpaintPromptId;
     QImage inpaintCurrentImage;
+    QImage inpaintFullCanvasImage;
+    QImage inpaintCompositingMaskCropped;
+    QRect inpaintContextBounds;
+    QRect inpaintTargetBounds;
+    QImage inpaintNativeContextImage;
+    QImage inpaintNativeCompositingMask;
+    QSize inpaintNativeContextSize;
+    QSize inpaintDiffusionExtent;
+    bool inpaintUseRefineRegionWorkflow = false;
+    int inpaintPreprocessGrow = 0;
+    int inpaintPreprocessFeather = 0;
+    int inpaintPreprocessBlend = 0;
+    bool inpaintFromRegionLayer = false;
     int inpaintPollCount = 0;
     static const int inpaintMaxPollCount = 300;
     QTimer *inpaintPollTimer = nullptr;

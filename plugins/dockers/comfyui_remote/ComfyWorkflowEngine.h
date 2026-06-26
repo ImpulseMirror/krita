@@ -141,7 +141,10 @@ QJsonObject buildRefine(const RefineParams &params);
 struct RefineRegionParams {
     RefineParams refine;
     QString maskImageName;
+    int extentWidth = 512;
+    int extentHeight = 512;
     int growMaskBy = 6;
+    int featherMaskBy = 0;
     bool colorMatch = false;
 };
 
@@ -165,6 +168,7 @@ struct CheckpointGraphRefs {
     QString modelNodeId;
     QString clipNodeId;
     QString vaeNodeId;
+    int vaeNodeSlot = 2;
     int nextNodeId = 500;
 };
 
@@ -190,11 +194,22 @@ struct InpaintBuildParams {
     double cfg = 7.0;
     double denoise = 1.0;
     int growMaskBy = 6;
+    int featherMaskBy = 0;
+    int blendMaskBy = 0;
+    QRect targetBoundsRelative;
+    QString fillKind = QStringLiteral("none");
+    bool useConditionMask = false;
+    QString backgroundPrompt;
     ComfyResources::Arch arch = ComfyResources::Arch::Sd15;
     QJsonArray styleLoras;
 };
 
 QJsonObject buildInpaint(const InpaintBuildParams &params);
+
+/// §13.206: SD1.5 prompt focus — ETN_BackgroundRegion + ETN_DefineRegion + ETN_AttentionMask on model.
+bool applyInpaintPromptFocus(QJsonObject *workflow, int *nextNodeId, const QString &modelNodeId,
+                             const QString &positiveClipNodeId, const QString &clipSourceNodeId,
+                             const QString &maskNodeId, int maskNodeSlot, const QString &backgroundPrompt);
 
 /// Live preview (WorkflowKind.live): img2img from uploaded canvas; same graph as refine.
 using LiveParams = RefineParams;

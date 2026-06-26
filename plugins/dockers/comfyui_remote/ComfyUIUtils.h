@@ -404,6 +404,8 @@ QString kritaIconNameForThemeStem(const QString &stem);
 
 // §13.141: Avoid ngrok browser warning when connecting to arbitrary ComfyUI URLs
 void setComfyUIRequestHeaders(QNetworkRequest &req);
+/// Non-empty when a /history/{prompt_id} entry reports ComfyUI execution failure (status.messages execution_error).
+QString comfyHistoryExecutionError(const QJsonObject &historyEntry);
 /// GET api/etn/translate/{lang}/{text} (Python ComfyClient.translate). \p onDone(ok, translatedText).
 void requestEtnPromptTranslation(QNetworkAccessManager *nam,
                                  const QString &baseUrlTrimmed,
@@ -508,6 +510,13 @@ QStringList specSection58NodesPresentInObjectInfo(const QJsonObject &objectInfoR
 // §13.154: True when selection covers (0,0) to (width, height) and all pixels are fully selected (0xff)
 bool isSelectionEntireDocument(KisImageSP image, KisViewManager *viewManager);
 
+// §13.214: SD checkpoint min pixel extent (resolution.prepare_diffusion_input parity)
+struct DiffusionPreparedExtent {
+    QSize initial;
+    double scaleFromInput = 1.0;
+};
+DiffusionPreparedExtent prepareDiffusionInputExtent(const QSize &inputExtent, ComfyResources::Arch arch);
+
 // §13.214: Effective batch count from extent — constrains latent samples so effective extent does not exceed capacity
 inline int computeBatchSize(int extentWidth, int extentHeight, int minSize = 512, int maxBatches = 8) {
     if (extentWidth <= 0 || extentHeight <= 0 || maxBatches < 1) return 1;
@@ -549,12 +558,40 @@ QString prependInpaintPromptInstructions(const QString &prompt, const QString &m
 /// Default fill kind for an explicit inpaint mode (for syncing fill combo UI).
 QString defaultFillKindForInpaintMode(const QString &mode);
 
-// §13.43: calc_selection_pre_process grow (pixels). Uses extent/area diagonal, strength, and modifier defaults. Returns grow clamped to 0–499 for grow_mask_by.
+// §13.43: calc_selection_pre_process — grow/feather (denoise mask) + blend (compositing)
+struct SelectionPreProcess {
+    int grow = 0;
+    int feather = 0;
+    int blend = 0;
+};
+SelectionPreProcess calcSelectionPreProcess(int extentWidth, int extentHeight, int areaWidth, int areaHeight,
+                                            double strength0to1, int selectionFeatherPercent,
+                                            double selectionMinTransition, int selectionGrowOffset,
+                                            int selectionBlendPixels, bool invertSelection);
+int getSelectionBlendPixels();
+QImage rasterExpandMask(const QImage &maskGray, int grow, int feather);
+QImage denoiseToCompositingMask(const QImage &maskGray, int grow, int feather, int blend);
+// Legacy helper — returns calcSelectionPreProcess().grow
 int calcSelectionPreProcessGrow(int extentWidth, int extentHeight, int areaWidth, int areaHeight, double strength0to1,
-                                int selectionFeatherPercent = 50, double selectionMinTransition = 0, int selectionGrowOffset = 0);
+                                int selectionFeatherPercent = 50, double selectionMinTransition = 0,
+                                int selectionGrowOffset = 0);
 
 // §13.43: Read selection modifier settings from settings.json (selection_feather, selection_min_transition, selection_grow_offset). Defaults 50, 0, 0.
 void getSelectionModifierSettings(int *selectionFeatherPercent, double *selectionMinTransition, int *selectionGrowOffset);
+// §13.43 / §3.5: selection_padding (0–25%, default 6) — expands mask bounds around selection
+int getSelectionPaddingPercent();
+// Upstream create_mask_from_selection + Bounds.pad (feather/min-transition/grow-offset/padding, min 256, multiple 16)
+QRect computePaddedSelectionBounds(const QRect &originalSelection, const QRect &docBounds, double strength0to1,
+                                   int selectionFeatherPercent, double selectionMinTransition,
+                                   int selectionGrowOffset, int selectionPaddingPercent,
+                                   const QString &inpaintMode = QString(), bool square = false);
+// §13.169: Resolve context crop in document coords (automatic / mask_bounds / layer_bounds / entire_image)
+QRect computeInpaintContextBounds(KisImageSP image, KisViewManager *viewManager, const QRect &selectionRect,
+                                  const QString &contextKey);
+QImage cropImageToDocumentRect(const QImage &image, const QRect &cropInDocCoords, const QRect &docBounds);
+void blitImageInto(QImage &dest, const QImage &src, QPoint topLeft);
+// §13.188: Pre-fill masked pixels before upload (neutral, blur, …); noop for none/inpaint
+void applyInpaintFillPreprocess(QImage *canvas, const QImage &compositingMask, const QString &fillKind);
 // §13.102: SelectionModifiers.square and .invert — for create_mask_from_selection and bounds
 bool getSelectionModifiersInvert();
 bool getSelectionModifiersSquare();

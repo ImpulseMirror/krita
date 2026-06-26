@@ -5,6 +5,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
+#include "ComfyRegionPromptWidget.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 
@@ -40,6 +41,7 @@ Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <KSharedConfig>
 #include <KConfigGroup>
 #include <kis_image_manager.h>
+#include <kis_node_manager.h>
 #include <KisDocument.h>
 #include <kis_image.h>
 #include <kis_layer.h>
@@ -49,6 +51,7 @@ Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <kis_node.h>
 #include <kis_painter.h>
 #include <KisImageBarrierLock.h>
+#include <kis_layer_properties_icons.h>
 #include <kundo2magicstring.h>
 #include <KoCompositeOpRegistry.h>
 #include <KoColorSpaceConstants.h>  // OPACITY_OPAQUE_U8 for KisGroupLayer
@@ -82,6 +85,18 @@ QJsonObject historyEntryToJsonObject(const ComfyUIRemoteDock::Private::HistoryEn
         for (const QString &rn : e.regionLayerNames)
             ra.append(rn);
         params.insert(QStringLiteral("region_layer_names"), ra);
+    }
+    if (e.hasMask)
+        params.insert(QStringLiteral("has_mask"), true);
+    if (!e.inpaintMode.isEmpty())
+        params.insert(QStringLiteral("inpaint_mode"), e.inpaintMode);
+    if (!e.contextBounds.isEmpty()) {
+        QJsonObject bounds;
+        bounds.insert(QStringLiteral("x"), e.contextBounds.x());
+        bounds.insert(QStringLiteral("y"), e.contextBounds.y());
+        bounds.insert(QStringLiteral("w"), e.contextBounds.width());
+        bounds.insert(QStringLiteral("h"), e.contextBounds.height());
+        params.insert(QStringLiteral("bounds"), bounds);
     }
     o.insert(QStringLiteral("params"), params);
     o.insert(QStringLiteral("kind"), QStringLiteral("image"));
@@ -199,6 +214,17 @@ bool historyJsonToEntry(const QJsonObject &ho, const QByteArray &blob, KisImageS
     const QJsonArray rla = p.value(QStringLiteral("region_layer_names")).toArray();
     for (const QJsonValue &v : rla)
         out->regionLayerNames.append(v.toString());
+    out->hasMask = p.value(QStringLiteral("has_mask")).toBool(false);
+    out->inpaintMode = p.value(QStringLiteral("inpaint_mode")).toString();
+    const QJsonObject bounds = p.value(QStringLiteral("bounds")).toObject();
+    if (!bounds.isEmpty()) {
+        out->contextBounds = QRect(bounds.value(QStringLiteral("x")).toInt(),
+                                   bounds.value(QStringLiteral("y")).toInt(),
+                                   bounds.value(QStringLiteral("w")).toInt(),
+                                   bounds.value(QStringLiteral("h")).toInt());
+    } else {
+        out->contextBounds = QRect();
+    }
     return true;
 }
 
@@ -213,15 +239,15 @@ void ComfyUIRemoteDock::slotHistoryItemSelected()
         << " hasSelection=" << hasSelection;
     m_d->btnHistoryReRun->setEnabled(hasSelection);
     m_d->btnHistoryApply->setEnabled(hasSelection);
+    if (m_d->listHistory)
+        m_d->listHistory->updateOverlayButtons();
+    updateHistoryPreviewFromSelection();
 }
 
-static QString historyEntryShortLabel(const ComfyUIRemoteDock::Private::HistoryEntry &e)
+static QString historyEntryDisplayName(const ComfyUIRemoteDock::Private::HistoryEntry &e, int maxLen)
 {
-    // FAITHFUL_PORT: mirror the desktop ai-diffusion layer-name shape, which
-    // takes the first ~40 chars of the positive prompt (post-tag-strip) for
-    // both the "[Preview]" and "[Generated]" layer labels. Fall back to the
-    // style name, then "result", so we never end up with an empty bracket.
-    QString s = e.prompt;
+    // FAITHFUL_PORT: ai_diffusion job.params.name — positive prompt after tag strip.
+    QString s = ComfyUIUtils::stripPromptComments(e.prompt).trimmed();
     s.replace(QRegularExpression(QStringLiteral("<lora:[^>]*>")), QString());
     s.replace(QRegularExpression(QStringLiteral("<layer:[^>]*>")), QString());
     s = s.trimmed();
@@ -231,9 +257,101 @@ static QString historyEntryShortLabel(const ComfyUIRemoteDock::Private::HistoryE
         s = QStringLiteral("result");
     s.replace(QRegularExpression(QStringLiteral("[\r\n\t]+")), QStringLiteral(" "));
     s = s.simplified();
-    if (s.size() > 40)
-        s = s.left(40).trimmed() + QStringLiteral("…");
+    if (maxLen > 0 && s.size() > maxLen)
+        s = s.left(maxLen).trimmed() + QStringLiteral("…");
     return s;
+}
+
+static QString historyEntryShortLabel(const ComfyUIRemoteDock::Private::HistoryEntry &e)
+{
+    return historyEntryDisplayName(e, 40);
+}
+
+static QString previewLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e)
+{
+    // model.show_preview: trim_text(params.name, 77)
+    return QStringLiteral("[Preview] %1").arg(historyEntryDisplayName(e, 77));
+}
+
+static QString generatedLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e)
+{
+    // apply_result: trim_text(params.name, 200) + seed
+    return QStringLiteral("[Generated] %1 (%2)").arg(historyEntryDisplayName(e, 200)).arg(e.seed);
+}
+
+static bool loadImageFileIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QString &path, const QPoint &offset = QPoint());
+static bool loadQImageIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QImage &qimg, const QPoint &offset);
+static QImage cachedHistoryPreviewImage(const QString &path, QHash<QString, QImage> *cache);
+static void trimHistoryPreviewImageCache(QHash<QString, QImage> *cache, int maxEntries = 48);
+static void nudgePreviewLayerProjection(KisLayerSP layer);
+static KisNodeSP topDirectRootChild(KisNodeSP root);
+static void raiseLayerToRootTop(KisViewManager *viewManager, KisImageSP image, KisLayerSP layer, bool waitForCompletion = true);
+
+static bool updatePreviewPaintLayerFromImage(KisViewManager *viewManager,
+                                             KisImageSP image,
+                                             KisPaintLayer *pl,
+                                             const QImage &qimg,
+                                             const QString &layerName,
+                                             const QPoint &offset = QPoint())
+{
+    if (!viewManager || !image || !pl || qimg.isNull())
+        return false;
+    if (!loadQImageIntoPaintLayer(pl, image, qimg, offset))
+        return false;
+    pl->setName(layerName);
+    pl->setVisible(true);
+    KisLayerPropertiesIcons::setNodePropertyAutoUndo(pl, KisLayerPropertiesIcons::locked, true, image);
+    KisLayerSP layer = pl;
+    raiseLayerToRootTop(viewManager, image, layer, false);
+    nudgePreviewLayerProjection(layer);
+    return true;
+}
+
+static bool updatePreviewPaintLayerFromFile(KisViewManager *viewManager,
+                                            KisImageSP image,
+                                            KisPaintLayer *pl,
+                                            const QString &path,
+                                            const QString &layerName,
+                                            const QPoint &offset = QPoint(),
+                                            QHash<QString, QImage> *cache = nullptr)
+{
+    if (!viewManager || !image || !pl || path.isEmpty() || !QFile::exists(path))
+        return false;
+    const QImage qimg = cachedHistoryPreviewImage(path, cache);
+    return updatePreviewPaintLayerFromImage(viewManager, image, pl, qimg, layerName, offset);
+}
+
+static bool addPreviewPaintLayerFromFile(KisViewManager *viewManager,
+                                         KisImageSP image,
+                                         const QString &path,
+                                         const QString &layerName,
+                                         KisLayerSP *outLayer,
+                                         const QPoint &offset = QPoint())
+{
+    if (!image || !viewManager || path.isEmpty() || !QFile::exists(path) || layerName.isEmpty()
+        || !outLayer)
+        return false;
+    KisPaintLayerSP pl(new KisPaintLayer(image, layerName, OPACITY_OPAQUE_U8));
+    const QImage qimg = cachedHistoryPreviewImage(path, nullptr);
+    if (qimg.isNull() || !loadQImageIntoPaintLayer(pl.data(), image, qimg, offset))
+        return false;
+    pl->setVisible(true);
+    KisLayerPropertiesIcons::setNodePropertyAutoUndo(pl, KisLayerPropertiesIcons::locked, true, image);
+    KisNodeSP root = image->rootLayer();
+    if (!root)
+        return false;
+    KisNodeSP above = topDirectRootChild(root);
+    if (viewManager->nodeManager()) {
+        KisNodeList nodes;
+        nodes.append(pl);
+        viewManager->nodeManager()->addNodesDirect(nodes, root, above);
+        viewManager->nodeManager()->slotNonUiActivatedNode(pl);
+    } else {
+        image->addNode(pl, root, above);
+    }
+    image->waitForDone();
+    *outLayer = pl;
+    return true;
 }
 
 static KisLayerSP findPreviewLayerByUuidString(KisImageSP image, const QString &layerId)
@@ -256,18 +374,489 @@ static KisLayerSP findPreviewLayerByUuidString(KisImageSP image, const QString &
     return KisLayerSP(qobject_cast<KisLayer *>(node.data()));
 }
 
+static bool loadQImageIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QImage &qimg, const QPoint &offset)
+{
+    if (!pl || !image || qimg.isNull())
+        return false;
+    QImage img = qimg;
+    if (img.format() != QImage::Format_ARGB32)
+        img = img.convertToFormat(QImage::Format_ARGB32);
+    KisPaintDeviceSP dst = pl->paintDevice();
+    if (!dst)
+        return false;
+    KisPaintDeviceSP tmp = new KisPaintDevice(dst->colorSpace());
+    tmp->convertFromQImage(img, nullptr);
+    const QRect srcRect(QPoint(), img.size());
+    dst->clear();
+    KisPainter painter(dst);
+    painter.bitBlt(offset, tmp, srcRect);
+    pl->setVisible(true);
+    pl->setDirty(QRect(offset, img.size()));
+    return true;
+}
+
+static QImage cachedHistoryPreviewImage(const QString &path, QHash<QString, QImage> *cache)
+{
+    if (path.isEmpty() || !QFile::exists(path))
+        return QImage();
+    if (cache) {
+        const auto it = cache->constFind(path);
+        if (it != cache->constEnd() && !it.value().isNull())
+            return it.value();
+    }
+    QImage qimg;
+    if (!qimg.load(path) || qimg.isNull())
+        return QImage();
+    if (qimg.format() != QImage::Format_ARGB32)
+        qimg = qimg.convertToFormat(QImage::Format_ARGB32);
+    if (cache) {
+        trimHistoryPreviewImageCache(cache);
+        cache->insert(path, qimg);
+    }
+    return qimg;
+}
+
+static void trimHistoryPreviewImageCache(QHash<QString, QImage> *cache, int maxEntries)
+{
+    if (!cache || cache->size() < maxEntries)
+        return;
+    while (cache->size() >= maxEntries) {
+        const auto it = cache->begin();
+        if (it == cache->end())
+            break;
+        cache->erase(it);
+    }
+}
+
+static void nudgePreviewLayerProjection(KisLayerSP layer)
+{
+    if (!layer)
+        return;
+    const QString op = layer->compositeOpId();
+    if (!op.isEmpty())
+        layer->setCompositeOpId(op);
+}
+
+static bool loadImageFileIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QString &path, const QPoint &offset)
+{
+    const QImage qimg = cachedHistoryPreviewImage(path, nullptr);
+    if (qimg.isNull())
+        return false;
+    return loadQImageIntoPaintLayer(pl, image, qimg, offset);
+}
+
+static KisNodeSP topDirectRootChild(KisNodeSP root)
+{
+    if (!root)
+        return KisNodeSP();
+    for (KisNodeSP child = root->lastChild(); child; child = child->prevSibling()) {
+        if (child->parent().data() == root.data())
+            return child;
+    }
+    return KisNodeSP();
+}
+
+static bool isDirectChildOf(KisNodeSP parent, KisNodeSP child)
+{
+    return parent && child && child->parent().data() == parent.data();
+}
+
+static void moveLayerInParent(KisViewManager *viewManager,
+                              KisImageSP image,
+                              KisNodeSP layer,
+                              KisNodeSP parent,
+                              KisNodeSP above,
+                              bool waitForCompletion)
+{
+    if (!image || !layer || !parent)
+        return;
+    if (above && !isDirectChildOf(parent, above))
+        above = KisNodeSP();
+    if (above.data() == layer.data())
+        above = KisNodeSP();
+
+    if (viewManager && viewManager->nodeManager()) {
+        KisNodeList nodes;
+        nodes.append(layer);
+        viewManager->nodeManager()->moveNodesDirect(nodes, parent, above);
+        if (waitForCompletion)
+            image->waitForDone();
+        return;
+    }
+
+    KisNodeSP layerNode = layer;
+    if (layerNode->parent())
+        image->removeNode(layerNode);
+    if (waitForCompletion)
+        image->waitForDone();
+    image->addNode(layerNode, parent, above);
+    if (waitForCompletion)
+        image->waitForDone();
+}
+
+static void raiseLayerToRootTop(KisViewManager *viewManager, KisImageSP image, KisLayerSP layer, bool waitForCompletion)
+{
+    if (!image || !layer)
+        return;
+    KisNodeSP root = image->rootLayer();
+    if (!root)
+        return;
+    KisNodeSP layerNode = layer;
+    // Krita stores stack bottom at firstChild(), top at lastChild().
+    if (isDirectChildOf(root, layerNode) && root->lastChild() == layerNode)
+        return;
+
+    KisNodeSP above = topDirectRootChild(root);
+    if (above.data() == layerNode.data())
+        above = KisNodeSP();
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "raiseLayerToRootTop layer=" << layer->name()
+        << " above=" << (above ? above->name() : QStringLiteral("(bottom)"))
+        << " wait=" << waitForCompletion;
+    moveLayerInParent(viewManager, image, layerNode, root, above, waitForCompletion);
+}
+
+static void collectPreviewLayers(KisNodeSP node, QList<KisLayerSP> *out)
+{
+    if (!node || !out)
+        return;
+    if (KisLayerSP layer = qobject_cast<KisLayer *>(node.data())) {
+        if (layer->name().startsWith(QLatin1String("[Preview] ")))
+            out->append(layer);
+    }
+    for (KisNodeSP child = node->firstChild(); child; child = child->nextSibling())
+        collectPreviewLayers(child, out);
+}
+
+static bool layerStillInDocument(KisImageSP image, KisLayerSP layer)
+{
+    if (!image || !layer || !image->rootLayer())
+        return false;
+    if (!layer->graphListener())
+        return false;
+    return KisLayerUtils::findNodeByUuid(image->rootLayer(), layer->uuid()) != nullptr;
+}
+
+static KisNodeSP firstImportAnchorLayer(KisImageSP image, const QList<KisLayerSP> &excluding = {})
+{
+    KisGroupLayerSP root = image ? image->rootLayer() : KisGroupLayerSP();
+    if (!root)
+        return KisNodeSP();
+    for (KisNodeSP child = root->lastChild(); child; child = child->prevSibling()) {
+        if (!isDirectChildOf(root, child))
+            continue;
+        bool skip = false;
+        for (const KisLayerSP &ex : excluding) {
+            if (ex && ex.data() == child.data()) {
+                skip = true;
+                break;
+            }
+        }
+        if (!skip && qobject_cast<KisLayer *>(child.data()))
+            return child;
+    }
+    return topDirectRootChild(root);
+}
+
+static void ensureActiveLayerValidForImport(KisViewManager *viewManager, KisImageSP image)
+{
+    if (!viewManager || !image || !viewManager->nodeManager())
+        return;
+    if (layerStillInDocument(image, viewManager->activeLayer()))
+        return;
+    if (KisNodeSP anchor = firstImportAnchorLayer(image))
+        viewManager->nodeManager()->slotNonUiActivatedNode(anchor);
+}
+
+static void removePreviewLayersFromImage(KisImageSP image, KisViewManager *viewManager, const QString &trackedLayerId)
+{
+    if (!image || !image->rootLayer())
+        return;
+    QList<KisLayerSP> toRemove;
+    if (!trackedLayerId.isEmpty()) {
+        if (KisLayerSP tracked = findPreviewLayerByUuidString(image, trackedLayerId))
+            toRemove.append(tracked);
+    }
+    collectPreviewLayers(image->rootLayer(), &toRemove);
+    QList<KisLayerSP> unique;
+    for (const KisLayerSP &layer : toRemove) {
+        if (!layer)
+            continue;
+        bool seen = false;
+        for (const KisLayerSP &u : unique) {
+            if (u.data() == layer.data()) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen)
+            unique.append(layer);
+    }
+    if (unique.isEmpty())
+        return;
+
+    KisLayerSP active = viewManager ? viewManager->activeLayer() : KisLayerSP();
+    for (const KisLayerSP &layer : unique) {
+        if (active && active.data() == layer.data()) {
+            if (viewManager && viewManager->nodeManager()) {
+                if (KisNodeSP anchor = firstImportAnchorLayer(image, unique))
+                    viewManager->nodeManager()->slotNonUiActivatedNode(anchor);
+            }
+            break;
+        }
+    }
+    for (const KisLayerSP &layer : unique)
+        image->removeNode(layer);
+    image->waitForDone();
+    ensureActiveLayerValidForImport(viewManager, image);
+}
+
+static void placeImportedLayerForBehavior(KisViewManager *viewManager,
+                                          KisImageSP image,
+                                          KisLayerSP imported,
+                                          KisLayerSP activeBefore,
+                                          const QString &behavior)
+{
+    if (!image || !imported || behavior == QLatin1String("replace"))
+        return;
+    if (behavior == QLatin1String("layer_active")) {
+        KisNodeSP parent = image->rootLayer();
+        if (activeBefore && activeBefore->parent())
+            parent = activeBefore->parent();
+        if (!parent)
+            return;
+        if (activeBefore && isDirectChildOf(parent, activeBefore)) {
+            qCWarning(KIS_COMFYUI_REMOTE).nospace()
+                << "placeImportedLayerForBehavior layer_active imported=" << imported->name()
+                << " above=" << activeBefore->name();
+            moveLayerInParent(viewManager, image, imported, parent, activeBefore, true);
+        } else
+            raiseLayerToRootTop(viewManager, image, imported);
+        return;
+    }
+    raiseLayerToRootTop(viewManager, image, imported);
+}
+
+static bool commitPreviewLayerForApply(KisViewManager *viewManager,
+                                       KisImageSP image,
+                                       KisLayerSP previewLayer,
+                                       const QString &committedLayerName,
+                                       const QString &applyBehavior)
+{
+    if (!viewManager || !image || !previewLayer)
+        return false;
+    KisLayerPropertiesIcons::setNodePropertyAutoUndo(previewLayer, KisLayerPropertiesIcons::locked, false, image);
+    previewLayer->setVisible(true);
+    if (!committedLayerName.isEmpty())
+        previewLayer->setName(committedLayerName);
+
+    KisLayerSP activeBefore = viewManager->activeLayer();
+    if (activeBefore && activeBefore.data() == previewLayer.data()) {
+        if (viewManager->nodeManager()) {
+            if (KisNodeSP anchor = firstImportAnchorLayer(image, {previewLayer}))
+                viewManager->nodeManager()->slotNonUiActivatedNode(anchor);
+        }
+        activeBefore = viewManager->activeLayer();
+    }
+
+    QString beh = applyBehavior;
+    if (beh.isEmpty())
+        beh = QStringLiteral("layer");
+    if (beh == QLatin1String("replace")) {
+        if (activeBefore && activeBefore.data() != previewLayer.data())
+            image->mergeDown(previewLayer, nullptr);
+    } else {
+        placeImportedLayerForBehavior(viewManager, image, previewLayer, activeBefore, beh);
+    }
+    image->waitForDone();
+    return true;
+}
+
+static QString applyBehaviorFromSettings(const ComfyUIRemoteDock::Private *d)
+{
+    const QJsonObject s = ComfyUIUtils::loadSettingsJson();
+    const bool liveWs = d->comboWorkspace && d->comboWorkspace->currentIndex() == 2;
+    QString beh = liveWs ? s.value(QStringLiteral("apply_behavior_live")).toString()
+                         : s.value(QStringLiteral("apply_behavior")).toString();
+    if (beh.isEmpty())
+        beh = liveWs ? QStringLiteral("replace") : QStringLiteral("layer");
+    return beh;
+}
+
+static QString historyPathForListItem(const QListWidgetItem *item,
+                                      const QList<ComfyUIRemoteDock::Private::HistoryEntry> &entries,
+                                      int *outEntryIndex,
+                                      int *outImageIndex)
+{
+    if (!item)
+        return QString();
+    const QString jobId = item->data(Qt::UserRole).toString();
+    const int imageIndex = item->data(Qt::UserRole + 1).toInt();
+    for (int i = 0; i < entries.size(); ++i) {
+        const ComfyUIRemoteDock::Private::HistoryEntry &e = entries.at(i);
+        if (e.jobId != jobId)
+            continue;
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        if (imageIndex >= 0 && imageIndex < paths.size()) {
+            if (outEntryIndex)
+                *outEntryIndex = i;
+            if (outImageIndex)
+                *outImageIndex = imageIndex;
+            return paths.at(imageIndex);
+        }
+        return QString();
+    }
+    return QString();
+}
+
+static QString historyPathForIdentity(const QString &jobId,
+                                      int imageIndex,
+                                      const QList<ComfyUIRemoteDock::Private::HistoryEntry> &entries,
+                                      int *outEntryIndex,
+                                      int *outImageIndex)
+{
+    if (jobId.isEmpty())
+        return QString();
+    for (int i = 0; i < entries.size(); ++i) {
+        const ComfyUIRemoteDock::Private::HistoryEntry &e = entries.at(i);
+        if (e.jobId != jobId)
+            continue;
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        if (imageIndex >= 0 && imageIndex < paths.size()) {
+            if (outEntryIndex)
+                *outEntryIndex = i;
+            if (outImageIndex)
+                *outImageIndex = imageIndex;
+            return paths.at(imageIndex);
+        }
+        return QString();
+    }
+    return QString();
+}
+
+static QListWidgetItem *findHistoryListItem(QListWidget *list, const QString &jobId, int imageIndex)
+{
+    if (!list || jobId.isEmpty())
+        return nullptr;
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        if (!item)
+            continue;
+        if (item->data(Qt::UserRole).toString() == jobId
+            && item->data(Qt::UserRole + 1).toInt() == imageIndex)
+            return item;
+    }
+    return nullptr;
+}
+
 void ComfyUIRemoteDock::slotHistoryPreview()
 {
+    if (!m_d->listHistory)
+        return;
+    showHistoryPreviewForItem(m_d->listHistory->currentItem());
+}
+
+void ComfyUIRemoteDock::slotHistoryPreviewForItem(QListWidgetItem *item)
+{
+    showHistoryPreviewForItem(item);
+}
+
+void ComfyUIRemoteDock::clearHistoryListSelection()
+{
+    if (!m_d->listHistory)
+        return;
+    m_d->historyPreviewUpdateBlocked = true;
+    m_d->listHistory->clearSelection();
+    m_d->listHistory->setCurrentItem(nullptr);
+    m_d->historyPreviewUpdateBlocked = false;
+}
+
+void ComfyUIRemoteDock::tryBindPreviewLayerFromDocument()
+{
+    if (m_d->previewLayerId.isEmpty() || !m_d->viewManager)
+        return;
+    KisImageSP image = m_d->viewManager->image();
+    if (!image)
+        return;
+    if (!findPreviewLayerByUuidString(image, m_d->previewLayerId)) {
+        m_d->previewLayerId.clear();
+        m_d->previewHistoryJobId.clear();
+        m_d->previewHistoryImageIndex = -1;
+        savePreviewLayerIdToDocument(QString());
+    }
+}
+
+void ComfyUIRemoteDock::hideHistoryPreview(bool deleteLayer)
+{
+    if (deleteLayer) {
+        clearHistoryPreviewState();
+        return;
+    }
+    if (!m_d->viewManager)
+        return;
+    KisImageSP image = m_d->viewManager->image();
+    if (!image || m_d->previewLayerId.isEmpty())
+        return;
+    KisLayerSP layer = findPreviewLayerByUuidString(image, m_d->previewLayerId);
+    if (!layer) {
+        m_d->previewLayerId.clear();
+        m_d->previewHistoryJobId.clear();
+        m_d->previewHistoryImageIndex = -1;
+        savePreviewLayerIdToDocument(QString());
+        return;
+    }
+    KisLayerPropertiesIcons::setNodePropertyAutoUndo(layer, KisLayerPropertiesIcons::visible, false, image);
+    if (m_d->canvas)
+        m_d->canvas->updateCanvas();
+}
+
+void ComfyUIRemoteDock::rememberHistoryPreviewImage(const QString &path, const QImage &image)
+{
+    if (path.isEmpty() || image.isNull())
+        return;
+    QImage img = image;
+    if (img.format() != QImage::Format_ARGB32)
+        img = img.convertToFormat(QImage::Format_ARGB32);
+    trimHistoryPreviewImageCache(&m_d->historyPreviewImageCache);
+    m_d->historyPreviewImageCache.insert(path, img);
+}
+
+void ComfyUIRemoteDock::updateHistoryPreviewFromSelection()
+{
+    if (m_d->historyPreviewUpdateBlocked || !m_d->listHistory)
+        return;
+    if (m_d->comboWorkspace) {
+        const int ws = m_d->comboWorkspace->currentIndex();
+        if (ws != 0 && ws != 2)
+            return;
+    }
+    QListWidgetItem *item = m_d->listHistory->currentItem();
+    if (!item) {
+        hideHistoryPreview(false);
+        return;
+    }
+    showHistoryPreviewForItem(item);
+}
+
+void ComfyUIRemoteDock::showHistoryPreviewForItem(QListWidgetItem *item)
+{
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotHistoryPreview ENTER currentRow="
-        << (m_d->listHistory ? m_d->listHistory->currentRow() : -1)
+        << "showHistoryPreviewForItem item="
+        << (item ? item->data(Qt::UserRole).toString() : QStringLiteral("null"))
+        << " currentRow=" << (m_d->listHistory ? m_d->listHistory->currentRow() : -1)
         << " count=" << (m_d->listHistory ? m_d->listHistory->count() : -1)
         << " workspace=" << (m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1)
         << " currentPreviewLayerId=" << m_d->previewLayerId;
+    if (!item)
+        return;
     if (m_d->comboWorkspace) {
         const int ws = m_d->comboWorkspace->currentIndex();
         if (ws != 0 && ws != 2) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryPreview: workspace gate, ws=" << ws << "; aborting";
+            qCWarning(KIS_COMFYUI_REMOTE) << "showHistoryPreviewForItem: workspace gate, ws=" << ws << "; aborting";
             return;
         }
     }
@@ -282,9 +871,9 @@ void ComfyUIRemoteDock::slotHistoryPreview()
     }
     int entryIndex = -1;
     int imageIndex = -1;
-    QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
+    const QString path = historyPathForListItem(item, m_d->historyEntries, &entryIndex, &imageIndex);
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotHistoryPreview resolved entryIndex=" << entryIndex
+        << "showHistoryPreviewForItem resolved entryIndex=" << entryIndex
         << " imageIndex=" << imageIndex << " path=" << path
         << " fileExists=" << (path.isEmpty() ? false : QFile::exists(path));
     if (path.isEmpty() || !QFile::exists(path)) {
@@ -292,65 +881,112 @@ void ComfyUIRemoteDock::slotHistoryPreview()
         return;
     }
 
-    // Remove the previous in-place preview layer if there was one. This is
-    // what makes thumb-tap "swap the preview" instead of stacking layers.
-    if (!m_d->previewLayerId.isEmpty()) {
-        if (KisLayerSP prev = findPreviewLayerByUuidString(image, m_d->previewLayerId)) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryPreview: removing previous preview layer"
-                                          << prev->name();
-            image->removeNode(prev);
-        }
-        m_d->previewLayerId.clear();
-    }
-
-    // Import the new result as a paint layer.
-    const qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(path), QStringLiteral("KisPaintLayer"));
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryPreview: importImage returned" << n;
-    if (n <= 0) {
-        setStatusMessage(ComfyTr::tr("Could not import preview image."), true);
-        return;
-    }
-    KisLayerSP imported = m_d->viewManager->activeLayer();
-    if (!imported) {
-        setStatusMessage(ComfyTr::tr("Could not locate imported preview layer."), true);
-        return;
-    }
-    // Move to the top of the stack so it actually previews on top of the canvas.
-    KisNodeSP root = image->rootLayer();
-    if (root) {
-        image->removeNode(imported);
-        KisNodeSP first = root->firstChild();
-        if (first)
-            image->addNode(imported, root, first);
-        else
-            image->addNode(imported, root, KisNodeSP());
-    }
-
     QString label;
-    if (entryIndex >= 0 && entryIndex < m_d->historyEntries.size())
-        label = historyEntryShortLabel(m_d->historyEntries.at(entryIndex));
+    QString previewName = QStringLiteral("[Preview] result");
+    QPoint previewOffset;
+    if (entryIndex >= 0 && entryIndex < m_d->historyEntries.size()) {
+        const Private::HistoryEntry &entry = m_d->historyEntries.at(entryIndex);
+        label = historyEntryShortLabel(entry);
+        previewName = previewLayerNameForEntry(entry);
+        if (entry.hasMask && !entry.contextBounds.isEmpty())
+            previewOffset = entry.contextBounds.topLeft();
+    }
     if (label.isEmpty())
         label = QStringLiteral("result");
-    imported->setName(QStringLiteral("[Preview] ") + label);
+
+    KisLayerSP previewLayer = findPreviewLayerByUuidString(image, m_d->previewLayerId);
+    KisLayerSP imported;
+    if (previewLayer && previewLayer->name().startsWith(QLatin1String("[Preview]"))) {
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "showHistoryPreviewForItem: reusing preview layer name=" << previewLayer->name();
+        if (auto *pl = qobject_cast<KisPaintLayer *>(previewLayer.data())) {
+            const QImage previewImg = cachedHistoryPreviewImage(path, &m_d->historyPreviewImageCache);
+            if (previewImg.isNull()
+                || !updatePreviewPaintLayerFromImage(m_d->viewManager.data(), image, pl, previewImg, previewName,
+                                                     previewOffset))
+                previewLayer = KisLayerSP();
+        } else {
+            previewLayer = KisLayerSP();
+        }
+        imported = previewLayer;
+    }
+    if (!imported) {
+        hideHistoryPreview(true);
+        const QImage previewImg = cachedHistoryPreviewImage(path, &m_d->historyPreviewImageCache);
+        if (previewImg.isNull()) {
+            setStatusMessage(ComfyTr::tr("No result image to preview."), true);
+            return;
+        }
+        KisPaintLayerSP pl(new KisPaintLayer(image, previewName, OPACITY_OPAQUE_U8));
+        if (!loadQImageIntoPaintLayer(pl.data(), image, previewImg, previewOffset)) {
+            setStatusMessage(ComfyTr::tr("Could not import preview image."), true);
+            return;
+        }
+        pl->setVisible(true);
+        KisLayerPropertiesIcons::setNodePropertyAutoUndo(pl, KisLayerPropertiesIcons::locked, true, image);
+        KisNodeSP root = image->rootLayer();
+        if (!root) {
+            setStatusMessage(ComfyTr::tr("Could not import preview image."), true);
+            return;
+        }
+        KisNodeSP above = topDirectRootChild(root);
+        if (m_d->viewManager->nodeManager()) {
+            KisNodeList nodes;
+            nodes.append(pl);
+            m_d->viewManager->nodeManager()->addNodesDirect(nodes, root, above);
+            m_d->viewManager->nodeManager()->slotNonUiActivatedNode(pl);
+        } else {
+            image->addNode(pl, root, above);
+        }
+        imported = pl;
+        nudgePreviewLayerProjection(imported);
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "showHistoryPreviewForItem: created preview layer name=" << imported->name();
+    }
 
     const QString uidStr = imported->uuid().toString(QUuid::WithoutBraces);
     m_d->previewLayerId = uidStr;
+    m_d->previewHistoryJobId = item->data(Qt::UserRole).toString();
+    m_d->previewHistoryImageIndex = item->data(Qt::UserRole + 1).toInt();
     savePreviewLayerIdToDocument(uidStr);
 
+    nudgePreviewLayerProjection(imported);
     if (m_d->canvas)
         m_d->canvas->updateCanvas();
+    if (m_d->listHistory)
+        m_d->listHistory->updateOverlayButtons();
     setStatusMessage(ComfyTr::tr("Previewing \"%1\". Tap Apply to keep, or tap another thumbnail.", label));
+}
+
+void ComfyUIRemoteDock::clearHistoryPreviewState()
+{
+    if (m_d->viewManager && m_d->viewManager->image()) {
+        removePreviewLayersFromImage(m_d->viewManager->image(),
+                                     m_d->viewManager.data(),
+                                     m_d->previewLayerId);
+    }
+    m_d->previewLayerId.clear();
+    m_d->previewHistoryJobId.clear();
+    m_d->previewHistoryImageIndex = -1;
+    savePreviewLayerIdToDocument(QString());
 }
 
 void ComfyUIRemoteDock::slotHistoryApply()
 {
+    slotHistoryApplyForItem(nullptr);
+}
+
+void ComfyUIRemoteDock::slotHistoryApplyForItem(QListWidgetItem *item)
+{
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotHistoryApply ENTER currentRow="
+        << "slotHistoryApplyForItem ENTER explicitItem="
+        << (item ? item->data(Qt::UserRole).toString() : QStringLiteral("null"))
+        << " currentRow="
         << (m_d->listHistory ? m_d->listHistory->currentRow() : -1)
         << " count=" << (m_d->listHistory ? m_d->listHistory->count() : -1)
         << " workspace=" << (m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1)
-        << " btnHistoryApplyEnabled="
-        << (m_d->btnHistoryApply ? m_d->btnHistoryApply->isEnabled() : false)
+        << " previewHistoryJobId=" << m_d->previewHistoryJobId
+        << " previewHistoryImageIndex=" << m_d->previewHistoryImageIndex
         << " currentPreviewLayerId=" << m_d->previewLayerId;
     // §10.1: Apply action — only Generate (0) and Live (2) workspaces
     if (m_d->comboWorkspace) {
@@ -360,27 +996,40 @@ void ComfyUIRemoteDock::slotHistoryApply()
             return;
         }
     }
-    // FAITHFUL_PORT: when the user single-taps a thumbnail on Android the
-    // itemClicked → slotHistoryPreview path can fire before itemSelectionChanged
-    // (or with a race where currentRow() is still -1). pathForCurrentHistoryRow
-    // relies on currentRow(), so promote any tapped/highlighted item to the
-    // current row first. Without this, the very first tap on a fresh history
-    // list emitted "No result image to apply." silently.
-    if (m_d->listHistory && m_d->listHistory->currentRow() < 0 && m_d->listHistory->count() > 0) {
-        if (QListWidgetItem *first = m_d->listHistory->item(0)) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: forcing currentRow=0 (was -1, count>0)";
-            m_d->listHistory->setCurrentItem(first);
+    if (m_d->listHistory) {
+        if (!item && !m_d->previewHistoryJobId.isEmpty()) {
+            item = findHistoryListItem(m_d->listHistory,
+                                       m_d->previewHistoryJobId,
+                                       m_d->previewHistoryImageIndex);
+        }
+        if (!item)
+            item = m_d->listHistory->currentItem();
+        if (item)
+            m_d->listHistory->setCurrentItem(item);
+        else if (m_d->listHistory->currentRow() < 0 && m_d->listHistory->count() > 0) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApplyForItem: forcing currentRow=0 (was -1, count>0)";
+            m_d->listHistory->setCurrentItem(m_d->listHistory->item(0));
+            item = m_d->listHistory->currentItem();
         }
     }
     int entryIndex = -1;
     int imageIndex = -1;
-    QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
+    QString path = historyPathForListItem(item, m_d->historyEntries, &entryIndex, &imageIndex);
+    if (path.isEmpty() && !m_d->previewHistoryJobId.isEmpty()) {
+        path = historyPathForIdentity(m_d->previewHistoryJobId,
+                                      m_d->previewHistoryImageIndex,
+                                      m_d->historyEntries,
+                                      &entryIndex,
+                                      &imageIndex);
+    }
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotHistoryApply resolved entryIndex=" << entryIndex
+        << "slotHistoryApplyForItem resolved entryIndex=" << entryIndex
         << " imageIndex=" << imageIndex
         << " path=" << path
         << " fileExists=" << (path.isEmpty() ? false : QFile::exists(path));
     if (path.isEmpty() || !QFile::exists(path)) {
+        if (!m_d->previewHistoryJobId.isEmpty())
+            clearHistoryPreviewState();
         setStatusMessage(ComfyTr::tr("No result image to apply."), true);
         return;
     }
@@ -389,37 +1038,31 @@ void ComfyUIRemoteDock::slotHistoryApply()
         setStatusMessage(ComfyTr::tr("Open a document first."), true);
         return;
     }
-    // FAITHFUL_PORT: if a preview layer is currently showing this exact same
-    // result (i.e. the user tapped a thumb → then Apply), don't re-import a
-    // duplicate; just promote the preview to "[Generated] … (seed)" and drop
-    // the preview tracking. Mirrors the desktop "Apply" semantics.
     KisImageSP image = m_d->viewManager->image();
-    if (image && !m_d->previewLayerId.isEmpty()) {
-        if (KisLayerSP previewLayer = findPreviewLayerByUuidString(image, m_d->previewLayerId)) {
-            QString label;
-            qint64 seed = 0;
-            if (entryIndex >= 0 && entryIndex < m_d->historyEntries.size()) {
-                label = historyEntryShortLabel(m_d->historyEntries.at(entryIndex));
-                seed = m_d->historyEntries.at(entryIndex).seed;
-                m_d->historyEntries[entryIndex].imageInUse.insert(imageIndex, true);
-            }
-            if (label.isEmpty())
-                label = QStringLiteral("result");
-            previewLayer->setName(QStringLiteral("[Generated] %1 (%2)").arg(label).arg(seed));
-            m_d->previewLayerId.clear();
-            savePreviewLayerIdToDocument(QString());
-            refreshHistoryList();
-            scheduleDocumentUiJsonSave();
-            if (m_d->canvas)
-                m_d->canvas->updateCanvas();
-            setStatusMessage(ComfyTr::tr("Applied result to the canvas."));
-            qCWarning(KIS_COMFYUI_REMOTE)
-                << "slotHistoryApply: committed preview layer to permanent" << previewLayer->name();
-            return;
-        }
-    }
+    const QString applyJobId = item ? item->data(Qt::UserRole).toString() : m_d->previewHistoryJobId;
+    const int applyImageIndex = item ? item->data(Qt::UserRole + 1).toInt() : m_d->previewHistoryImageIndex;
+    const bool canCommitPreview = !m_d->previewLayerId.isEmpty()
+                                  && applyJobId == m_d->previewHistoryJobId
+                                  && applyImageIndex == m_d->previewHistoryImageIndex;
+
+    KisLayerSP previewLayer;
+    if (image && canCommitPreview)
+        previewLayer = findPreviewLayerByUuidString(image, m_d->previewLayerId);
+
+    auto clearPreviewTracking = [this]() {
+        m_d->previewLayerId.clear();
+        m_d->previewHistoryJobId.clear();
+        m_d->previewHistoryImageIndex = -1;
+        savePreviewLayerIdToDocument(QString());
+    };
+
     // §13.184 / §3.5: apply_region_behavior vs apply_region_behavior_live when Live workspace is active
     if (entryIndex >= 0 && !m_d->historyEntries[entryIndex].regionLayerNames.isEmpty()) {
+        if (image) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: removing preview layer(s) before region apply";
+            removePreviewLayersFromImage(image, m_d->viewManager.data(), m_d->previewLayerId);
+            clearPreviewTracking();
+        }
         const QJsonObject sset = ComfyUIUtils::loadSettingsJson();
         const bool liveWs = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2;
         QString behavior = liveWs ? sset.value(QStringLiteral("apply_region_behavior_live")).toString()
@@ -428,6 +1071,7 @@ void ComfyUIRemoteDock::slotHistoryApply()
             behavior = liveWs ? QStringLiteral("replace") : QStringLiteral("layer_group");
         if (behavior != QLatin1String("none") && applyResultToRegions(path, entryIndex, behavior)) {
             m_d->historyEntries[entryIndex].imageInUse.insert(imageIndex, true);
+            clearHistoryListSelection();
             refreshHistoryList();
             scheduleDocumentUiJsonSave();
             if (m_d->canvas) m_d->canvas->updateCanvas();
@@ -435,15 +1079,39 @@ void ComfyUIRemoteDock::slotHistoryApply()
             return;
         }
     }
-    QString beh = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("apply_behavior")).toString();
-    if (beh.isEmpty()) beh = QStringLiteral("layer");
-    if (applyResultFileWithBehavior(path, beh) && entryIndex >= 0) {
+    const QString beh = applyBehaviorFromSettings(m_d.data());
+    QString commitName;
+    QRect resultBounds;
+    if (entryIndex >= 0 && entryIndex < m_d->historyEntries.size()) {
+        const Private::HistoryEntry &entry = m_d->historyEntries.at(entryIndex);
+        commitName = generatedLayerNameForEntry(entry);
+        if (entry.hasMask && !entry.contextBounds.isEmpty())
+            resultBounds = entry.contextBounds;
+    }
+
+    bool applied = false;
+    if (previewLayer && previewLayer->name().startsWith(QLatin1String("[Preview]"))) {
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "slotHistoryApply: committing preview layer name=" << previewLayer->name();
+        applied = commitPreviewLayerForApply(m_d->viewManager.data(), image, previewLayer, commitName, beh);
+        if (applied)
+            clearPreviewTracking();
+    } else {
+        if (image) {
+            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApply: removing preview layer(s) before apply";
+            removePreviewLayersFromImage(image, m_d->viewManager.data(), m_d->previewLayerId);
+            clearPreviewTracking();
+        }
+        applied = applyResultFileWithBehavior(path, beh, commitName, resultBounds);
+    }
+    if (applied && entryIndex >= 0) {
         m_d->historyEntries[entryIndex].imageInUse.insert(imageIndex, true);  // §13.28a: star overlay per thumbnail
+        clearHistoryListSelection();
         refreshHistoryList();
         scheduleDocumentUiJsonSave();
         if (m_d->canvas) m_d->canvas->updateCanvas();
         m_d->labelStatus->setText(ComfyTr::tr("Applied result to the canvas."));
-    } else {
+    } else if (!applied) {
         setStatusMessage(ComfyTr::tr("Could not import image."), true);
     }
 }
@@ -648,6 +1316,9 @@ void ComfyUIRemoteDock::slotHistoryDiscard()
     int imageIndex = -1;
     QString path = pathForCurrentHistoryRow(&entryIndex, &imageIndex);
     if (entryIndex < 0 || path.isEmpty()) return;
+    const QString discardedJobId = m_d->historyEntries.at(entryIndex).jobId;
+    const bool previewWasDiscarded = (discardedJobId == m_d->previewHistoryJobId
+                                      && imageIndex == m_d->previewHistoryImageIndex);
     // §13.192: confirm_discard_image gates confirmation; Clear History always confirms (see slotHistoryClear)
     const bool confirmDiscard = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("ConfirmDiscardImage", true);
     if (confirmDiscard && QMessageBox::warning(this, ComfyTr::tr("Discard image"),
@@ -678,6 +1349,9 @@ void ComfyUIRemoteDock::slotHistoryDiscard()
             reEmbedHistoryEntryAtIndex(entryIndex);
         }
     }
+    if (previewWasDiscarded)
+        clearHistoryPreviewState();
+    clearHistoryListSelection();
     refreshHistoryList();
     updateHistoryUsageLabel();  // §13.145: update "Currently using X.X MB" if Configure → Performance is open
     setStatusMessage(ComfyTr::tr("Discarded from history."));
@@ -686,6 +1360,7 @@ void ComfyUIRemoteDock::slotHistoryDiscard()
 void ComfyUIRemoteDock::slotHistoryClear()
 {
     if (m_d->historyEntries.isEmpty()) return;
+    clearHistoryPreviewState();
     // §13.140 / §13.192: Clear History always confirms via QMessageBox.warning; default No
     if (QMessageBox::warning(this, ComfyTr::tr("Clear history"),
             ComfyTr::tr("Discard all %1 generated images from history?", m_d->historyEntries.size()),
@@ -717,6 +1392,8 @@ void ComfyUIRemoteDock::slotHistoryReRun()
     const Private::HistoryEntry &e = m_d->historyEntries.at(entryIndex);
     m_d->editPrompt->setPlainText(e.prompt);
     m_d->editNegative->setPlainText(e.negative);
+    if (m_d->regionPromptWidget)
+        m_d->regionPromptWidget->refreshRootPromptFromDock();
     m_d->spinWidth->setValue(e.width);
     m_d->spinHeight->setValue(e.height);
     m_d->spinSteps->setValue(e.steps);
@@ -911,11 +1588,15 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
     return true;
 }
 
-bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath, const QString &applyBehavior)
+bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,
+                                                    const QString &applyBehavior,
+                                                    const QString &committedLayerName,
+                                                    const QRect &resultBounds)
 {
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
         << "applyResultFileWithBehavior ENTER path=" << localPath
         << " behavior=" << applyBehavior
+        << " committedLayerName=" << committedLayerName
         << " exists=" << (localPath.isEmpty() ? false : QFile::exists(localPath));
     if (localPath.isEmpty() || !QFile::exists(localPath))
         return false;
@@ -930,12 +1611,35 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath, co
     }
 
     KisLayerSP activeBefore = m_d->viewManager->activeLayer();
-    const qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(localPath), QStringLiteral("KisPaintLayer"));
-    qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: importImage returned" << n;
-    if (n <= 0)
-        return false;
-
-    KisLayerSP imported = m_d->viewManager->activeLayer();
+    KisLayerSP imported;
+    if (!resultBounds.isEmpty()) {
+        const QString initialName = committedLayerName.isEmpty() ? QStringLiteral("[Generated] result") : committedLayerName;
+        KisPaintLayerSP pl(new KisPaintLayer(image, initialName, OPACITY_OPAQUE_U8));
+        if (!loadImageFileIntoPaintLayer(pl.data(), image, localPath, resultBounds.topLeft()))
+            return false;
+        KisNodeSP root = image->rootLayer();
+        if (!root)
+            return false;
+        KisNodeSP above = topDirectRootChild(root);
+        if (m_d->viewManager->nodeManager()) {
+            KisNodeList nodes;
+            nodes.append(pl);
+            m_d->viewManager->nodeManager()->addNodesDirect(nodes, root, above);
+            m_d->viewManager->nodeManager()->slotNonUiActivatedNode(pl);
+        } else {
+            image->addNode(pl, root, above);
+        }
+        image->waitForDone();
+        imported = pl;
+        qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: created offset layer bounds=" << resultBounds;
+    } else {
+        ensureActiveLayerValidForImport(m_d->viewManager.data(), image);
+        const qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(localPath), QStringLiteral("KisPaintLayer"));
+        qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: importImage returned" << n;
+        if (n <= 0)
+            return false;
+        imported = m_d->viewManager->activeLayer();
+    }
     QString beh = applyBehavior;
     if (beh.isEmpty())
         beh = QStringLiteral("layer");
@@ -944,19 +1648,11 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath, co
         if (activeBefore && imported && imported != activeBefore) {
             image->mergeDown(imported, nullptr);
         }
-    } else if (beh == QLatin1String("layer")) {
-        KisNodeSP root = image->rootLayer();
-        KisNodeSP importedNode = imported;
-        if (root && importedNode) {
-            image->removeNode(importedNode);
-            KisNodeSP first = root->firstChild();
-            if (first)
-                image->addNode(importedNode, root, first);
-            else
-                image->addNode(importedNode, root, KisNodeSP());
-        }
+    } else {
+        placeImportedLayerForBehavior(m_d->viewManager.data(), image, imported, activeBefore, beh);
     }
-    // layer_active: default import placement (above prior active) matches spec
+    if (!committedLayerName.isEmpty() && imported)
+        imported->setName(committedLayerName);
     if (m_d->canvas)
         m_d->canvas->updateCanvas();
     return true;
@@ -965,8 +1661,6 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath, co
 void ComfyUIRemoteDock::handleGenerationFinished(const QString &resultImagePath, bool skipAutoActions)
 {
     refreshHistoryList();
-    if (m_d->listHistory && m_d->listHistory->count() > 0)
-        m_d->listHistory->setCurrentRow(0);
     updateHistoryUsageLabel();
     if (skipAutoActions || resultImagePath.isEmpty() || !QFile::exists(resultImagePath))
         return;
@@ -977,16 +1671,29 @@ void ComfyUIRemoteDock::handleGenerationFinished(const QString &resultImagePath,
     QString action = s.value(QStringLiteral("generation_finished_action")).toString();
     if (action.isEmpty())
         action = QStringLiteral("preview");
-    if (action == QLatin1String("none") || action == QLatin1String("preview"))
+
+    if (action == QLatin1String("preview")) {
+        if (m_d->listHistory && m_d->listHistory->count() > 0) {
+            QListWidgetItem *first = m_d->listHistory->item(0);
+            m_d->listHistory->setCurrentRow(0);
+            showHistoryPreviewForItem(first);
+        }
+        return;
+    }
+    if (action == QLatin1String("none"))
         return;
     if (action != QLatin1String("apply"))
         return;
 
-    QString beh = s.value(QStringLiteral("apply_behavior")).toString();
-    if (beh.isEmpty())
-        beh = QStringLiteral("layer");
-    if (applyResultFileWithBehavior(resultImagePath, beh) && !m_d->historyEntries.isEmpty()) {
+    QString beh = applyBehaviorFromSettings(m_d.data());
+    QRect resultBounds;
+    if (!m_d->historyEntries.isEmpty() && m_d->historyEntries.first().hasMask
+        && !m_d->historyEntries.first().contextBounds.isEmpty()) {
+        resultBounds = m_d->historyEntries.first().contextBounds;
+    }
+    if (applyResultFileWithBehavior(resultImagePath, beh, QString(), resultBounds) && !m_d->historyEntries.isEmpty()) {
         m_d->historyEntries[0].imageInUse.insert(0, true);
+        clearHistoryListSelection();
         refreshHistoryList();
         scheduleDocumentUiJsonSave();
         m_d->labelStatus->setText(ComfyTr::tr("Generation finished — result applied."));

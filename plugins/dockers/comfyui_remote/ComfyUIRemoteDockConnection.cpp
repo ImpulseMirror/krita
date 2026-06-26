@@ -6,6 +6,7 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
 #include "ComfyFileLibrary.h"
@@ -785,18 +786,29 @@ void ComfyUIRemoteDock::applyServerCheckpointList(const QStringList &filteredNam
     m_d->comboCheckpoint->setCurrentIndex(0);
     setStatusMessage(ComfyTr::tr("Loaded %1 checkpoints.", filteredNames.size()));
 
-    if (prevPresetIdx >= firstCustom && m_d->comboPreset) {
-        const QString presetName = m_d->comboPreset->itemText(prevPresetIdx);
-        KConfigGroup presetCfg = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote_Preset_") + presetName);
-        const QString savedCkpt = presetCfg.readEntry(QStringLiteral("Checkpoint"), QString()).trimmed();
-        if (!savedCkpt.isEmpty() && m_d->comboCheckpoint->findText(savedCkpt) < 0) {
-            QSignalBlocker b(m_d->comboPreset);
-            m_d->comboPreset->setCurrentIndex(0);
-            slotPresetChanged(0);
-            setStatusMessage(ComfyTr::tr("The checkpoint saved with style \"%1\" is not on this server. Style reset to None.",
-                                  presetName),
-                             false,
-                             true);
+    if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+        if (prevPresetIdx > 0 && prevPresetIdx < firstCustom) {
+            const bool showBuiltin =
+                ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
+            const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
+            const int styleIdx = prevPresetIdx - 1;
+            if (styleIdx >= 0 && styleIdx < styles.size())
+                applyComfyStyleEntry(*styles.at(styleIdx));
+        } else if (prevPresetIdx >= firstCustom) {
+            const QString presetName = m_d->comboPreset->itemText(prevPresetIdx);
+            KConfigGroup presetCfg =
+                KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote_Preset_") + presetName);
+            const QString savedCkpt = presetCfg.readEntry(QStringLiteral("Checkpoint"), QString()).trimmed();
+            if (!savedCkpt.isEmpty() && m_d->comboCheckpoint->findText(savedCkpt) < 0) {
+                QSignalBlocker b(m_d->comboPreset);
+                m_d->comboPreset->setCurrentIndex(0);
+                slotPresetChanged(0);
+                setStatusMessage(ComfyTr::tr(
+                                     "The checkpoint saved with style \"%1\" is not on this server. Style reset to None.",
+                                     presetName),
+                                 false,
+                                 true);
+            }
         }
     }
 }

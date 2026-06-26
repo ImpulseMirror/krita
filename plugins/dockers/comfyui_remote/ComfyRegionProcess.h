@@ -49,6 +49,14 @@ QImage maskAdd(const QImage &lhs, const QImage &rhs);
 QImage maskInvert(const QImage &maskGray);
 QRect maskNonZeroBounds(const QImage &maskGray);
 
+/// §13.206: Region-only inpaint mask from active region layer transparency (get_region_inpaint_mask).
+struct RegionInpaintMask {
+    QImage maskGray;
+    QRect bounds;
+    bool valid = false;
+};
+RegionInpaintMask getRegionInpaintMask(KisImageSP image, KisViewManager *viewManager, const ComfyRegionEntry &region);
+
 } // namespace ComfyRegionProcess
 
 #endif

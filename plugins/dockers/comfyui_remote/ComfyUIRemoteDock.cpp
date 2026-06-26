@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyHistoryListWidget.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
@@ -76,6 +77,7 @@ Q_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE, "krita.comfyui_remote")
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QProgressBar>
+#include <QSlider>
 #include <QRadioButton>
 #include <QButtonGroup>
 #include <QKeyEvent>
@@ -342,6 +344,22 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             }
             QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
             QJsonObject hist = doc.object().value(m_d->currentPromptId).toObject();
+            if (const QString execErr = ComfyUIUtils::comfyHistoryExecutionError(hist); !execErr.isEmpty()) {
+                qCWarning(KIS_COMFYUI_REMOTE) << "poll: ComfyUI execution error:" << execErr;
+                setStatusMessage(execErr, true);
+                m_d->progressBar->setValue(0);
+                m_d->pendingHistoryByPromptId.remove(m_d->currentPromptId);
+                m_d->currentPromptId.clear();
+                if (!m_d->jobQueue.isEmpty()) {
+                    m_d->currentPromptId = m_d->jobQueue.takeFirst();
+                    m_d->pollCount = 0;
+                    startPolling();
+                } else {
+                    m_d->btnGenerate->setEnabled(true);
+                }
+                updateQueueStatus();
+                return;
+            }
             QJsonObject outputs = hist.value("outputs").toObject();
             if (outputs.isEmpty()) {
                 m_d->pollCount++;
@@ -921,18 +939,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     genLayout->setContentsMargins(0, 0, 0, 0);
 
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
-    m_d->comboWorkspace = new QComboBox();
-    m_d->comboWorkspace->addItem(
-        ComfyTheme::icon(QStringLiteral("workspace-generation")), ComfyTr::tr("Generate"));
-    m_d->comboWorkspace->addItem(
-        ComfyTheme::icon(QStringLiteral("workspace-upscaling")), ComfyTr::tr("Upscale"));
-    m_d->comboWorkspace->addItem(
-        ComfyTheme::icon(QStringLiteral("workspace-live")), ComfyTr::tr("Live"));
-    m_d->comboWorkspace->addItem(
-        ComfyTheme::icon(QStringLiteral("workspace-animation")), ComfyTr::tr("Animation"));
-    m_d->comboWorkspace->addItem(
-        ComfyTheme::icon(QStringLiteral("workspace-custom")), ComfyTr::tr("Graph"));
-    m_d->comboWorkspace->setToolTip(ComfyTr::tr("Choose workspace: image generation, upscaling, live painting, animation, or custom graph workflow."));
+    m_d->comboWorkspace = new ComfyWorkspaceSelectButton(genGroup);
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         int storedWorkspace = cfg.readEntry("WorkspaceIndex", 0);
@@ -942,8 +949,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         m_d->comboWorkspace->setCurrentIndex(storedWorkspace);
         m_d->lastWorkspaceIndex = storedWorkspace;
     }
-    // §13.72: Per-workspace dispatch — Generate / Upscale / Live / Animation / Graph each show their action button
-    connect(m_d->comboWorkspace, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+    connect(m_d->comboWorkspace, &ComfyWorkspaceSelectButton::currentIndexChanged, this, [this](int idx) {
         // Toggle visibility of mode-specific controls
         if (!m_d->genGroupBox) return;
         const bool isGenerate = (idx == 0);
@@ -999,7 +1005,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             refreshAnimationTargetLayerCombo();
         updateAnimationTargetLayerRowVisibility();
         if (m_d->btnImportAnimation) m_d->btnImportAnimation->setVisible(isLive || isAnimation);
-        if (m_d->regionsGroupBox) m_d->regionsGroupBox->setVisible(isGenerate);
+        if (m_d->regionsGroupBox) m_d->regionsGroupBox->setVisible(false);
         if (m_d->controlPreviewGroupBox) m_d->controlPreviewGroupBox->setVisible(isGenerate);
         if (!isGenerate)
             stopControlPreviewPolling();
@@ -1204,7 +1210,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefinementModelIndex", m_d->comboUpscaleRefinementModel->currentIndex());
     });
 
-    genContentLayout->addWidget(new QLabel(ComfyTr::tr("Prompt:")));
+    genContentLayout->addWidget(m_d->labelPrompt = new QLabel(ComfyTr::tr("Prompt:")));
     // Tag autocomplete model/completers (must exist before ComfyPromptPlainTextEdit; §13.196 Tab + popup)
     m_d->tagKeywordModel = new QStringListModel(this);
     m_d->promptTagCompleter = new QCompleter(m_d->tagKeywordModel, this);
@@ -1325,15 +1331,34 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->spinStrength->setValue(100);
     m_d->spinStrength->setSuffix(QStringLiteral("%"));
     m_d->spinStrength->setToolTip(ComfyTr::tr("Strength: 100% = full generation, lower = more preserved (refine)."));
-    QHBoxLayout *strengthRow = new QHBoxLayout();
-    strengthRow->addWidget(new QLabel(ComfyTr::tr("Strength:")));
+    m_d->strengthRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *strengthRow = new QHBoxLayout(m_d->strengthRowWidget);
+    strengthRow->setContentsMargins(0, 0, 0, 0);
+    m_d->sliderStrength = new QSlider(Qt::Horizontal, m_d->strengthRowWidget);
+    m_d->sliderStrength->setRange(1, 100);
+    m_d->sliderStrength->setSingleStep(5);
+    m_d->sliderStrength->setValue(m_d->spinStrength->value());
+    m_d->spinStrength->setPrefix(ComfyTr::tr("Strength") + QStringLiteral(": "));
+    strengthRow->addWidget(m_d->sliderStrength, 1);
     strengthRow->addWidget(m_d->spinStrength);
-    genContentLayout->addLayout(strengthRow);
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-        m_d->spinStrength->setValue(qBound(1, cfg.readEntry("Strength", 100), 100));
+        const int storedStrength = qBound(1, cfg.readEntry("Strength", 100), 100);
+        m_d->spinStrength->setValue(storedStrength);
+        if (m_d->sliderStrength)
+            m_d->sliderStrength->setValue(storedStrength);
     }
+    connect(m_d->sliderStrength, &QSlider::valueChanged, this, [this](int v) {
+        if (m_d->spinStrength && m_d->spinStrength->value() != v) {
+            QSignalBlocker b(m_d->spinStrength);
+            m_d->spinStrength->setValue(v);
+        }
+    });
     connect(m_d->spinStrength, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        if (m_d->sliderStrength && m_d->sliderStrength->value() != v) {
+            QSignalBlocker b(m_d->sliderStrength);
+            m_d->sliderStrength->setValue(v);
+        }
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("Strength", v);
         // §13.149: When in Live workspace, persist strength to document (ui.json live key)
@@ -1347,6 +1372,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 img->addAnnotation(KisAnnotationSP(new KisAnnotation(liveKey, ComfyUIUtils::documentAnnotationDescription(QStringLiteral("live")), QJsonDocument(o).toJson(QJsonDocument::Compact))));
             }
         }
+        updateGenerateOptions();
     });
 
     // §5.4: Region-only toggle; when set, only active region mask and prompt are used
@@ -1359,6 +1385,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     connect(m_d->checkRegionOnly, &QCheckBox::toggled, this, [this](bool checked) {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("RegionOnly", checked);
+        updateGenerateOptions();
     });
     genContentLayout->addWidget(m_d->checkRegionOnly);
     // FAITHFUL_PORT: upstream exposes region-only via the region-mask icon button in
@@ -1378,6 +1405,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("EditMode", checked);
         refreshRegionsList();  // §13.125: switch between root and edit region lists
+        updateGenerateOptions();
     });
     genContentLayout->addWidget(m_d->checkEditMode);
     // FAITHFUL_PORT: upstream selects Edit via the Generate-button dropdown menu,
@@ -1403,8 +1431,29 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("LayerCount", v);
     });
-    genContentLayout->addWidget(m_d->layerCountRow);
+    strengthRow->addWidget(m_d->layerCountRow);
     m_d->layerCountRow->setVisible(false);  // Shown only when current style arch is qwen_l; no arch in presets yet
+    m_d->btnAddControlIcon = new QToolButton(m_d->strengthRowWidget);
+    m_d->btnAddControlIcon->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_d->btnAddControlIcon->setIcon(ComfyTheme::icon(QStringLiteral("control-add")));
+    m_d->btnAddControlIcon->setToolTip(ComfyTr::tr("Add Control Layer"));
+    m_d->btnAddControlIcon->setAutoRaise(true);
+    connect(m_d->btnAddControlIcon, &QToolButton::clicked, this, [this]() {
+        if (m_d->activeRegionIndex >= 0
+            && m_d->activeRegionIndex < comfyActiveRegionEntries(m_d.data()).size())
+            slotAddRegionControlLayer();
+        else
+            slotAddControlLayer();
+    });
+    m_d->btnAddRegionIcon = new QToolButton(m_d->strengthRowWidget);
+    m_d->btnAddRegionIcon->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_d->btnAddRegionIcon->setIcon(ComfyTheme::icon(QStringLiteral("region-add")));
+    m_d->btnAddRegionIcon->setToolTip(ComfyTr::tr("Add Region"));
+    m_d->btnAddRegionIcon->setAutoRaise(true);
+    connect(m_d->btnAddRegionIcon, &QToolButton::clicked, this, &ComfyUIRemoteDock::slotAddRegion);
+    strengthRow->addWidget(m_d->btnAddControlIcon);
+    strengthRow->addWidget(m_d->btnAddRegionIcon);
+    genContentLayout->addWidget(m_d->strengthRowWidget);
 
     m_d->checkFixedSeed = new QCheckBox(ComfyTr::tr("Fixed seed"));
     m_d->spinSeed = new QSpinBox();
@@ -1466,7 +1515,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnGenerate->setIcon(
         ComfyTheme::icon(QStringLiteral("generate")));  // §5.4: sparkle / magic-style icon
     connect(m_d->btnGenerate, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerate);
-    genContentLayout->addWidget(m_d->btnGenerate);
+    // Added to generateActionRowWidget after queue button is created.
 
     m_d->btnInpaint = new QPushButton(ComfyTr::tr("Inpaint (selection)"));
     m_d->btnInpaint->setToolTip(ComfyTr::tr("Generate in selection."));
@@ -1526,7 +1575,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 m_d->comboInpaintMode->setCurrentIndex(0);
             setStatusMessage(ComfyTr::tr("Mode: Refine region — add regions below, then Generate regions."));
             if (m_d->regionPromptWidget)
-                m_d->regionPromptWidget->setFocus(Qt::OtherFocusReason);
+                m_d->regionPromptWidget->focusPromptEditor();
         });
         opMenu->addAction(ComfyTr::tr("Edit (per region)"), this, [this]() {
             if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
@@ -1535,7 +1584,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 m_d->checkEditMode->setChecked(true);
             setStatusMessage(ComfyTr::tr("Mode: Edit per region — use the Regions panel, then Generate regions."));
             if (m_d->regionPromptWidget)
-                m_d->regionPromptWidget->setFocus(Qt::OtherFocusReason);
+                m_d->regionPromptWidget->focusPromptEditor();
         });
         opMenu->addAction(ComfyTr::tr("Edit (Custom)"), this, [this]() {
             if (m_d->comboWorkspace && m_d->comboWorkspace->count() > 4)
@@ -1549,7 +1598,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                 m_d->checkEditMode->setChecked(false);
             setStatusMessage(ComfyTr::tr("Mode: Generate region — choose a region below, then Generate regions."));
             if (m_d->regionPromptWidget)
-                m_d->regionPromptWidget->setFocus(Qt::OtherFocusReason);
+                m_d->regionPromptWidget->focusPromptEditor();
         });
         m_d->btnGenerateViewOperations->setMenu(opMenu);
         opLayout->addWidget(m_d->btnGenerateViewOperations);
@@ -1558,6 +1607,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         m_d->actionsRowWidget->setVisible(false);
     }
     // §13.206 / P4.1: InpaintMode — all seven Python modes with theme icons
+    m_d->customInpaintRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *customInpaintLay = new QHBoxLayout(m_d->customInpaintRowWidget);
+    customInpaintLay->setContentsMargins(0, 0, 0, 0);
     auto addInpaintComboItem = [](QComboBox *cb, const QString &label, const QString &data, const char *iconStem) {
         cb->addItem(ComfyTheme::icon(QString::fromUtf8(iconStem)), label, data);
     };
@@ -1595,8 +1647,9 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
             saveInpaintWorkspaceToDocument();
         schedulePersistDocumentDefaults();
+        updateGenerateOptions();
     });
-    genContentLayout->addWidget(m_d->comboInpaintMode);
+    // comboInpaintMode stays off-layout (mode chosen via ▼ menu); not added to customInpaintRowWidget.
     // §13.188: FillMode UI — five options (None, Neutral, Blur, Border, Inpaint); replace/green internal only
     m_d->comboFillMode = new QComboBox(genGroup);
     const QIcon fillIcon = ComfyTheme::icon(QStringLiteral("fill"));
@@ -1616,7 +1669,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             saveInpaintWorkspaceToDocument();
         schedulePersistDocumentDefaults();
     });
-    genContentLayout->addWidget(m_d->comboFillMode);
+    customInpaintLay->addWidget(m_d->comboFillMode, 1);
     // §13.169 / §13.194: Inpaint context (Python InpaintContext; JSON uses underscores)
     m_d->comboInpaintContext = new QComboBox(genGroup);
     addInpaintComboItem(m_d->comboInpaintContext, ComfyTr::tr("Automatic"), QStringLiteral("automatic"), "context-automatic");
@@ -1636,18 +1689,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
             saveInpaintWorkspaceToDocument();
         schedulePersistDocumentDefaults();
     });
-    genContentLayout->addWidget(m_d->comboInpaintContext);
+    customInpaintLay->addWidget(m_d->comboInpaintContext, 1);
     // §13.107 / §13.169: CustomInpaint toggles (Python: Seamless / Focus)
     m_d->checkInpaintUseModel = new ComfySwitchWidget(genGroup);
     {
-        m_d->seamlessRowWidget = new QWidget(m_d->genContentContainer);
-        QHBoxLayout *seamlessRow = new QHBoxLayout(m_d->seamlessRowWidget);
-        seamlessRow->setContentsMargins(0, 0, 0, 0);
-        QLabel *seamlessLabel = new QLabel(ComfyTr::tr("Seamless"), m_d->seamlessRowWidget);
-        seamlessRow->addWidget(m_d->checkInpaintUseModel);
-        seamlessRow->addWidget(seamlessLabel, 1);
-        genContentLayout->addWidget(m_d->seamlessRowWidget);
-        m_d->seamlessRowWidget->setVisible(false);
+        QLabel *seamlessLabel = new QLabel(ComfyTr::tr("Seamless"), m_d->customInpaintRowWidget);
+        customInpaintLay->insertWidget(0, m_d->checkInpaintUseModel);
+        customInpaintLay->insertWidget(1, seamlessLabel);
+        m_d->seamlessRowWidget = nullptr;
     }
     m_d->checkInpaintUseModel->setToolTip(ComfyTr::tr("Generate content which blends into the surroundings"));
     m_d->checkInpaintUseModel->setChecked(
@@ -1662,14 +1711,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     });
     m_d->checkInpaintUsePromptFocus = new ComfySwitchWidget(genGroup);
     {
-        m_d->focusRowWidget = new QWidget(m_d->genContentContainer);
-        QHBoxLayout *focusRow = new QHBoxLayout(m_d->focusRowWidget);
-        focusRow->setContentsMargins(0, 0, 0, 0);
-        QLabel *focusLabel = new QLabel(ComfyTr::tr("Focus"), m_d->focusRowWidget);
-        focusRow->addWidget(m_d->checkInpaintUsePromptFocus);
-        focusRow->addWidget(focusLabel, 1);
-        genContentLayout->addWidget(m_d->focusRowWidget);
-        m_d->focusRowWidget->setVisible(false);
+        QLabel *focusLabel = new QLabel(ComfyTr::tr("Focus"), m_d->customInpaintRowWidget);
+        customInpaintLay->insertWidget(2, m_d->checkInpaintUsePromptFocus);
+        customInpaintLay->insertWidget(3, focusLabel);
+        m_d->focusRowWidget = nullptr;
     }
     m_d->checkInpaintUsePromptFocus->setToolTip(
         ComfyTr::tr("Focus generation on the masked area using prompt conditioning (SD 1.5 / SDXL)."));
@@ -1700,13 +1745,14 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
         connect(m_d->checkEditMode, &QCheckBox::toggled, this, [this](bool) { updateInpaintControlsForArch(); });
     }
     updateInpaintControlsForArch();
+    genContentLayout->addWidget(m_d->customInpaintRowWidget);
+    m_d->customInpaintRowWidget->setVisible(false);
 
     ComfyTheme::applyFlatComboStyle(m_d->comboInpaintMode);
     ComfyTheme::applyFlatComboStyle(m_d->comboFillMode);
     ComfyTheme::applyFlatComboStyle(m_d->comboInpaintContext);
     ComfyTheme::applyFlatComboStyle(m_d->comboPreset);
     ComfyTheme::applyFlatComboStyle(m_d->comboCheckpoint);
-    ComfyTheme::applyFlatComboStyle(m_d->comboWorkspace);
     ComfyTheme::applyFlatComboStyle(m_d->comboQuality);
     ComfyTheme::applyFlatComboStyle(m_d->comboQueueMode);
     ComfyTheme::applyFlatComboStyle(m_d->comboSampler);
@@ -1988,12 +2034,43 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     queueMenu->addAction(queueAction);
     m_d->btnQueuePopup->setMenu(queueMenu);
 
-    m_d->queueButtonRowWidget = new QWidget(m_d->genContentContainer);
-    QHBoxLayout *queueRow = new QHBoxLayout(m_d->queueButtonRowWidget);
-    queueRow->setContentsMargins(0, 0, 0, 0);
-    queueRow->addWidget(m_d->btnQueuePopup);
-    queueRow->addStretch();
-    genContentLayout->addWidget(m_d->queueButtonRowWidget);
+    setupGenerateInpaintMenus();
+
+    m_d->generateActionRowWidget = new QWidget(m_d->genContentContainer);
+    QHBoxLayout *actionRow = new QHBoxLayout(m_d->generateActionRowWidget);
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(4);
+
+    QWidget *genCluster = new QWidget(m_d->generateActionRowWidget);
+    QHBoxLayout *genClusterLay = new QHBoxLayout(genCluster);
+    genClusterLay->setContentsMargins(0, 0, 0, 0);
+    genClusterLay->setSpacing(0);
+    if (m_d->btnGenerate)
+        genClusterLay->addWidget(m_d->btnGenerate);
+
+    m_d->btnInpaintMode = new QToolButton(genCluster);
+    m_d->btnInpaintMode->setArrowType(Qt::DownArrow);
+    m_d->btnInpaintMode->setAutoRaise(true);
+    connect(m_d->btnInpaintMode, &QToolButton::clicked, this, &ComfyUIRemoteDock::showInpaintModeMenu);
+
+    m_d->btnRegionMask = new QToolButton(genCluster);
+    m_d->btnRegionMask->setCheckable(true);
+    m_d->btnRegionMask->setIcon(ComfyTheme::icon(QStringLiteral("region-alpha")));
+    m_d->btnRegionMask->setToolTip(
+        ComfyTr::tr("Generate the active layer region only (use layer transparency as mask)"));
+    if (m_d->checkRegionOnly)
+        m_d->btnRegionMask->setChecked(m_d->checkRegionOnly->isChecked());
+    connect(m_d->btnRegionMask, &QToolButton::toggled, m_d->checkRegionOnly, &QCheckBox::setChecked);
+    connect(m_d->checkRegionOnly, &QCheckBox::toggled, m_d->btnRegionMask, &QToolButton::setChecked);
+
+    genClusterLay->addWidget(m_d->btnInpaintMode);
+    genClusterLay->addWidget(m_d->btnRegionMask);
+    actionRow->addWidget(genCluster, 1);
+    actionRow->addWidget(m_d->btnQueuePopup);
+    if (m_d->btnQueuePopup && m_d->btnGenerate)
+        m_d->btnQueuePopup->setFixedHeight(qMax(28, m_d->btnGenerate->sizeHint().height() - 2));
+    genContentLayout->addWidget(m_d->generateActionRowWidget);
+    m_d->queueButtonRowWidget = m_d->generateActionRowWidget;
 
     m_d->btnCancelQueue = popupCancel;
     m_d->btnCancelQueue->setEnabled(false);
@@ -2115,17 +2192,19 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     scrollLayout->addWidget(genGroup);
 
-    QGroupBox *histGroup = new QGroupBox(ComfyTr::tr("History"));
+    QGroupBox *histGroup = new QGroupBox();
     m_d->histGroupBox = histGroup;
+    histGroup->setFlat(true);
+    histGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
     QVBoxLayout *histLayout = new QVBoxLayout(histGroup);
-    histLayout->addWidget(new QLabel(ComfyTr::tr("Results (double-click Apply, right-click for menu):")));
-    m_d->listHistory = new QListWidget();
+    histLayout->setContentsMargins(0, 0, 0, 0);
+    m_d->listHistory = new ComfyHistoryListWidget();
     m_d->listHistory->setMaximumHeight(140);
     m_d->listHistory->setViewMode(QListWidget::IconMode);
     m_d->listHistory->setIconSize(QSize(96, 96));  // §13.28a: thumbnail size 96×96 px
     m_d->listHistory->setFlow(QListView::LeftToRight);
     m_d->listHistory->setResizeMode(QListView::Adjust);
-    m_d->listHistory->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_d->listHistory->setSelectionMode(QAbstractItemView::SingleSelection);
     m_d->listHistory->setFrameShape(QFrame::NoFrame);
     m_d->listHistory->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);  // §13.28a: vertical scroll only
     m_d->listHistory->setSpacing(4);
@@ -2133,30 +2212,30 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->listHistory->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_d->listHistory, &QListWidget::customContextMenuRequested, this, &ComfyUIRemoteDock::slotHistoryContextMenu);
     connect(m_d->listHistory, &QListWidget::itemSelectionChanged, this, &ComfyUIRemoteDock::slotHistoryItemSelected);
-    connect(m_d->listHistory, &QListWidget::doubleClicked, this, &ComfyUIRemoteDock::slotHistoryApply);
-    // FAITHFUL_PORT: on Android there is no reliable double-click gesture and
-    // the desktop ai-diffusion plugin uses single-click on a thumbnail to load
-    // it as a *transient* preview layer ("[Preview] <prompt>") that the user
-    // either accepts (Apply button → "[Generated] <prompt> (<seed>)") or
-    // replaces by tapping another thumbnail. The previous wiring routed
-    // single-click straight through slotHistoryApply, which stacked a fresh
-    // permanent layer on every tap. Switch single-tap to the preview path so
-    // tapping different thumbnails just swaps the in-place preview, and keep
-    // the Apply button bound to slotHistoryApply for the commit.
-    connect(m_d->listHistory, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        if (!item) return;
-        m_d->listHistory->setCurrentItem(item);
-        slotHistoryPreview();
+    connect(m_d->listHistory, &QListWidget::doubleClicked, this, [this](const QModelIndex &) {
+        if (m_d->listHistory)
+            slotHistoryApplyForItem(m_d->listHistory->currentItem());
+    });
+    // FAITHFUL_PORT: selection drives preview (jobs.selection_changed → update_preview).
+    // Re-click selected thumb deselects → hide preview. Apply commits via overlay or double-click.
+    connect(m_d->listHistory, &ComfyHistoryListWidget::applyRequested, this, &ComfyUIRemoteDock::slotHistoryApplyForItem);
+    connect(m_d->listHistory, &ComfyHistoryListWidget::contextMenuRequested, this, [this]() {
+        if (!m_d->listHistory || !m_d->listHistory->currentItem())
+            return;
+        const QRect rect = m_d->listHistory->visualItemRect(m_d->listHistory->currentItem());
+        slotHistoryContextMenu(rect.bottomRight());
     });
     histLayout->addWidget(m_d->listHistory);
-    QHBoxLayout *historyBtns = new QHBoxLayout();
+    m_d->historyButtonsRowWidget = new QWidget(histGroup);
+    QHBoxLayout *historyBtns = new QHBoxLayout(m_d->historyButtonsRowWidget);
+    historyBtns->setContentsMargins(0, 0, 0, 0);
     m_d->btnHistoryReRun = new QPushButton(ComfyTr::tr("Re-run"));
     m_d->btnHistoryApply = new QPushButton(ComfyTr::tr("Apply"));
     connect(m_d->btnHistoryReRun, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotHistoryReRun);
     connect(m_d->btnHistoryApply, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotHistoryApply);
     historyBtns->addWidget(m_d->btnHistoryReRun);
     historyBtns->addWidget(m_d->btnHistoryApply);
-    histLayout->addLayout(historyBtns);
+    histLayout->addWidget(m_d->historyButtonsRowWidget);
     m_d->btnHistoryReRun->setEnabled(false);
     m_d->btnHistoryApply->setEnabled(false);
     scrollLayout->addWidget(histGroup);
@@ -2192,7 +2271,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     }
     m_d->regionPromptWidget->bind(&comfyActiveRegionEntries(m_d.data()), &m_d->activeRegionIndex);
     connect(m_d->regionPromptWidget, &ComfyRegionPromptWidget::activeIndexChanged, this,
-            &ComfyUIRemoteDock::refreshRegionControlLayersList);
+            [this]() {
+        refreshRegionControlLayersList();
+        updateGenerateOptions();
+    });
     connect(m_d->regionPromptWidget, &ComfyRegionPromptWidget::regionEdited, this, [this]() {
         saveRegionsToConfig();
         refreshRegionsList();
@@ -2216,6 +2298,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                     return;
                 QString source;
                 if (m_d->activeRegionIndex == ComfyRegionLink::kRootRegionIndex) {
+                    commitPromptEditorsFromUi();
                     source = negative && m_d->editNegative ? m_d->editNegative->toPlainText()
                                                            : (m_d->editPrompt ? m_d->editPrompt->toPlainText()
                                                                               : QString());
@@ -2245,23 +2328,17 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                             m_d->regionPromptWidget->refresh();
                     });
             });
-    connect(m_d->regionPromptWidget, &ComfyRegionPromptWidget::activated, this, [this]() {
-        if (m_d->regionPromptWidget)
-            m_d->regionPromptWidget->setFocus(Qt::OtherFocusReason);
-    });
     connect(m_d->regionPromptWidget, &ComfyRegionPromptWidget::editingModeChanged, this, [this](int idx) {
-        const bool showDockRoot = idx == ComfyRegionLink::kRootRegionIndex
-                                || comfyActiveRegionEntries(m_d.data()).isEmpty();
+        Q_UNUSED(idx);
         if (m_d->rootPromptColumnWidget)
-            m_d->rootPromptColumnWidget->setVisible(showDockRoot);
-        if (m_d->negativePromptBlock) {
-            const bool showNeg =
-                ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_negative_prompt")).toBool(true);
-            m_d->negativePromptBlock->setVisible(showDockRoot && showNeg);
-        }
+            m_d->rootPromptColumnWidget->setVisible(false);
+        if (m_d->negativePromptBlock)
+            m_d->negativePromptBlock->setVisible(false);
     });
     regLayout->addWidget(m_d->regionPromptWidget);
-    QHBoxLayout *regionBtns = new QHBoxLayout();
+    m_d->regionButtonsRowWidget = new QWidget(m_d->regionsGroupBox);
+    QHBoxLayout *regionBtns = new QHBoxLayout(m_d->regionButtonsRowWidget);
+    regionBtns->setContentsMargins(0, 0, 0, 0);
     m_d->btnAddRegion = new QPushButton(ComfyTr::tr("Add"));
     m_d->btnRemoveRegion = new QPushButton(ComfyTr::tr("Remove"));
     m_d->btnMoveRegionUp = new QPushButton(ComfyTr::tr("Up"));
@@ -2279,10 +2356,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     regionBtns->addWidget(m_d->btnMoveRegionUp);
     regionBtns->addWidget(m_d->btnMoveRegionDown);
     regionBtns->addWidget(m_d->btnGenerateRegions);
-    regLayout->addLayout(regionBtns);
+    regLayout->addWidget(m_d->regionButtonsRowWidget);
     setupRegionControlLayersUi(m_d->regionsGroupBox, nullptr);
-    if (m_d->regionPromptWidget && m_d->regionControlLayersGroupBox)
-        m_d->regionPromptWidget->embedRegionControlPanel(m_d->regionControlLayersGroupBox);
+    // FAITHFUL_PORT: control-layer list is reached via strength-row icons, not
+    // embedded in the compact region prompt stack (avoids overlap with empty-state text).
     scrollLayout->addWidget(m_d->regionsGroupBox);
 
     // §13.90: Apply PromptHeader from config (full / icon / none)
@@ -2304,6 +2381,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     loadRegionsFromConfig();
     refreshRegionsList();
+    finalizeGenerateWorkspaceLayout();
 
     int ws = m_d->comboWorkspace->currentIndex();
     const bool isGraph = (ws == 4);
@@ -2324,6 +2402,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     updateWelcomeVisibility();
     applyInterfaceAppearanceSettings();
+    updateGenerateOptions();
     applyQualitySamplerPresetFromSettings();
     refreshQueueResolutionRowVisibility();
     refreshAnimationTargetLayerCombo();
@@ -2641,10 +2720,9 @@ void ComfyUIRemoteDock::updateInpaintControlsForArch()
 {
     if (!m_d->comboCheckpoint)
         return;
-    const QString ckpt = m_d->comboCheckpoint->currentText().trimmed();
+    const QString ckpt = checkpointForGenerate();
     const ComfyResources::Arch arch =
-        ComfyResources::archFromKey(ComfyUIUtils::classifyCheckpointArch(ckpt.isEmpty() ? QStringLiteral("v1-5-pruned-emaonly.safetensors")
-                                                                                         : ckpt));
+        ComfyResources::archFromKey(ComfyUIUtils::classifyCheckpointArch(ckpt));
     const bool editArch = ComfyUIUtils::isArchEdit(ckpt);
     const bool editUi = m_d->checkEditMode && m_d->checkEditMode->isChecked();
     if (m_d->checkInpaintUseModel)
@@ -2772,6 +2850,55 @@ void ComfyUIRemoteDock::applyStyleIdFromDocumentDefaults(const QString &styleId)
     if (!m_d->comboPreset)
         return;
     applyStyleIdToPresetCombo(m_d->comboPreset, styleId);
+    if (m_d->comboPreset->currentIndex() > 0)
+        slotPresetChanged(m_d->comboPreset->currentIndex());
+}
+
+QString ComfyUIRemoteDock::checkpointForGenerate() const
+{
+    QString ckpt;
+    if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+        const int idx = m_d->comboPreset->currentIndex();
+        const int firstCustom = firstCustomPresetIndex();
+        if (idx >= firstCustom) {
+            const QString name = m_d->comboPreset->itemText(idx);
+            ckpt = KSharedConfig::openConfig()
+                       ->group(QStringLiteral("ComfyUIRemote_Preset_") + name)
+                       .readEntry(QStringLiteral("Checkpoint"), QString())
+                       .trimmed();
+        } else {
+            const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+            if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId)) {
+                if (!st->checkpoints.isEmpty()) {
+                    QStringList available;
+                    if (m_d->comboCheckpoint) {
+                        for (int i = 0; i < m_d->comboCheckpoint->count(); ++i)
+                            available.append(m_d->comboCheckpoint->itemText(i));
+                    }
+                    ckpt = ComfyFileLibrary::preferredCheckpoint(st->checkpoints, available);
+                    if (ckpt == QLatin1String("not-found"))
+                        ckpt = st->checkpoints.first();
+                }
+            }
+        }
+    }
+    if (ckpt.isEmpty() && m_d->comboCheckpoint)
+        ckpt = m_d->comboCheckpoint->currentText().trimmed();
+    if (ckpt.isEmpty())
+        ckpt = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    return ckpt;
+}
+
+void ComfyUIRemoteDock::syncCheckpointComboFromStyle()
+{
+    if (!m_d->comboCheckpoint)
+        return;
+    const QString ckpt = checkpointForGenerate();
+    const int ix = m_d->comboCheckpoint->findText(ckpt);
+    if (ix >= 0)
+        m_d->comboCheckpoint->setCurrentIndex(ix);
+    else if (!ckpt.isEmpty())
+        m_d->comboCheckpoint->setCurrentText(ckpt);
 }
 
 void ComfyUIRemoteDock::applyStyleIdToPresetCombo(QComboBox *cb, const QString &styleId)
@@ -2853,6 +2980,12 @@ void ComfyUIRemoteDock::readUpscaleRefinementSampling(int *outSteps, double *out
     const QString sch = cfgG.readEntry(QStringLiteral("Scheduler"), QString());
     if (!sch.isEmpty())
         *outScheduler = sch;
+}
+
+void ComfyUIRemoteDock::commitPromptEditorsFromUi()
+{
+    if (m_d->regionPromptWidget)
+        m_d->regionPromptWidget->commitRootPromptEditors();
 }
 
 void ComfyUIRemoteDock::persistDocumentDefaultsToSettings()
@@ -3532,6 +3665,7 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             }
             loadDocumentHistoryFromAnnotations();
             loadAnimationWorkspaceFromDocument();
+            tryBindPreviewLayerFromDocument();
         } else {
             if (m_d->documentSyncPoller)
                 m_d->documentSyncPoller->stop();
@@ -4103,7 +4237,7 @@ void ComfyUIRemoteDock::slotDocumentSyncPoll()
     if (selChanged) {
         m_d->lastPolledHadSelection = curHasSel;
         m_d->lastPolledSelectionBounds = curSelRect;
-        // Reserved for selection-driven UX (e.g. live bounds); inpaint/generate read selection at action time.
+        updateGenerateOptions();
     }
 
     if (curTime != m_d->lastPolledCurrentTime) {
@@ -4741,6 +4875,8 @@ void ComfyUIRemoteDock::setStatusMessage(const QString &msg, bool isError, bool 
     else
         qCWarning(KIS_COMFYUI_REMOTE) << "STATUS" << msg;
     if (!m_d->labelStatus) return;
+    if (isError || isWarning)
+        m_d->labelStatus->setVisible(true);
     m_d->labelStatus->setText(msg);
     // §13.27: theme colors — red for error, yellow for warning
     if (isError) {
@@ -4828,6 +4964,16 @@ QString ComfyUIRemoteDock::pathForCurrentHistoryRow(int *outEntryIndex, int *out
 
 void ComfyUIRemoteDock::refreshHistoryList()
 {
+    QString keepJobId;
+    int keepImageIndex = -1;
+    if (m_d->listHistory && m_d->listHistory->currentItem()) {
+        keepJobId = m_d->listHistory->currentItem()->data(Qt::UserRole).toString();
+        keepImageIndex = m_d->listHistory->currentItem()->data(Qt::UserRole + 1).toInt();
+    } else if (!m_d->previewHistoryJobId.isEmpty()) {
+        keepJobId = m_d->previewHistoryJobId;
+        keepImageIndex = m_d->previewHistoryImageIndex;
+    }
+
     m_d->listHistory->clear();
     const QSize iconSize = m_d->listHistory->iconSize();
     const int thumbW = iconSize.width();
@@ -4838,6 +4984,8 @@ void ComfyUIRemoteDock::refreshHistoryList()
     const int starSize = 24;
     QIcon starIcon = ComfyTheme::icon(QStringLiteral("star"));  // §13.153 / §13.28a
     QPixmap starPix = starIcon.pixmap(starSize, starSize);
+    int selectRow = -1;
+    int row = 0;
     // §13.131: One row per image (job_id + index); multi-image entries show multiple rows
     for (const Private::HistoryEntry &e : m_d->historyEntries) {
         QStringList paths = e.resultImagePaths;
@@ -4875,8 +5023,14 @@ void ComfyUIRemoteDock::refreshHistoryList()
             item->setData(Qt::UserRole, e.jobId);
             item->setData(Qt::UserRole + 1, imageIndex);
             m_d->listHistory->addItem(item);
+            if (!keepJobId.isEmpty() && e.jobId == keepJobId && imageIndex == keepImageIndex)
+                selectRow = row;
+            ++row;
         }
     }
+    if (selectRow >= 0)
+        m_d->listHistory->setCurrentRow(selectRow);
+    m_d->listHistory->updateOverlayButtons();
 }
 
 void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
@@ -4901,7 +5055,20 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     }
     const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(false);
     if (m_d->negativePromptBlock)
-        m_d->negativePromptBlock->setVisible(showNeg);
+        m_d->negativePromptBlock->setVisible(false);
+    if (m_d->rootPromptColumnWidget)
+        m_d->rootPromptColumnWidget->setVisible(false);
+    if (m_d->regionPromptWidget) {
+        m_d->regionPromptWidget->setShowNegativePrompt(showNeg);
+        m_d->regionPromptWidget->setPromptHeaderMode(2);
+    }
+    if (m_d->regionControlLayersGroupBox)
+        m_d->regionControlLayersGroupBox->setVisible(false);
+    if (m_d->historyButtonsRowWidget)
+        m_d->historyButtonsRowWidget->setVisible(false);
+    const bool onGenerate = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0;
+    if (m_d->labelStatus && onGenerate)
+        m_d->labelStatus->setVisible(false);
     const bool showResizeHandle = s.value(QStringLiteral("prompt_resize_handle")).toBool(true);
     if (m_d->promptResizeHandle)
         m_d->promptResizeHandle->setVisible(showResizeHandle);
@@ -4935,6 +5102,8 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     // verbose region heading label so the regions block reads cleanly.
     if (m_d->regionHeaderCombo) m_d->regionHeaderCombo->setVisible(false);
     if (m_d->regionHeaderLabel) m_d->regionHeaderLabel->setVisible(false);
+    if (m_d->regionButtonsRowWidget) m_d->regionButtonsRowWidget->setVisible(false);
+    if (m_d->labelPrompt) m_d->labelPrompt->setVisible(false);
     // FAITHFUL_PORT: the root "Control layers" groupbox (with "Add control layer"
     // button) is an advanced control-net workflow; upstream surfaces it via the
     // strength row's "Add control layer" icon, not a full groupbox on the home.
@@ -4991,7 +5160,7 @@ bool ComfyUIRemoteDock::isCurrentJsonStyleBuiltin() const
     return !st || st->isBuiltin;
 }
 
-bool ComfyUIRemoteDock::saveStyleEntry(const ComfyStyleEntry &entry, bool rebuildCombo)
+bool ComfyUIRemoteDock::saveStyleEntry(const ComfyStyleEntry &entry, bool rebuildCombo, bool applyToDock)
 {
     if (entry.styleId.isEmpty())
         return false;
@@ -5001,8 +5170,10 @@ bool ComfyUIRemoteDock::saveStyleEntry(const ComfyStyleEntry &entry, bool rebuil
         rebuildPresetComboItems();
     else
         updateStyleComboItemLabel(entry.styleId);
-    if (const ComfyStyleEntry *saved = ComfyStyleCollection::instance().findByStyleId(entry.styleId))
-        applyComfyStyleEntry(*saved);
+    if (applyToDock) {
+        if (const ComfyStyleEntry *saved = ComfyStyleCollection::instance().findByStyleId(entry.styleId))
+            applyComfyStyleEntry(*saved);
+    }
     return true;
 }
 
@@ -5013,7 +5184,7 @@ void ComfyUIRemoteDock::updateStyleComboItemLabel(const QString &styleId)
     for (int i = 1; i < m_d->comboPreset->count(); ++i) {
         if (m_d->comboPreset->itemData(i).toString() == styleId) {
             if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
-                m_d->comboPreset->setItemText(i, ComfyStyleCollection::comboDisplayName(*st));
+                m_d->comboPreset->setItemText(i, ComfyStyleCollection::comboPresetName(*st));
             break;
         }
     }
@@ -5062,6 +5233,8 @@ void ComfyUIRemoteDock::applyComfyStyleEntry(const ComfyStyleEntry &style)
     if (!style.stylePrompt.contains(QStringLiteral("{prompt}")))
         m_d->editPrompt->setPlainText(style.stylePrompt);
     m_d->editNegative->setPlainText(style.negativePrompt);
+    if (m_d->regionPromptWidget)
+        m_d->regionPromptWidget->refreshRootPromptFromDock();
 
     if (style.preferredResolution > 0) {
         const int side = style.preferredResolution;
@@ -5134,7 +5307,7 @@ void ComfyUIRemoteDock::rebuildPresetComboItems()
     const bool showBuiltin = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true);
     const QList<const ComfyStyleEntry *> styles = ComfyStyleCollection::instance().filtered(showBuiltin);
     for (const ComfyStyleEntry *s : styles) {
-        m_d->comboPreset->addItem(ComfyStyleCollection::comboDisplayName(*s));
+        m_d->comboPreset->addItem(ComfyStyleCollection::comboPresetName(*s));
         const int idx = m_d->comboPreset->count() - 1;
         m_d->comboPreset->setItemData(idx, s->styleId);
         const QString ckpt = s->checkpoints.isEmpty() ? QString() : s->checkpoints.first();
@@ -5405,6 +5578,7 @@ void ComfyUIRemoteDock::refreshRegionsList()
         m_d->regionPromptWidget->refresh();
     }
     refreshRegionControlLayersList();
+    updateGenerateOptions();
 }
 
 void ComfyUIRemoteDock::loadRegionsFromConfig()

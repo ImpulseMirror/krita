@@ -49,6 +49,7 @@ private slots:
     void testUnionControlNetTypeForMode();
     void testLoadCheckpointWithLoraInsertsLoraLoader();
     void testBuildRefineRegionColorMatchNode();
+    void testBuildRefineRegionDifferentialDiffusionNoCycle();
 };
 
 void ComfyPortP51Test::init()
@@ -450,6 +451,36 @@ void ComfyPortP51Test::testBuildRefineRegionUsesInpaintGraph()
     }
     QVERIFY(hasMaskLoad);
     QVERIFY(hasSamplerCustom);
+    bool hasVaeEncode = false;
+    bool hasLatentNoiseMask = false;
+    bool hasInpaintEncode = false;
+    bool hasMaskedFill = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("VAEEncode"))
+            hasVaeEncode = true;
+        if (cls == QLatin1String("SetLatentNoiseMask"))
+            hasLatentNoiseMask = true;
+        if (cls == QLatin1String("VAEEncodeForInpaint"))
+            hasInpaintEncode = true;
+        if (cls == QLatin1String("INPAINT_MaskedFill") || cls == QLatin1String("INPAINT_MaskedBlur"))
+            hasMaskedFill = true;
+    }
+    QVERIFY(hasVaeEncode);
+    QVERIFY(hasLatentNoiseMask);
+    QVERIFY(!hasInpaintEncode);
+    QVERIFY(!hasMaskedFill);
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        if (node.value(QStringLiteral("class_type")).toString() != QLatin1String("VAEEncode"))
+            continue;
+        const QJsonArray vae =
+            node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("vae")).toArray();
+        QVERIFY2(vae.size() >= 2, "VAEEncode vae link missing");
+        QCOMPARE(vae.at(0).toString(), QStringLiteral("4"));
+        QCOMPARE(vae.at(1).toInt(), 2);
+        break;
+    }
 }
 
 void ComfyPortP51Test::testUnionControlNetTypeForMode()
@@ -526,13 +557,58 @@ void ComfyPortP51Test::testBuildRefineRegionColorMatchNode()
     rp.refine.arch = ComfyResources::Arch::Sd15;
     rp.colorMatch = true;
     const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
-    bool hasColorMatch = false;
+    QString colorMatchId;
     for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
         if (it.value().toObject().value(QStringLiteral("class_type")).toString()
-            == QLatin1String("INPAINT_ColorMatch"))
-            hasColorMatch = true;
+            == QLatin1String("INPAINT_ColorMatch")) {
+            colorMatchId = it.key();
+            const QJsonArray target =
+                it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("target")).toArray();
+            QVERIFY2(target.size() >= 2, "ColorMatch target missing");
+            QVERIFY2(target.at(0).toString() == QStringLiteral("9"), "ColorMatch target must stay on decode node 9");
+            QVERIFY2(target.at(0).toString() != colorMatchId, "ColorMatch must not target itself");
+        }
     }
-    QVERIFY(hasColorMatch);
+    QVERIFY2(!colorMatchId.isEmpty(), "ColorMatch node missing");
+    const QJsonObject save = wf.value(QStringLiteral("10")).toObject();
+    const QJsonArray saveImages =
+        save.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
+    QCOMPARE(saveImages.at(0).toString(), colorMatchId);
+}
+
+void ComfyPortP51Test::testBuildRefineRegionDifferentialDiffusionNoCycle()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.refine.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sdxl;
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    QString diffId;
+    QString modelSourceId;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("DifferentialDiffusion")) {
+            diffId = it.key();
+            const QJsonArray model =
+                it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("model")).toArray();
+            QVERIFY2(model.size() >= 2, "DifferentialDiffusion model input missing");
+            modelSourceId = model.at(0).toString();
+            QVERIFY2(modelSourceId != diffId, "DifferentialDiffusion must not reference itself");
+        }
+    }
+    QVERIFY2(!diffId.isEmpty(), "DifferentialDiffusion node missing");
+    QVERIFY2(!modelSourceId.isEmpty(), "DifferentialDiffusion model source missing");
+    bool samplerUsesDiff = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls != QLatin1String("SamplerCustomAdvanced") && cls != QLatin1String("KSampler"))
+            continue;
+        const QJsonArray model =
+            it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("model")).toArray();
+        if (model.size() >= 2 && model.at(0).toString() == diffId)
+            samplerUsesDiff = true;
+    }
+    QVERIFY2(samplerUsesDiff, "Sampler must use DifferentialDiffusion output");
 }
 
 void ComfyPortP51Test::testWorkflowEngineStyleVaeAndClipSkip()

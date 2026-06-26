@@ -12,6 +12,9 @@
 #include "ComfyWorkflowEngine.h"
 #include "ComfyControlLayer.h"
 #include "ComfyRegionProcess.h"
+#include "ComfyRegionLink.h"
+#include "ComfyRegionPromptWidget.h"
+#include "ComfyTheme.h"
 #include "ComfyUIUtils.h"
 #include <QUrl>
 #include <QNetworkRequest>
@@ -25,9 +28,15 @@
 #include <QUuid>
 #include <QRandomGenerator>
 #include <QLoggingCategory>
+#include <QMenu>
+#include <QAction>
+#include <QSignalBlocker>
+#include <QPoint>
+#include <optional>
 #include <klocalizedstring.h>
 #include <kis_icon_utils.h>
 #include <kis_types.h>
+#include <kis_selection.h>
 #include <kis_image.h>
 #include <KisViewManager.h>
 #include <KisDocument.h>
@@ -140,6 +149,7 @@ QString samplerPositiveNodeId(const QJsonObject &workflow)
 }
 
 ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const ComfyUIRemoteDock::Private *d,
+                                                                       const QString &checkpoint,
                                                                        int frameIndex,
                                                                        qint64 batchBaseSeed,
                                                                        int batchSeedStep,
@@ -147,9 +157,8 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
                                                                        const QJsonArray &styleLoras)
 {
     ComfyWorkflowEngine::AnimationFrameParams af;
-    const QString ckpt = d->comboCheckpoint->currentText().trimmed().isEmpty()
-        ? QStringLiteral("v1-5-pruned-emaonly.safetensors")
-        : d->comboCheckpoint->currentText().trimmed();
+    const QString ckpt = checkpoint.trimmed().isEmpty() ? QStringLiteral("v1-5-pruned-emaonly.safetensors")
+                                                        : checkpoint.trimmed();
     af.base.arch = ComfyWorkflowEngine::resolveArch(ckpt, styleArch);
     af.base.checkpoint = ckpt;
     const qint64 seed = ComfyWorkflowEngine::animationFrameSeed(batchBaseSeed, frameIndex, batchSeedStep);
@@ -213,6 +222,7 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
 // §13.126: End-to-end flow — user action → workflow build (check_color_mode) → queue per QueueMode → POST prompt → poll result → history + UI → Apply
 void ComfyUIRemoteDock::slotGenerate()
 {
+    commitPromptEditorsFromUi();
     // FAITHFUL_PORT/DEBUG: snapshot every decision input at the top so logcat
     // shows exactly which precondition tripped when "nothing happens" on click.
     const QString dbgUrl = m_d->editServerUrl ? m_d->editServerUrl->text().trimmed() : QStringLiteral("<null editServerUrl>");
@@ -254,6 +264,10 @@ void ComfyUIRemoteDock::slotGenerate()
         setStatusMessage(ComfyTr::tr("Enter a server URL in Settings → Connection."), true);
         return;
     }
+
+    syncCheckpointComboFromStyle();
+    const QString resolvedCheckpoint = checkpointForGenerate();
+    qCWarning(KIS_COMFYUI_REMOTE).nospace() << "slotGenerate checkpoint=" << resolvedCheckpoint;
 
     // FAITHFUL_PORT: when the Size row is hidden (compact / Android view) the
     // user never sees the W/H spinners, so they keep their construction-time
@@ -601,7 +615,7 @@ void ComfyUIRemoteDock::slotGenerate()
         const ComfyUIUtils::LinkedEditStyleOverride link = ComfyUIUtils::linkedEditStyleOverride(
             editMode,
             linkedEditStyleId,
-            m_d->comboCheckpoint->currentText().trimmed(),
+            resolvedCheckpoint,
             m_d->spinSteps->value(),
             m_d->spinCfg->value(),
             (m_d->spinStrength ? m_d->spinStrength->value() : 100) / 100.0,
@@ -940,7 +954,8 @@ void ComfyUIRemoteDock::slotBatchSubmitNext()
         }
         const QJsonArray styleLoras = currentStyleLoras();
         const ComfyWorkflowEngine::AnimationFrameParams af = animationFrameParamsFromDock(
-            m_d.data(), m_d->batchSubmitIndex, m_d->batchBaseSeed, m_d->batchSeedStep, styleArch, styleLoras);
+            m_d.data(), checkpointForGenerate(), m_d->batchSubmitIndex, m_d->batchBaseSeed, m_d->batchSeedStep,
+            styleArch, styleLoras);
         workflow = ComfyWorkflowEngine::buildAnimationFrame(af);
         if (workflow.isEmpty())
             return;
@@ -1583,6 +1598,11 @@ void ComfyUIRemoteDock::slotControlPreviewPoll()
         }
         const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
         const QJsonObject hist = root.value(m_d->controlPreviewPromptId).toObject();
+        if (const QString execErr = ComfyUIUtils::comfyHistoryExecutionError(hist); !execErr.isEmpty()) {
+            setStatusMessage(execErr, true);
+            stopControlPreviewPolling();
+            return;
+        }
         const QJsonObject outputs = hist.value(QStringLiteral("outputs")).toObject();
         if (outputs.isEmpty()) {
             m_d->controlPreviewPollCount++;
@@ -2140,14 +2160,6 @@ bool ComfyUIRemoteDock::tryStartRefineFromGenerate()
         << " customWorkflowLen="
         << (m_d->editCustomWorkflow ? m_d->editCustomWorkflow->toPlainText().trimmed().size() : -1);
 
-    // FAITHFUL_PORT: a partial selection means "operate on the selection",
-    // independent of strength. Spec / Python plugin: Generate with a marquee
-    // selection routes through the Fill (inpaint) pipeline so the result is
-    // masked back into the selected region instead of replacing the whole
-    // canvas. Previously we only honoured this when strength<100 || editMode,
-    // so on a 100% Generate the selection was silently ignored and the user
-    // got a full-canvas txt2img laid over their work. Custom-workflow path
-    // still bypasses (the user's JSON owns the layout).
     if (m_d->editCustomWorkflow && !m_d->editCustomWorkflow->toPlainText().trimmed().isEmpty()) {
         qCWarning(KIS_COMFYUI_REMOTE) << "tryStartRefineFromGenerate: custom workflow present → returning false";
         return false;
@@ -2169,6 +2181,23 @@ bool ComfyUIRemoteDock::tryStartRefineFromGenerate()
             << " docBounds=" << image->bounds();
         slotInpaint();
         return true;
+    }
+
+    const bool regionOnly = m_d->checkRegionOnly && m_d->checkRegionOnly->isChecked();
+    if (regionOnly && image) {
+        const QList<Private::RegionEntry> regs = comfyActiveRegionEntries(m_d.data());
+        const int row = comfyActiveRegionRow(m_d.data());
+        if (row >= 0 && row < regs.size()) {
+            const ComfyRegionProcess::RegionInpaintMask rim =
+                ComfyRegionProcess::getRegionInpaintMask(image, m_d->viewManager, regs.at(row));
+            if (rim.valid) {
+                qCWarning(KIS_COMFYUI_REMOTE)
+                    << "tryStartRefineFromGenerate: region-only inpaint, routing through slotInpaint() bounds="
+                    << rim.bounds;
+                slotInpaint();
+                return true;
+            }
+        }
     }
 
     if (strengthPct >= 100 && !editMode) {
@@ -2265,7 +2294,7 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
         const ComfyUIUtils::LinkedEditStyleOverride link = ComfyUIUtils::linkedEditStyleOverride(
             editMode,
             linkedEditStyleId,
-            m_d->comboCheckpoint->currentText().trimmed(),
+            checkpointForGenerate(),
             m_d->spinSteps->value(),
             m_d->spinCfg->value(),
             (m_d->spinStrength ? m_d->spinStrength->value() : 100) / 100.0,
@@ -2278,7 +2307,6 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
             if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
                 styleArch = st->architecture;
         }
-
         QString userPos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
         QString promptText = link.active
             ? ComfyUIUtils::mergeStylePromptWithInstruction(link.stylePositiveTemplate, userPos).trimmed()
@@ -2343,4 +2371,298 @@ void ComfyUIRemoteDock::uploadCanvasForRefineGenerate()
         m_d->generateProcessedRegions.clear();
         beginGenerateUploadPipeline();
     });
+}
+
+namespace {
+
+bool dockHasPartialSelection(ComfyUIRemoteDock::Private *d)
+{
+    if (!d || !d->viewManager)
+        return false;
+    KisSelectionSP sel = d->viewManager->selection();
+    if (!sel || !sel->pixelSelection())
+        return false;
+    const QRect r = sel->pixelSelection()->selectedExactRect();
+    if (r.isEmpty())
+        return false;
+    KisImageSP img = d->viewManager->image();
+    if (!img)
+        return true;
+    return !ComfyUIUtils::isSelectionEntireDocument(img, d->viewManager);
+}
+
+QString currentInpaintModeKey(ComfyUIRemoteDock::Private *d)
+{
+    if (!d->comboInpaintMode)
+        return QStringLiteral("automatic");
+    return d->comboInpaintMode->currentData().toString();
+}
+
+void setInpaintModeKey(ComfyUIRemoteDock::Private *d, const QString &mode)
+{
+    if (!d->comboInpaintMode)
+        return;
+    const int ix = d->comboInpaintMode->findData(mode);
+    if (ix >= 0)
+        d->comboInpaintMode->setCurrentIndex(ix);
+}
+
+QString inpaintModeLabel(ComfyUIRemoteDock::Private *d, const QString &mode)
+{
+    if (!d->comboInpaintMode)
+        return mode;
+    const int ix = d->comboInpaintMode->findData(mode);
+    return ix >= 0 ? d->comboInpaintMode->itemText(ix) : mode;
+}
+
+} // namespace
+
+void ComfyUIRemoteDock::setupGenerateInpaintMenus()
+{
+    auto mk = [this](const QString &mode, const QString &text, const QString &icon, std::optional<bool> edit) {
+        QAction *a = new QAction(text, this);
+        a->setIcon(ComfyTheme::icon(icon));
+        connect(a, &QAction::triggered, this, [this, mode, edit]() {
+            setInpaintModeKey(m_d.data(), mode);
+            if (edit.has_value() && m_d->checkEditMode)
+                m_d->checkEditMode->setChecked(*edit);
+            updateGenerateOptions();
+        });
+        return a;
+    };
+
+    m_d->menuGenerate = new QMenu(this);
+    m_d->menuGenerate->addAction(mk(QStringLiteral("automatic"), ComfyTr::tr("Generate"),
+                                    QStringLiteral("workspace-generation"), false));
+    m_d->menuGenerate->addAction(mk(QStringLiteral("automatic"), ComfyTr::tr("Edit"), QStringLiteral("edit"), true));
+
+    m_d->menuInpaint = new QMenu(this);
+    m_d->menuInpaint->addAction(mk(QStringLiteral("automatic"), inpaintModeLabel(m_d.data(), QStringLiteral("automatic")),
+                                  QStringLiteral("inpaint-automatic"), false));
+    m_d->menuInpaint->addAction(mk(QStringLiteral("fill"), inpaintModeLabel(m_d.data(), QStringLiteral("fill")),
+                                  QStringLiteral("inpaint-fill"), false));
+    m_d->menuInpaint->addAction(mk(QStringLiteral("expand"), inpaintModeLabel(m_d.data(), QStringLiteral("expand")),
+                                  QStringLiteral("inpaint-expand"), false));
+    m_d->menuInpaint->addAction(mk(QStringLiteral("add_object"), inpaintModeLabel(m_d.data(), QStringLiteral("add_object")),
+                                  QStringLiteral("inpaint-add_object"), false));
+    m_d->menuInpaint->addAction(
+        mk(QStringLiteral("remove_object"), inpaintModeLabel(m_d.data(), QStringLiteral("remove_object")),
+           QStringLiteral("inpaint-remove_object"), false));
+    m_d->menuInpaint->addAction(
+        mk(QStringLiteral("replace_background"), inpaintModeLabel(m_d.data(), QStringLiteral("replace_background")),
+           QStringLiteral("inpaint-replace_background"), false));
+    m_d->menuInpaint->addAction(mk(QStringLiteral("add_object"), ComfyTr::tr("Edit"), QStringLiteral("edit"), true));
+    m_d->menuInpaint->addAction(mk(QStringLiteral("custom"), inpaintModeLabel(m_d.data(), QStringLiteral("custom")),
+                                  QStringLiteral("inpaint-custom"), std::nullopt));
+
+    m_d->menuGenerateRegion = new QMenu(this);
+    m_d->menuGenerateRegion->addAction(
+        mk(QStringLiteral("automatic"), ComfyTr::tr("Generate Region"), QStringLiteral("generate-region"), false));
+    m_d->menuGenerateRegion->addAction(mk(QStringLiteral("custom"), ComfyTr::tr("Generate Region (Custom)"),
+                                         QStringLiteral("inpaint-custom"), std::nullopt));
+
+    m_d->menuRefine = new QMenu(this);
+    m_d->menuRefine->addAction(mk(QStringLiteral("automatic"), ComfyTr::tr("Refine"), QStringLiteral("refine"), false));
+    m_d->menuRefine->addAction(mk(QStringLiteral("automatic"), ComfyTr::tr("Edit"), QStringLiteral("edit"), true));
+
+    m_d->menuRefineSelection = new QMenu(this);
+    m_d->menuRefineSelection->addAction(
+        mk(QStringLiteral("automatic"), ComfyTr::tr("Refine"), QStringLiteral("refine"), false));
+    m_d->menuRefineSelection->addAction(
+        mk(QStringLiteral("automatic"), ComfyTr::tr("Edit"), QStringLiteral("edit"), true));
+    m_d->menuRefineSelection->addAction(
+        mk(QStringLiteral("custom"), ComfyTr::tr("Refine (Custom)"), QStringLiteral("inpaint-custom"), std::nullopt));
+
+    m_d->menuRefineRegion = new QMenu(this);
+    m_d->menuRefineRegion->addAction(
+        mk(QStringLiteral("automatic"), ComfyTr::tr("Refine Region"), QStringLiteral("refine-region"), false));
+    m_d->menuRefineRegion->addAction(mk(QStringLiteral("custom"), ComfyTr::tr("Refine Region (Custom)"),
+                                        QStringLiteral("inpaint-custom"), std::nullopt));
+
+    m_d->menuEdit = new QMenu(this);
+    m_d->menuEdit->addAction(mk(QStringLiteral("automatic"), ComfyTr::tr("Edit"), QStringLiteral("edit"), true));
+    m_d->menuEdit->addAction(
+        mk(QStringLiteral("custom"), ComfyTr::tr("Edit (Custom)"), QStringLiteral("inpaint-custom"), std::nullopt));
+}
+
+void ComfyUIRemoteDock::showInpaintModeMenu()
+{
+    if (!m_d->btnGenerate || !m_d->btnInpaintMode)
+        return;
+
+    const bool isEdit = m_d->checkEditMode && m_d->checkEditMode->isChecked();
+    const bool regionOnly = m_d->checkRegionOnly && m_d->checkRegionOnly->isChecked();
+    const bool hasSelection = dockHasPartialSelection(m_d.data());
+    const int strength = m_d->spinStrength ? m_d->spinStrength->value() : 100;
+    const QString ckpt = checkpointForGenerate();
+    const bool canEdit = ComfyUIUtils::isArchEdit(ckpt);
+
+    QMenu *menu = m_d->menuGenerate;
+    if (!isEdit && canEdit && !hasSelection && !regionOnly) {
+        menu = m_d->menuEdit;
+    } else if (strength >= 100) {
+        if (regionOnly)
+            menu = m_d->menuGenerateRegion;
+        else if (hasSelection)
+            menu = m_d->menuInpaint;
+        else
+            menu = m_d->menuGenerate;
+    } else {
+        if (regionOnly)
+            menu = m_d->menuRefineRegion;
+        else if (hasSelection)
+            menu = m_d->menuRefineSelection;
+        else
+            menu = m_d->menuRefine;
+    }
+
+    if (!menu)
+        return;
+
+    for (QAction *a : menu->actions()) {
+        if (a->text() == ComfyTr::tr("Edit"))
+            a->setEnabled(canEdit);
+    }
+
+    const int width = m_d->btnGenerate->width() + m_d->btnInpaintMode->width();
+    menu->setFixedWidth(qMax(width, 160));
+    const QPoint pos(0, m_d->btnGenerate->height());
+    menu->exec(m_d->btnGenerate->mapToGlobal(pos));
+}
+
+void ComfyUIRemoteDock::updateGenerateOptions()
+{
+    if (!m_d->canvas || !m_d->btnGenerate)
+        return;
+    KisImageSP image = m_d->canvas->image().toStrongRef();
+    if (!image)
+        return;
+
+    const QList<Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
+    const bool hasRegions = !regs.isEmpty();
+    bool hasActiveRegion = false;
+    if (m_d->viewManager && hasRegions) {
+        const int idx = ComfyRegionLink::findRegionIndexForLayer(
+            regs, m_d->viewManager->image(), m_d->viewManager->activeLayer(), ComfyRegionLink::LinkMode::Any);
+        hasActiveRegion = idx >= 0;
+    }
+    const bool regionOnly =
+        hasRegions && hasActiveRegion && m_d->checkRegionOnly && m_d->checkRegionOnly->isChecked();
+    const bool isEdit = m_d->checkEditMode && m_d->checkEditMode->isChecked();
+    const bool hasSelection = dockHasPartialSelection(m_d.data());
+    const int strengthPct = m_d->spinStrength ? m_d->spinStrength->value() : 100;
+    const double strength = strengthPct / 100.0;
+    const QString mode = currentInpaintModeKey(m_d.data());
+    QString displayMode = mode;
+    if (hasSelection && mode == QLatin1String("automatic") && m_d->viewManager) {
+        if (KisSelectionSP sel = m_d->viewManager->selection()) {
+            if (sel->pixelSelection()) {
+                const QRect r = sel->pixelSelection()->selectedExactRect();
+                if (!r.isEmpty())
+                    displayMode = ComfyUIUtils::detectInpaintMode(image->width(), image->height(),
+                                                                  r.x(), r.y(), r.width(), r.height());
+            }
+        }
+    }
+    const bool isCustom = mode == QLatin1String("custom");
+    const QString ckpt = checkpointForGenerate();
+    const bool canEdit = ComfyUIUtils::isArchEdit(ckpt);
+
+    if (m_d->layerCountRow)
+        m_d->layerCountRow->setVisible(false); // qwen_l arch: enable when style exposes layered arch
+
+    if (m_d->btnRegionMask) {
+        m_d->btnRegionMask->setVisible(hasRegions);
+        m_d->btnRegionMask->setEnabled(hasActiveRegion);
+        m_d->btnRegionMask->setIcon(ComfyTheme::icon(regionOnly ? QStringLiteral("region-alpha-active")
+                                                                : QStringLiteral("region-alpha")));
+        if (m_d->checkRegionOnly) {
+            QSignalBlocker b(m_d->btnRegionMask);
+            m_d->btnRegionMask->setChecked(m_d->checkRegionOnly->isChecked());
+        }
+    }
+
+    if (m_d->customInpaintRowWidget)
+        m_d->customInpaintRowWidget->setVisible(isCustom && (hasSelection || regionOnly));
+
+    QString text;
+    QString iconName;
+    if (!hasSelection && !regionOnly) {
+        if (m_d->btnInpaintMode)
+            m_d->btnInpaintMode->setVisible(canEdit);
+        if (isEdit) {
+            iconName = QStringLiteral("edit");
+            text = ComfyTr::tr("Edit");
+        } else if (strength >= 1.0) {
+            iconName = QStringLiteral("workspace-generation");
+            text = ComfyTr::tr("Generate");
+        } else {
+            iconName = QStringLiteral("refine");
+            text = ComfyTr::tr("Refine");
+        }
+    } else {
+        if (m_d->btnInpaintMode)
+            m_d->btnInpaintMode->setVisible(true);
+        if (isEdit) {
+            text = ComfyTr::tr("Edit");
+            iconName = isCustom ? QStringLiteral("inpaint-custom") : QStringLiteral("edit");
+        } else if (isCustom) {
+            text = (strength < 1.0 ? ComfyTr::tr("Refine") : ComfyTr::tr("Generate")) + QLatin1Char(' ')
+                   + ComfyTr::tr("(Custom)");
+            iconName = QStringLiteral("inpaint-custom");
+        } else if (regionOnly) {
+            text = (strength < 1.0 ? ComfyTr::tr("Refine") : ComfyTr::tr("Generate")) + QLatin1Char(' ')
+                   + ComfyTr::tr("Region");
+            iconName = strength < 1.0 ? QStringLiteral("refine-region") : QStringLiteral("generate-region");
+        } else {
+            // Keep Fill/Expand/… label at any strength; workflow still refines when strength < 100%.
+            text = inpaintModeLabel(m_d.data(), displayMode);
+            iconName = QStringLiteral("inpaint-") + displayMode;
+        }
+    }
+
+    m_d->btnGenerate->setText(text);
+    if (!iconName.isEmpty())
+        m_d->btnGenerate->setIcon(ComfyTheme::icon(iconName));
+}
+
+void ComfyUIRemoteDock::finalizeGenerateWorkspaceLayout()
+{
+    if (!m_d->genContentContainer || !m_d->regionPromptWidget)
+        return;
+    auto *lay = qobject_cast<QVBoxLayout *>(m_d->genContentContainer->layout());
+    if (!lay)
+        return;
+
+    if (m_d->labelPrompt)
+        m_d->labelPrompt->setVisible(false);
+    if (m_d->rootPromptColumnWidget) {
+        m_d->rootPromptColumnWidget->setVisible(false);
+        lay->removeWidget(m_d->rootPromptColumnWidget);
+    }
+    if (m_d->negativePromptBlock) {
+        m_d->negativePromptBlock->setVisible(false);
+        lay->removeWidget(m_d->negativePromptBlock);
+    }
+
+    m_d->regionPromptWidget->setParent(m_d->genContentContainer);
+    lay->removeWidget(m_d->regionPromptWidget);
+    int insertAt = 0;
+    lay->insertWidget(insertAt, m_d->regionPromptWidget);
+
+    if (m_d->histGroupBox && m_d->progressBar) {
+        if (m_d->histGroupBox->parentWidget() != m_d->genContentContainer) {
+            if (QWidget *oldParent = m_d->histGroupBox->parentWidget()) {
+                if (QLayout *oldLay = oldParent->layout())
+                    oldLay->removeWidget(m_d->histGroupBox);
+            }
+            m_d->histGroupBox->setParent(m_d->genContentContainer);
+        }
+        lay->removeWidget(m_d->histGroupBox);
+        const int afterProgress = lay->indexOf(m_d->progressBar) + 1;
+        lay->insertWidget(afterProgress, m_d->histGroupBox);
+    }
+
+    if (m_d->regionsGroupBox)
+        m_d->regionsGroupBox->setVisible(false);
 }

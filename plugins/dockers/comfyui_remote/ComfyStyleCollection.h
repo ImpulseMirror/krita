@@ -62,6 +62,8 @@ public:
     QString saveEntryToUserStyles(const ComfyStyleEntry &entry);
 
     static QString comboDisplayName(const ComfyStyleEntry &entry);
+    /// Short label for the main docker style combo (name only, no filename).
+    static QString comboPresetName(const ComfyStyleEntry &entry);
     /// Create user style JSON; returns styleId or empty. copyFromStyleId optional.
     QString createStyle(const QString &checkpoint = QString(), const QString &copyFromStyleId = QString());
     bool deleteUserStyle(const QString &styleId);

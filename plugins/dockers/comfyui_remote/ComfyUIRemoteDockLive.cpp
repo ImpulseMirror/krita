@@ -201,9 +201,7 @@ void ComfyUIRemoteDock::uploadLiveCanvasAndPrompt()
             m_d->liveTimer->start(30000);
             return;
         }
-        const QString ckptName = m_d->comboCheckpoint->currentText().trimmed().isEmpty()
-            ? QStringLiteral("v1-5-pruned-emaonly.safetensors")
-            : m_d->comboCheckpoint->currentText().trimmed();
+        const QString ckptName = checkpointForGenerate();
         QString styleArch;
         if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
             const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
@@ -212,6 +210,7 @@ void ComfyUIRemoteDock::uploadLiveCanvasAndPrompt()
         }
         const quint32 liveSeed =
             static_cast<quint32>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
+        commitPromptEditorsFromUi();
         QString livePos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
         livePos = ComfyUIUtils::evalWildcards(livePos, liveSeed);
         ComfyUIUtils::extractLayerPlaceholders(livePos);
@@ -311,6 +310,13 @@ void ComfyUIRemoteDock::slotLivePoll()
         if (!m_d->checkLiveMode->isChecked()) { m_d->livePromptId.clear(); stopLiveSpinner(); return; }
         if (reply->error() != QNetworkReply::NoError) { m_d->livePromptId.clear(); stopLiveSpinner(); m_d->liveTimer->start(30000); return; }
         QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->livePromptId).toObject();
+        if (const QString execErr = ComfyUIUtils::comfyHistoryExecutionError(hist); !execErr.isEmpty()) {
+            setStatusMessage(execErr, true);
+            m_d->livePromptId.clear();
+            stopLiveSpinner();
+            m_d->liveTimer->start(30000);
+            return;
+        }
         QJsonObject outputs = hist.value("outputs").toObject();
         if (outputs.isEmpty()) {
             m_d->livePollCount++;

@@ -167,9 +167,7 @@ void ComfyUIRemoteDock::continueUpscaleAfterCanvasUpload(int canvasW, int canvas
             }
             QString ckpt = checkpointNameForUpscaleRefinementPreset();
             if (ckpt.isEmpty())
-                ckpt = m_d->comboCheckpoint ? m_d->comboCheckpoint->currentText().trimmed() : QString();
-            if (ckpt.isEmpty())
-                ckpt = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+                ckpt = checkpointForGenerate();
             QString styleArch;
             if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
                 const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
@@ -692,6 +690,13 @@ void ComfyUIRemoteDock::slotUpscalePoll()
             return;
         }
         QJsonObject hist = QJsonDocument::fromJson(reply->readAll()).object().value(m_d->upscalePromptId).toObject();
+        if (const QString execErr = ComfyUIUtils::comfyHistoryExecutionError(hist); !execErr.isEmpty()) {
+            setStatusMessage(execErr, true);
+            m_d->upscalePromptId.clear();
+            m_d->btnUpscale->setEnabled(true);
+            m_d->progressBar->setValue(0);
+            return;
+        }
         QJsonObject outputs = hist.value("outputs").toObject();
         if (outputs.isEmpty()) {
             m_d->upscalePollCount++;

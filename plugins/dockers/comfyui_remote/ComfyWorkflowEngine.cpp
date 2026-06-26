@@ -145,7 +145,8 @@ static void replaceAllLinksFromNode(QJsonObject *workflow, const QString &fromNo
     replaceInputLink(workflow, QJsonArray{fromNode, fromSlot}, QJsonArray{toNode, toSlot});
 }
 
-static QString insertInpaintExpandMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int grow, int feather)
+static QString insertInpaintExpandMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int grow, int feather,
+                                       int maskSlot = 1)
 {
     if (grow <= 0 && feather <= 0)
         return maskNodeId;
@@ -153,10 +154,21 @@ static QString insertInpaintExpandMask(QJsonObject *workflow, int *nextId, const
     workflow->insert(id,
                      QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_ExpandMask")},
                                  {QStringLiteral("inputs"),
-                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, 1}},
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
                                               {QStringLiteral("grow"), grow},
                                               {QStringLiteral("blur"), feather},
                                               {QStringLiteral("blur_type"), QStringLiteral("linear")}}}});
+    return id;
+}
+
+static QString insertImageToMask(QJsonObject *workflow, int *nextId, const QString &imageNodeId, const QString &channel)
+{
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageToMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("image"), QJsonArray{imageNodeId, 0}},
+                                              {QStringLiteral("channel"), channel}}}});
     return id;
 }
 
@@ -166,6 +178,118 @@ static QString insertDifferentialDiffusion(QJsonObject *workflow, int *nextId, c
     workflow->insert(id,
                      QJsonObject{{QStringLiteral("class_type"), QStringLiteral("DifferentialDiffusion")},
                                  {QStringLiteral("inputs"), QJsonObject{{QStringLiteral("model"), QJsonArray{modelNodeId, 0}}}}});
+    return id;
+}
+
+static QString insertCropMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int maskSlot, const QRect &bounds)
+{
+    if (!workflow || bounds.isEmpty())
+        return maskNodeId;
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CropMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
+                                              {QStringLiteral("x"), bounds.x()},
+                                              {QStringLiteral("y"), bounds.y()},
+                                              {QStringLiteral("width"), bounds.width()},
+                                              {QStringLiteral("height"), bounds.height()}}}});
+    return id;
+}
+
+static QString insertCropImage(QJsonObject *workflow, int *nextId, const QString &imageNodeId, int imageSlot, const QRect &bounds)
+{
+    if (!workflow || bounds.isEmpty())
+        return imageNodeId;
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageCrop")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("image"), QJsonArray{imageNodeId, imageSlot}},
+                                              {QStringLiteral("x"), bounds.x()},
+                                              {QStringLiteral("y"), bounds.y()},
+                                              {QStringLiteral("width"), bounds.width()},
+                                              {QStringLiteral("height"), bounds.height()}}}});
+    return id;
+}
+
+static QString insertShrinkMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int maskSlot, int shrink, int blur)
+{
+    if (!workflow || shrink <= 0 && blur <= 0)
+        return maskNodeId;
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_ShrinkMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
+                                              {QStringLiteral("shrink"), qMax(0, shrink)},
+                                              {QStringLiteral("blur"), qMax(0, blur)},
+                                              {QStringLiteral("blur_type"), QStringLiteral("gaussian")}}}});
+    return id;
+}
+
+static QString insertApplyMaskToImage(QJsonObject *workflow, int *nextId, const QString &imageNodeId, int imageSlot,
+                                      const QString &maskNodeId, int maskSlot)
+{
+    if (!workflow || imageNodeId.isEmpty() || maskNodeId.isEmpty())
+        return imageNodeId;
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_ApplyMaskToImage")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("image"), QJsonArray{imageNodeId, imageSlot}},
+                                              {QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}}}}});
+    return id;
+}
+
+static QString insertMaskedFill(QJsonObject *workflow, int *nextId, const QString &imageNodeId, int imageSlot,
+                                const QString &maskNodeId, int maskSlot, const QString &fillKind)
+{
+    const QString fill = fillKind.trimmed();
+    if (!workflow || imageNodeId.isEmpty() || maskNodeId.isEmpty()
+        || fill.isEmpty() || fill == QLatin1String("none") || fill == QLatin1String("inpaint"))
+        return imageNodeId;
+
+    if (fill == QLatin1String("blur") || fill == QLatin1String("border")) {
+        QString sourceImage = imageNodeId;
+        int sourceSlot = imageSlot;
+        if (fill == QLatin1String("border")) {
+            const QString fillId = QString::number((*nextId)++);
+            workflow->insert(fillId,
+                             QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_MaskedFill")},
+                                         {QStringLiteral("inputs"),
+                                          QJsonObject{{QStringLiteral("image"), QJsonArray{imageNodeId, imageSlot}},
+                                                      {QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
+                                                      {QStringLiteral("fill"), QStringLiteral("navier-stokes")},
+                                                      {QStringLiteral("falloff"), 0}}}});
+            sourceImage = fillId;
+            sourceSlot = 0;
+        }
+        const QString blurId = QString::number((*nextId)++);
+        workflow->insert(blurId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_MaskedBlur")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), QJsonArray{sourceImage, sourceSlot}},
+                                                  {QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
+                                                  {QStringLiteral("blur"), 65},
+                                                  {QStringLiteral("falloff"), fill == QLatin1String("blur") ? 9 : 0}}}});
+        return blurId;
+    }
+
+    QString mode = fill;
+    if (fill == QLatin1String("replace"))
+        mode = QStringLiteral("neutral");
+    if (fill == QLatin1String("green"))
+        mode = QStringLiteral("neutral"); // green edit-reference path is handled upstream for Flux edit models; neutral is safest core fallback.
+
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_MaskedFill")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("image"), QJsonArray{imageNodeId, imageSlot}},
+                                              {QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
+                                              {QStringLiteral("fill"), mode},
+                                              {QStringLiteral("falloff"), fill == QLatin1String("neutral") ? 9 : 0}}}});
     return id;
 }
 
@@ -185,9 +309,19 @@ static void appendColorMatchAfterDecode(QJsonObject *workflow,
     workflow->insert(matchId,
                      QJsonObject{{QStringLiteral("class_type"), QStringLiteral("INPAINT_ColorMatch")},
                                  {QStringLiteral("inputs"), inputs}});
+    // Rewire SaveImage only. replaceAllLinksFromNode() also rewrote ColorMatch's
+    // target input (decode -> self), causing dependency_cycle on INPAINT_ColorMatch.
     const QString saveId = findNodeIdByClassType(*workflow, QStringLiteral("SaveImage"));
-    if (!saveId.isEmpty())
-        replaceAllLinksFromNode(workflow, decodeNodeId, 0, matchId, 0);
+    if (!saveId.isEmpty()) {
+        QJsonObject save = workflow->value(saveId).toObject();
+        QJsonObject saveInputs = save.value(QStringLiteral("inputs")).toObject();
+        const QJsonArray images = saveInputs.value(QStringLiteral("images")).toArray();
+        if (images.size() >= 2 && images.at(0).toString() == decodeNodeId && images.at(1).toInt() == 0) {
+            saveInputs.insert(QStringLiteral("images"), QJsonArray{matchId, 0});
+            save.insert(QStringLiteral("inputs"), saveInputs);
+            workflow->insert(saveId, save);
+        }
+    }
 }
 
 QList<CheckpointLoraWeight> checkpointLorasFromStyle(const QJsonArray &styleLoras)
@@ -324,6 +458,7 @@ bool loadCheckpointWithLora(QJsonObject *workflow, const CheckpointLoadParams &p
         out->modelNodeId = modelChain;
         out->clipNodeId = clipChainNode;
         out->vaeNodeId = vaeLinkNode;
+        out->vaeNodeSlot = vaeLinkSlot;
         out->nextNodeId = nextId;
     }
     return true;
@@ -642,85 +777,114 @@ static QJsonObject parseImg2ImgWorkflowTemplate()
     return doc.object();
 }
 
+static QJsonObject parseInpaintingWorkflowTemplate();
+
 QJsonObject buildRefineRegion(const RefineRegionParams &params)
 {
     if (params.refine.imageName.isEmpty() || params.maskImageName.isEmpty())
         return QJsonObject();
 
-    InpaintBuildParams ip;
-    ip.imageName = params.refine.imageName;
-    ip.maskImageName = params.maskImageName;
-    ip.checkpoint = params.refine.checkpoint;
-    ip.positivePrompt = params.refine.positivePrompt;
-    ip.negativePrompt = params.refine.negativePrompt;
-    ip.promptTranslationLanguage = params.refine.promptTranslationLanguage;
-    ip.seed = params.refine.seed;
-    ip.steps = params.refine.steps;
-    ip.cfg = params.refine.cfg;
-    ip.denoise = params.refine.denoise;
-    ip.sampler = params.refine.sampler;
-    ip.scheduler = params.refine.scheduler;
-    ip.arch = params.refine.arch;
-    ip.styleLoras = params.refine.styleLoras;
-    ip.growMaskBy = 0;
-
-    QJsonObject workflow = buildInpaint(ip);
+    // Upstream workflow.refine_region(): real canvas pixels, apply_grow_feather on mask,
+    // vae_encode + set_latent_noise_mask + differential_diffusion. No fill_masked,
+    // no VAEEncodeForInpaint. Client composites via denoise_to_compositing_mask.
+    QJsonObject workflow = parseInpaintingWorkflowTemplate();
     if (workflow.isEmpty())
-        return workflow;
+        return QJsonObject();
+
+    const ComfyResources::Arch arch = params.refine.arch;
+    double cfg = params.refine.cfg;
+    if (!ComfyResources::supportsCfg(arch) && cfg > 4.0)
+        cfg = 3.5;
+
+    const QString ckpt = params.refine.checkpoint.trimmed().isEmpty()
+                             ? QStringLiteral("v1-5-pruned-emaonly.safetensors")
+                             : params.refine.checkpoint.trimmed();
+
+    {
+        QJsonObject n1 = workflow.value(QStringLiteral("1")).toObject();
+        QJsonObject i1 = n1.value(QStringLiteral("inputs")).toObject();
+        i1.insert(QStringLiteral("image"), params.refine.imageName);
+        n1.insert(QStringLiteral("inputs"), i1);
+        workflow.insert(QStringLiteral("1"), n1);
+    }
+    {
+        QJsonObject n2 = workflow.value(QStringLiteral("2")).toObject();
+        QJsonObject i2 = n2.value(QStringLiteral("inputs")).toObject();
+        i2.insert(QStringLiteral("image"), params.maskImageName);
+        n2.insert(QStringLiteral("inputs"), i2);
+        workflow.insert(QStringLiteral("2"), n2);
+    }
 
     CheckpointLoadParams cl;
-    cl.checkpoint = ip.checkpoint;
-    cl.arch = ip.arch;
+    cl.checkpoint = ckpt;
+    cl.arch = arch;
     cl.loras = checkpointLorasFromStyle(params.refine.styleLoras);
     CheckpointGraphRefs ckptRefs;
     loadCheckpointWithLora(&workflow, cl, &ckptRefs);
 
     int nextId = ckptRefs.nextNodeId;
+    int injectId = 90;
+    const QString pos = params.refine.positivePrompt.trimmed().isEmpty() ? QStringLiteral("a beautiful painting")
+                                                                         : params.refine.positivePrompt;
+    patchClipTextEncodeNode(workflow, QStringLiteral("5"), pos, params.refine.promptTranslationLanguage, &injectId);
+    patchClipTextEncodeNode(workflow, QStringLiteral("6"), params.refine.negativePrompt,
+                            params.refine.promptTranslationLanguage, &injectId);
 
-    // FAITHFUL_PORT/BUG: previously this passed `QJsonArray{processedMask, 1}`
-    // to VAEEncodeForInpaint.mask. That works when processedMask is the raw
-    // LoadImage ("2") because LoadImage exposes IMAGE on slot 0 and MASK on
-    // slot 1, but when growMaskBy>0 we wrap it in INPAINT_ExpandMask which
-    // only outputs MASK on slot 0. ComfyUI then rejected /prompt with
-    // "node 7 (VAEEncodeForInpaint): Exception when validating inner node —
-    // list index out of range" because slot 1 doesn't exist on ExpandMask.
-    // Track the (id, slot) pair explicitly so every downstream consumer wires
-    // to the correct output slot regardless of which mask node is in use.
-    const QString maskLoadId = QStringLiteral("2");
-    QString processedMaskId = maskLoadId;
-    int processedMaskSlot = 1;  // LoadImage → MASK on slot 1
-    if (params.growMaskBy > 0) {
-        processedMaskId = insertInpaintExpandMask(&workflow, &nextId, maskLoadId, params.growMaskBy, 0);
-        processedMaskSlot = 0;  // INPAINT_ExpandMask → MASK on slot 0
+    const QString vaeLinkNode = ckptRefs.vaeNodeId.isEmpty() ? QStringLiteral("4") : ckptRefs.vaeNodeId;
+    const int vaeLinkSlot = ckptRefs.vaeNodeId.isEmpty() ? 2 : ckptRefs.vaeNodeSlot;
+
+    QString processedMaskId = insertImageToMask(&workflow, &nextId, QStringLiteral("2"), QStringLiteral("red"));
+    int processedMaskSlot = 0;
+    if (params.growMaskBy > 0 || params.featherMaskBy > 0) {
+        processedMaskId =
+            insertInpaintExpandMask(&workflow, &nextId, processedMaskId, params.growMaskBy, params.featherMaskBy, 0);
+        processedMaskSlot = 0;
     }
 
-    const QString vaeEncodeId = QStringLiteral("7");
-    if (workflow.contains(vaeEncodeId)) {
-        QJsonObject n7 = workflow.value(vaeEncodeId).toObject();
-        QJsonObject i7 = n7.value(QStringLiteral("inputs")).toObject();
-        i7.insert(QStringLiteral("mask"), QJsonArray{processedMaskId, processedMaskSlot});
-        i7.insert(QStringLiteral("grow_mask_by"), 0);
-        n7.insert(QStringLiteral("inputs"), i7);
-        workflow.insert(vaeEncodeId, n7);
+    workflow.remove(QStringLiteral("7"));
+    const QString vaeEncodeId = QString::number(nextId++);
+    workflow.insert(vaeEncodeId,
+                    QJsonObject{{QStringLiteral("class_type"), QStringLiteral("VAEEncode")},
+                                {QStringLiteral("inputs"),
+                                 QJsonObject{{QStringLiteral("pixels"), QJsonArray{QStringLiteral("1"), 0}},
+                                             {QStringLiteral("vae"), QJsonArray{vaeLinkNode, vaeLinkSlot}}}}});
+    const QString latentMaskedId = QString::number(nextId++);
+    workflow.insert(latentMaskedId,
+                    QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SetLatentNoiseMask")},
+                                {QStringLiteral("inputs"),
+                                 QJsonObject{{QStringLiteral("samples"), QJsonArray{vaeEncodeId, 0}},
+                                             {QStringLiteral("mask"), QJsonArray{processedMaskId, processedMaskSlot}}}}});
+
+    {
+        QJsonObject n8 = workflow.value(QStringLiteral("8")).toObject();
+        QJsonObject i8 = n8.value(QStringLiteral("inputs")).toObject();
+        i8.insert(QStringLiteral("seed"), static_cast<double>(params.refine.seed));
+        i8.insert(QStringLiteral("steps"), params.refine.steps);
+        i8.insert(QStringLiteral("cfg"), cfg);
+        i8.insert(QStringLiteral("denoise"), qBound(0.01, params.refine.denoise, 1.0));
+        i8.insert(QStringLiteral("sampler_name"), params.refine.sampler);
+        i8.insert(QStringLiteral("scheduler"),
+                  params.refine.scheduler.isEmpty() ? QStringLiteral("normal") : params.refine.scheduler);
+        i8.insert(QStringLiteral("latent_image"), QJsonArray{latentMaskedId, 0});
+        n8.insert(QStringLiteral("inputs"), i8);
+        workflow.insert(QStringLiteral("8"), n8);
     }
 
     const QString ckptId = findCheckpointNodeId(workflow);
-    QString modelId = ckptRefs.modelNodeId.isEmpty() ? ckptId : ckptRefs.modelNodeId;
-    if (!modelId.isEmpty()) {
-        const QString diffId = insertDifferentialDiffusion(&workflow, &nextId, modelId);
-        replaceAllLinksFromNode(&workflow, modelId, 0, diffId, 0);
-        modelId = diffId;
-        patchSamplerNode(&workflow, QStringLiteral("8"), modelId);
+    const QString modelSourceId = ckptRefs.modelNodeId.isEmpty() ? ckptId : ckptRefs.modelNodeId;
+    if (!modelSourceId.isEmpty()) {
+        const QString diffId = insertDifferentialDiffusion(&workflow, &nextId, modelSourceId);
+        patchSamplerNode(&workflow, QStringLiteral("8"), diffId);
     }
 
     if (params.colorMatch) {
-        const QString decodeId = QStringLiteral("9");
-        appendColorMatchAfterDecode(&workflow, decodeId, QStringLiteral("1"),
-                                    processedMaskId, processedMaskSlot, &nextId);
+        appendColorMatchAfterDecode(&workflow, QStringLiteral("9"), QStringLiteral("1"), processedMaskId,
+                                    processedMaskSlot, &nextId);
     }
 
-    finishWorkflowWithSamplerCustom(
-        &workflow, QStringLiteral("8"), ip.arch, 1024, 1024, ip.denoise);
+    finishWorkflowWithSamplerCustom(&workflow, QStringLiteral("8"), arch,
+                                    qMax(64, params.extentWidth), qMax(64, params.extentHeight),
+                                    params.refine.denoise);
     return workflow;
 }
 
@@ -785,6 +949,72 @@ static QJsonObject parseInpaintingWorkflowTemplate()
     return doc.object();
 }
 
+bool applyInpaintPromptFocus(QJsonObject *workflow, int *nextNodeId, const QString &modelNodeId,
+                             const QString &positiveClipNodeId, const QString &clipSourceNodeId,
+                             const QString &maskNodeId, int maskNodeSlot, const QString &backgroundPrompt)
+{
+    if (!workflow || modelNodeId.isEmpty() || positiveClipNodeId.isEmpty() || maskNodeId.isEmpty())
+        return false;
+
+    int nid = *nextNodeId;
+    const auto alloc = [&]() {
+        while (workflow->contains(QString::number(nid)))
+            ++nid;
+        return QString::number(nid++);
+    };
+
+    const QJsonArray clipLink =
+        clipSourceNodeId.isEmpty() ? QJsonArray{QStringLiteral("4"), 1} : QJsonArray{clipSourceNodeId, 1};
+
+    const QString bgPosId = alloc();
+    int injectId = nid + 50;
+    const QString bgText = backgroundPrompt.trimmed().isEmpty() ? QStringLiteral(" ") : backgroundPrompt.trimmed();
+    workflow->insert(bgPosId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CLIPTextEncode")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("clip"), clipLink},
+                                                {QStringLiteral("text"),
+                                                 clipEncodeTextInput(bgText, QString(), workflow, &injectId)}}}});
+
+    const QString bgRegionId = alloc();
+    workflow->insert(bgRegionId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_BackgroundRegion")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("conditioning"), QJsonArray{bgPosId, 0}}}}});
+
+    QString maskTensorId = maskNodeId;
+    if (maskNodeSlot == 1) {
+        const QString itmId = alloc();
+        workflow->insert(itmId,
+                         QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageToMask")},
+                                     {QStringLiteral("inputs"),
+                                      QJsonObject{{QStringLiteral("image"), QJsonArray{maskNodeId, 0}},
+                                                  {QStringLiteral("channel"), QStringLiteral("red")}}}});
+        maskTensorId = itmId;
+        maskNodeSlot = 0;
+    }
+
+    const QString defineId = alloc();
+    workflow->insert(defineId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_DefineRegion")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("regions"), QJsonArray{bgRegionId, 0}},
+                                              {QStringLiteral("mask"), QJsonArray{maskTensorId, maskNodeSlot}},
+                                              {QStringLiteral("conditioning"),
+                                               QJsonArray{positiveClipNodeId, 0}}}}});
+
+    const QString attnId = alloc();
+    workflow->insert(attnId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_AttentionMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("model"), QJsonArray{modelNodeId, 0}},
+                                              {QStringLiteral("regions"), QJsonArray{defineId, 0}}}}});
+
+    replaceAllLinksFromNode(workflow, modelNodeId, 0, attnId, 0);
+    *nextNodeId = nid;
+    return true;
+}
+
 QJsonObject buildInpaint(const InpaintBuildParams &params)
 {
     QJsonObject workflow = parseInpaintingWorkflowTemplate();
@@ -813,36 +1043,56 @@ QJsonObject buildInpaint(const InpaintBuildParams &params)
         n2.insert(QStringLiteral("inputs"), i2);
         workflow.insert(QStringLiteral("2"), n2);
     }
+    QString maskForEncodeId = QStringLiteral("2");
+    int maskForEncodeSlot = 1;
+    int growNext = 500;
+    QString imageForEncodeId = QStringLiteral("1");
+    int imageForEncodeSlot = 0;
     {
         CheckpointLoadParams cl;
         cl.checkpoint = ckpt;
         cl.arch = arch;
         cl.loras = checkpointLorasFromStyle(params.styleLoras);
-        loadCheckpointWithLora(&workflow, cl);
-    }
-    int injectId = 90;
-    const QString pos = params.positivePrompt.trimmed().isEmpty() ? QStringLiteral("a beautiful painting")
-                                                                    : params.positivePrompt;
-    patchClipTextEncodeNode(workflow, QStringLiteral("5"), pos, params.promptTranslationLanguage, &injectId);
-    patchClipTextEncodeNode(workflow, QStringLiteral("6"), params.negativePrompt, params.promptTranslationLanguage,
-                            &injectId);
-    {
-        // FAITHFUL_PORT/BUG: same fix as buildInpaintParamsObj() — wiring the
-        // VAEEncodeForInpaint.mask input to slot 1 of an INPAINT_ExpandMask
-        // node triggered "list index out of range" on the server because
-        // ExpandMask only outputs MASK on slot 0. Track id+slot together.
-        QString maskForEncodeId = QStringLiteral("2");
-        int maskForEncodeSlot = 1;  // LoadImage MASK
-        int growNext = 400;
+        CheckpointGraphRefs ckptRefs;
+        loadCheckpointWithLora(&workflow, cl, &ckptRefs);
+        growNext = ckptRefs.nextNodeId;
+        int injectId = 90;
+        const QString pos = params.positivePrompt.trimmed().isEmpty() ? QStringLiteral("a beautiful painting")
+                                                                        : params.positivePrompt;
+        patchClipTextEncodeNode(workflow, QStringLiteral("5"), pos, params.promptTranslationLanguage, &injectId);
+        patchClipTextEncodeNode(workflow, QStringLiteral("6"), params.negativePrompt, params.promptTranslationLanguage,
+                                &injectId);
         while (workflow.contains(QString::number(growNext)))
             ++growNext;
-        if (params.growMaskBy > 0) {
-            maskForEncodeId = insertInpaintExpandMask(&workflow, &growNext, QStringLiteral("2"), params.growMaskBy, 0);
-            maskForEncodeSlot = 0;  // ExpandMask MASK
+        const QString baseMaskId = insertImageToMask(&workflow, &growNext, QStringLiteral("2"), QStringLiteral("red"));
+        const int baseMaskSlot = 0;
+        maskForEncodeId = baseMaskId;
+        maskForEncodeSlot = baseMaskSlot;
+        if (params.growMaskBy > 0 || params.featherMaskBy > 0) {
+            maskForEncodeId =
+                insertInpaintExpandMask(&workflow, &growNext, baseMaskId, params.growMaskBy, params.featherMaskBy,
+                                        baseMaskSlot);
+            maskForEncodeSlot = 0;
+        }
+        const int fillGrow = qMax(0, params.growMaskBy - params.featherMaskBy / 2);
+        QString fillMaskId = baseMaskId;
+        int fillMaskSlot = baseMaskSlot;
+        if (fillGrow > 0) {
+            fillMaskId = insertInpaintExpandMask(&workflow, &growNext, baseMaskId, fillGrow, 0, baseMaskSlot);
+            fillMaskSlot = 0;
+        }
+        imageForEncodeId = insertMaskedFill(&workflow, &growNext, QStringLiteral("1"), 0, fillMaskId, fillMaskSlot, params.fillKind);
+        imageForEncodeSlot = 0;
+        if (params.useConditionMask) {
+            const QString modelId = ckptRefs.modelNodeId.isEmpty() ? QStringLiteral("4") : ckptRefs.modelNodeId;
+            const QString clipId = ckptRefs.clipNodeId.isEmpty() ? QStringLiteral("4") : ckptRefs.clipNodeId;
+            applyInpaintPromptFocus(&workflow, &growNext, modelId, QStringLiteral("5"), clipId, maskForEncodeId,
+                                    maskForEncodeSlot, params.backgroundPrompt);
         }
         QJsonObject n7 = workflow.value(QStringLiteral("7")).toObject();
         QJsonObject i7 = n7.value(QStringLiteral("inputs")).toObject();
         i7.insert(QStringLiteral("mask"), QJsonArray{maskForEncodeId, maskForEncodeSlot});
+        i7.insert(QStringLiteral("pixels"), QJsonArray{imageForEncodeId, imageForEncodeSlot});
         i7.insert(QStringLiteral("grow_mask_by"), 0);
         n7.insert(QStringLiteral("inputs"), i7);
         workflow.insert(QStringLiteral("7"), n7);
@@ -862,6 +1112,31 @@ QJsonObject buildInpaint(const InpaintBuildParams &params)
 
     finishWorkflowWithSamplerCustom(
         &workflow, QStringLiteral("8"), arch, 1024, 1024, params.denoise);
+
+    if (!params.targetBoundsRelative.isEmpty()) {
+        while (workflow.contains(QString::number(growNext)))
+            ++growNext;
+        QString outputImageId = QStringLiteral("9");
+        int outputImageSlot = 0;
+        QString outputMaskId = maskForEncodeId;
+        int outputMaskSlot = maskForEncodeSlot;
+        outputImageId = insertCropImage(&workflow, &growNext, outputImageId, outputImageSlot, params.targetBoundsRelative);
+        outputImageSlot = 0;
+        outputMaskId = insertCropMask(&workflow, &growNext, outputMaskId, outputMaskSlot, params.targetBoundsRelative);
+        outputMaskSlot = 0;
+        if (params.blendMaskBy > 0) {
+            outputMaskId = insertShrinkMask(&workflow, &growNext, outputMaskId, outputMaskSlot,
+                                            params.blendMaskBy / 2, params.blendMaskBy);
+            outputMaskSlot = 0;
+        }
+        outputImageId = insertApplyMaskToImage(&workflow, &growNext, outputImageId, outputImageSlot, outputMaskId, outputMaskSlot);
+        outputImageSlot = 0;
+        QJsonObject save = workflow.value(QStringLiteral("10")).toObject();
+        QJsonObject saveInputs = save.value(QStringLiteral("inputs")).toObject();
+        saveInputs.insert(QStringLiteral("images"), QJsonArray{outputImageId, outputImageSlot});
+        save.insert(QStringLiteral("inputs"), saveInputs);
+        workflow.insert(QStringLiteral("10"), save);
+    }
     return workflow;
 }
 

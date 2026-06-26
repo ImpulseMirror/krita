@@ -52,3 +52,6 @@ env
 env_deactivate
 krita-deps-management/
 krita-arm64-v8a-*.apk
+
+# Local reference clones for agent/Cursor context
+temp/

@@ -34,6 +34,10 @@ public:
     void bind(QList<ComfyUIRemoteDock::Private::RegionEntry> *regions, int *activeIndex);
     void refresh();
     void onActiveLayerChanged();
+    void focusPromptEditor();
+    void commitRootPromptEditors();
+    void refreshRootPromptFromDock();
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
@@ -45,7 +49,6 @@ Q_SIGNALS:
     void requestAddRegion();
     void translatePromptRequested(bool negative);
     void requestLinkActiveToRegion(int regionIndex);
-    void activated();
     void editingModeChanged(int activeIndex);
 
 private:

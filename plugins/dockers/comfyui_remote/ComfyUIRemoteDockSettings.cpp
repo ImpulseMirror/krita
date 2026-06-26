@@ -61,6 +61,8 @@
 #include <QPointer>
 #include <QSet>
 #include <QJsonArray>
+#include <QMouseEvent>
+#include <functional>
 
 #include <KSharedConfig>
 #include <KConfigGroup>
@@ -70,6 +72,39 @@
 namespace {
 // §13.140: NSFW filter warning — QMessageBox.warning once per session (not persisted in KConfig)
 bool g_nsfwFilterWarningShownThisSession = false;
+
+/// Tap a read-only built-in style prompt field → duplicate style so user can edit (Android-friendly).
+class ComfyBuiltinStyleEditFilter : public QObject
+{
+public:
+    ComfyBuiltinStyleEditFilter(QLineEdit *edit, std::function<void()> onDuplicated, QObject *parent)
+        : QObject(parent)
+        , m_edit(edit)
+        , m_onDuplicated(std::move(onDuplicated))
+    {
+        if (m_edit)
+            m_edit->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override
+    {
+        if (!m_edit || obj != m_edit || !m_edit->isReadOnly())
+            return QObject::eventFilter(obj, event);
+        if (event->type() != QEvent::MouseButtonPress)
+            return QObject::eventFilter(obj, event);
+        const auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() != Qt::LeftButton)
+            return QObject::eventFilter(obj, event);
+        if (m_onDuplicated)
+            m_onDuplicated();
+        return QObject::eventFilter(obj, event);
+    }
+
+private:
+    QLineEdit *m_edit = nullptr;
+    std::function<void()> m_onDuplicated;
+};
 } // namespace
 
 void ComfyUIRemoteDock::slotConfigureHelp()
@@ -587,6 +622,10 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             loraListWidget->setEditingEnabled(editable);
             editStylesPositive->setReadOnly(!editable);
             editStylesNegative->setReadOnly(!editable);
+            if (!hasJson) {
+                editStylesPositive->clear();
+                editStylesNegative->clear();
+            }
             comboLinkedEditStyle->setEnabled(editable);
             qualitySamplerWidget->setEditingEnabled(editable);
             liveSamplerWidget->setEditingEnabled(editable);
@@ -765,7 +804,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             e.selfAttentionGuidance = switchStyleSag->isChecked();
             qualitySamplerWidget->writeToStyle(&e);
             liveSamplerWidget->writeToStyle(&e);
-            return saveStyleEntry(e);
+            return saveStyleEntry(e, false, false);
         };
         auto persistStyleCheckpointOptions = [persistCurrentJsonStyle, &persistingStyleAdvanced]() {
             if (persistingStyleAdvanced)
@@ -786,6 +825,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                         stylesCkptMirror->setEditText(ck);
                 }
                 stylesCkptMirror->blockSignals(false);
+                editStylesPositive->blockSignals(true);
+                editStylesNegative->blockSignals(true);
                 QString stylePrompt = st->stylePrompt;
                 QString negativePrompt = st->negativePrompt;
                 // User styles created before defaults were wired may have empty prompts on disk.
@@ -796,6 +837,8 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                 }
                 editStylesPositive->setText(stylePrompt);
                 editStylesNegative->setText(negativePrompt);
+                editStylesPositive->blockSignals(false);
+                editStylesNegative->blockSignals(false);
                 qualitySamplerWidget->readFromStyle(*st);
                 liveSamplerWidget->readFromStyle(*st);
             }
@@ -960,20 +1003,21 @@ void ComfyUIRemoteDock::slotConfigureHelp()
                     updateStyleAdvancedArchUi();
                     persistStyleCheckpointOptions();
                 });
-        connect(editStylesPositive, &QLineEdit::textChanged, this, [this, editStylesPositive, &syncingStylesTab, persistCurrentJsonStyle]() {
-            if (syncingStylesTab)
-                return;
-            if (m_d->editPrompt)
-                m_d->editPrompt->setPlainText(editStylesPositive->text());
+        connect(editStylesPositive, &QLineEdit::editingFinished, this, [persistCurrentJsonStyle]() {
             persistCurrentJsonStyle();
         });
-        connect(editStylesNegative, &QLineEdit::textChanged, this, [this, editStylesNegative, &syncingStylesTab, persistCurrentJsonStyle]() {
-            if (syncingStylesTab)
-                return;
-            if (m_d->editNegative)
-                m_d->editNegative->setPlainText(editStylesNegative->text());
+        connect(editStylesNegative, &QLineEdit::editingFinished, this, [persistCurrentJsonStyle]() {
             persistCurrentJsonStyle();
         });
+        const auto duplicateBuiltinForStyleEdit = [this, syncStylesFromDock]() {
+            const ComfyStyleEntry *st = currentJsonStyleEntry();
+            if (!st || !st->isBuiltin)
+                return;
+            duplicateJsonStyle();
+            syncStylesFromDock();
+        };
+        new ComfyBuiltinStyleEditFilter(editStylesPositive, duplicateBuiltinForStyleEdit, dlg);
+        new ComfyBuiltinStyleEditFilter(editStylesNegative, duplicateBuiltinForStyleEdit, dlg);
         connect(checkShowBuiltinStyles, &QCheckBox::toggled, dlg, [this, syncStylesFromDock](bool on) {
             QJsonObject s = ComfyUIUtils::loadSettingsJson();
             s.insert(QStringLiteral("show_builtin_styles"), on);

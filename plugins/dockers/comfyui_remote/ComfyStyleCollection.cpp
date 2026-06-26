@@ -209,6 +209,11 @@ QString ComfyStyleCollection::comboDisplayName(const ComfyStyleEntry &entry)
     return QStringLiteral("%1 (%2)").arg(entry.name, entry.styleId);
 }
 
+QString ComfyStyleCollection::comboPresetName(const ComfyStyleEntry &entry)
+{
+    return entry.name;
+}
+
 QString ComfyStyleCollection::createStyle(const QString &checkpoint, const QString &copyFromStyleId)
 {
     ComfyStyleEntry e;

@@ -15,6 +15,7 @@
 class QPlainTextEdit;
 class QComboBox;
 class QVBoxLayout;
+class QListWidgetItem;
 class ComfyControlLayerListWidget;
 struct ComfyControlLayerEntry;
 
@@ -72,6 +73,13 @@ private:
     void refreshRootControlLayersList();
 
     // §13.44: Persist preview layer ID to document annotation (call when user sets preview layer)
+    void clearHistoryPreviewState();
+    void hideHistoryPreview(bool deleteLayer);
+    void showHistoryPreviewForItem(QListWidgetItem *item);
+    void updateHistoryPreviewFromSelection();
+    void rememberHistoryPreviewImage(const QString &path, const QImage &image);
+    void clearHistoryListSelection();
+    void tryBindPreviewLayerFromDocument();
     void savePreviewLayerIdToDocument(const QString &layerId);
     // §13.179: Update "Target size: W x H" from document extent × upscale factor
     void updateUpscaleTargetSize();
@@ -107,7 +115,10 @@ private:
     // §13.19: After multi-image discard, re-encode remaining files to a new document slot (slots not reused)
     void reEmbedHistoryEntryAtIndex(int entryIndex);
     // §4.7 / §5.4: Apply a finished result file using Interface "Apply behavior" (replace / layer / layer_active)
-    bool applyResultFileWithBehavior(const QString &localPath, const QString &applyBehavior);
+    bool applyResultFileWithBehavior(const QString &localPath,
+                                     const QString &applyBehavior,
+                                     const QString &committedLayerName = QString(),
+                                     const QRect &resultBounds = QRect());
     /// §13.74: Animation + Single Frame — copy result into selected target paint layer (avoids duplicate apply via generation_finished_action).
     bool tryApplyAnimationSingleFrameToTargetLayer(const QString &localPath, bool timelineMismatch = false);
     // §4.7: After a job completes — history selection + optional preview/apply from generation_finished_action
@@ -121,7 +132,7 @@ private:
     int firstCustomPresetIndex() const;
     int legacyKConfigPresetCount() const;
     void applyComfyStyleEntry(const struct ComfyStyleEntry &style);
-    bool saveStyleEntry(const struct ComfyStyleEntry &entry, bool rebuildCombo = false);
+    bool saveStyleEntry(const struct ComfyStyleEntry &entry, bool rebuildCombo = false, bool applyToDock = true);
     void updateStyleComboItemLabel(const QString &styleId);
     bool createJsonStyle(const QString &checkpoint = QString(), const QString &copyFromStyleId = QString());
     bool duplicateJsonStyle();
@@ -194,12 +205,14 @@ private Q_SLOTS:
     void slotHistoryReRun();
     void slotHistoryItemSelected();
     void slotHistoryApply();
+    void slotHistoryApplyForItem(QListWidgetItem *item);
     /// FAITHFUL_PORT: tap a history thumbnail on Android (or single-click on
     /// desktop) → add the selected result as a transient "[Preview] …" layer
     /// that gets replaced on every subsequent thumb tap. The user commits it
     /// by clicking the Apply button (slotHistoryApply), which renames the
     /// preview layer to "[Generated] … (seed)" and drops the preview tracking.
     void slotHistoryPreview();
+    void slotHistoryPreviewForItem(QListWidgetItem *item);
     void slotHistoryContextMenu(QPoint pos);
     void slotHistoryCopyPrompt();
     void slotHistoryCopyPromptEvaluated();
@@ -293,6 +306,7 @@ private:
     bool tryStartRefineFromGenerate();
     void uploadCanvasForRefineGenerate();
     // §13.194 / §13.137: RecentlyUsedSync — document_defaults in settings.json; skip layer_bounds on fresh docs
+    void commitPromptEditorsFromUi();
     void persistDocumentDefaultsToSettings();
     void tryApplyDocumentDefaultsForNewDocument(KisImageSP image);
     void schedulePersistDocumentDefaults();
@@ -301,6 +315,9 @@ private:
     QJsonArray currentStyleLoras() const;
     void applyStyleIdToPresetCombo(QComboBox *cb, const QString &styleId);
     void applyStyleIdFromDocumentDefaults(const QString &styleId);
+    /// Resolve ckpt from selected style/preset (not stale comboCheckpoint after server refresh).
+    QString checkpointForGenerate() const;
+    void syncCheckpointComboFromStyle();
     /// §5.5: Checkpoint filename for upscale refinement preset (built-in → current Styles checkpoint; custom → preset KConfig).
     QString checkpointNameForUpscaleRefinementPreset() const;
     /// Sampling fields from refinement preset / dock defaults (custom presets override from KConfig).
@@ -313,6 +330,11 @@ private:
     void saveInpaintWorkspaceToDocument();
     void loadInpaintWorkspaceFromDocument();
     void updateInpaintControlsForArch();
+    /// FAITHFUL_PORT: GenerationWidget.update_generate_options — dynamic CTA + inpaint chrome
+    void updateGenerateOptions();
+    void setupGenerateInpaintMenus();
+    void showInpaintModeMenu();
+    void finalizeGenerateWorkspaceLayout();
     void saveEmbeddedCustomWorkflowToDocument();
     void loadEmbeddedCustomWorkflowFromDocument();
     void scheduleSaveEmbeddedCustomWorkflowToDocument();

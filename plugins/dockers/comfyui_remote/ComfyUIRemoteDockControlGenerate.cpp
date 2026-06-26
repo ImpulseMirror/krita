@@ -456,6 +456,11 @@ void ComfyUIRemoteDock::slotControlLayerJobPoll()
         }
         const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
         const QJsonObject hist = root.value(m_d->controlLayerJobPromptId).toObject();
+        if (const QString execErr = ComfyUIUtils::comfyHistoryExecutionError(hist); !execErr.isEmpty()) {
+            setStatusMessage(execErr, true);
+            stopControlLayerJobPolling();
+            return;
+        }
         const QJsonObject outputs = hist.value(QStringLiteral("outputs")).toObject();
         if (outputs.isEmpty()) {
             m_d->controlLayerJobPollCount++;

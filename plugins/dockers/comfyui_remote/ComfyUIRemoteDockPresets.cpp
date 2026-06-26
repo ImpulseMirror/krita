@@ -5,6 +5,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
+#include "ComfyRegionPromptWidget.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
@@ -57,6 +58,8 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
     KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote_Preset_" + name);
     m_d->editPrompt->setPlainText(cfg.readEntry("Prompt", ""));
     m_d->editNegative->setPlainText(cfg.readEntry("Negative", ""));
+    if (m_d->regionPromptWidget)
+        m_d->regionPromptWidget->refreshRootPromptFromDock();
     m_d->spinWidth->setValue(cfg.readEntry("Width", 512));
     m_d->spinHeight->setValue(cfg.readEntry("Height", 512));
     m_d->spinSteps->setValue(cfg.readEntry("Steps", 20));

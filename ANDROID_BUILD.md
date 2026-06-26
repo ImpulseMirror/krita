@@ -4,6 +4,14 @@
 
 Mac emulator, Linux build host. Do **not** edit Gradle/CMake to “fix” packaging. Do **not** use `androidbuild.sh` (`README.android.md` is stale).
 
+## Perfect port source of truth
+
+This docker is a **PERFECT PORT** of `krita-ai-diffusion`.
+
+Reference clone: `~/source/krita/temp/krita-ai-diffusion`.
+
+When asked to port, fix, or verify how functionality should behave, that clone is the only source of truth. Do not improvise or invent behavior. Read how the Python source implements the feature, then port the same behavior into C++ for `plugins/dockers/comfyui_remote` so it works in this docker.
+
 ## Layout
 
 | What | Path |
@@ -62,7 +70,9 @@ APK lands in `~/source/krita/android-build-wd/krita/_packaging/`.
 
 ## Deploy to Mac emulator
 
-**Deploy = install APK + launch app.** `install -d -r` alone is incomplete — always run `am start` immediately after so you verify the build on device. Agents: never stop at install.
+**Deploy = clear logcat + install APK + launch app.** `install -d -r` alone is incomplete — always run `am start` immediately after so you verify the build on device. Agents: never stop at install.
+
+**Clear logcat before every deploy** (`adb-mac logcat -c`). Old buffer pollutes debug reads and wastes model context when agents grep logcat after a repro. Clearing does not touch app data.
 
 **Default: upgrade in place.** Use `adb-mac install -d -r` only. That replaces the APK and **keeps** app data (ComfyUI server URL, styles, plugin settings, welcome state).
 
@@ -70,6 +80,7 @@ APK lands in `~/source/krita/android-build-wd/krita/_packaging/`.
 
 ```shell
 source ~/.bashrc
+adb-mac logcat -c
 APK=$(ls -t ~/source/krita/android-build-wd/krita/_packaging/krita-arm64-v8a-*-debug.apk | head -1)
 adb-mac install -d -r "$APK"
 adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
@@ -91,6 +102,7 @@ make -j"$(nproc)" install
 cd ~/source/krita/android-build-wd/krita/_build/krita_build_apk
 ./gradlew assembleDebug -Dorg.gradle.jvmargs=-Xmx8192m
 APK=$(ls -t build/outputs/apk/debug/*.apk | head -1)
+adb-mac logcat -c
 adb-mac install -d -r "$APK"
 adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
 ```
@@ -100,6 +112,7 @@ adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
 Only when you **intentionally** want a clean slate (first-install assets, corrupted prefs, debugging migration). **Not** for normal agent deploy after code changes.
 
 ```shell
+adb-mac logcat -c
 adb-mac shell pm clear org.krita.debug   # wipes all app data + configs
 adb-mac install -d -r "$APK"
 adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
@@ -120,6 +133,7 @@ export LD_LIBRARY_PATH="$KRITA_INSTALL_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY
 cd ~/source/krita/android-build-wd/krita/_build/krita_build_apk
 make -j"$(nproc)" install -C ..
 ./gradlew installDebug
+adb-mac logcat -c
 adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
 ```
 
@@ -142,6 +156,8 @@ cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
 
 Always `source ~/.bashrc` first — use `adb-mac`, not local `adb`.
 
+Deploy steps above run `adb-mac logcat -c` before install so post-deploy reads only contain output from the new build. When debugging without a fresh deploy, clear manually before reproducing.
+
 ```shell
 # device up?
 adb-mac devices
@@ -158,7 +174,7 @@ adb-mac logcat -s krita:* ConfigsManager:* krita.MainActivity:*
 # anything mentioning the package
 adb-mac logcat -d | grep org.krita.debug
 
-# clear buffer, repro bug, read fresh
+# clear buffer, repro bug, read fresh (also done automatically before deploy)
 adb-mac logcat -c
 # …use the app…
 adb-mac logcat -d -t 300
@@ -184,6 +200,7 @@ Official guide: https://docs.krita.org/en/untranslatable_pages/building/build_kr
 
 ## Do not
 
+- Deploy without `adb-mac logcat -c` first (stale logcat bloats agent context)
 - Stop after `adb-mac install` without `am start` (deploy incomplete)
 - `cmake --build . --target krita` then package (missing install step)
 - `gradlew assembleDebug` alone without prior `build-android-package.py` / `create-apk`

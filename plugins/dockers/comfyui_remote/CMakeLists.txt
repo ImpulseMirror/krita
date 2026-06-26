@@ -18,6 +18,8 @@ set(kritacomfyuiremote_static_SOURCES
     ComfyStyleLoraListWidget.cpp
     ComfyStyleSamplerWidget.cpp
     ComfyQueueButton.cpp
+    ComfyWorkspaceSelectButton.cpp
+    ComfyHistoryListWidget.cpp
     ComfyWorkflowEngine.cpp
     ComfyUIRemoteDockControl.cpp
     ComfyUIRemoteDockControlGenerate.cpp

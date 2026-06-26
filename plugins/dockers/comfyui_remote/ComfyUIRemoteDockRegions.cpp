@@ -116,7 +116,7 @@ void ComfyUIRemoteDock::slotMoveRegionDown()
 void ComfyUIRemoteDock::slotEditRegion()
 {
     if (m_d->regionPromptWidget)
-        m_d->regionPromptWidget->setFocus(Qt::OtherFocusReason);
+        m_d->regionPromptWidget->focusPromptEditor();
 }
 
 void ComfyUIRemoteDock::slotGenerateRegions()
