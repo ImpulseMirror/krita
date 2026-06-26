@@ -70,7 +70,11 @@ ComfyHistoryListWidget::ComfyHistoryListWidget(QWidget *parent)
 
 void ComfyHistoryListWidget::updateOverlayButtons()
 {
-    const QList<QListWidgetItem *> selected = selectedItems();
+    QList<QListWidgetItem *> selected;
+    for (QListWidgetItem *item : selectedItems()) {
+        if (item && item->data(Qt::UserRole + 2).toInt() != 1)
+            selected.append(item);
+    }
     if (selected.isEmpty()) {
         m_applyButton->setVisible(false);
         m_contextButton->setVisible(false);
@@ -123,6 +127,10 @@ void ComfyHistoryListWidget::mousePressEvent(QMouseEvent *event)
     // FAITHFUL_PORT: generation.HistoryWidget — re-click selected thumb clears selection (hides preview).
     if (event->button() == Qt::LeftButton && !(event->modifiers() & Qt::ControlModifier)) {
         QListWidgetItem *pressed = itemAt(event->pos());
+        if (pressed && pressed->data(Qt::UserRole + 2).toInt() == 1) {
+            event->accept();
+            return;
+        }
         if (pressed && pressed->isSelected()) {
             clearSelection();
             setCurrentItem(nullptr);

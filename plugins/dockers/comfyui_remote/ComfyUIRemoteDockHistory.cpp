@@ -8,6 +8,7 @@
 #include "ComfyRegionPromptWidget.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
+#include "ComfyTheme.h"
 
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -25,6 +26,7 @@ Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <QImage>
 #include <QImageWriter>
 #include <QPixmap>
+#include <QPainter>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QJsonObject>
@@ -51,7 +53,6 @@ Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <kis_node.h>
 #include <kis_painter.h>
 #include <KisImageBarrierLock.h>
-#include <kis_layer_properties_icons.h>
 #include <kundo2magicstring.h>
 #include <KoCompositeOpRegistry.h>
 #include <KoColorSpaceConstants.h>  // OPACITY_OPAQUE_U8 for KisGroupLayer
@@ -230,20 +231,6 @@ bool historyJsonToEntry(const QJsonObject &ho, const QByteArray &blob, KisImageS
 
 } // namespace
 
-void ComfyUIRemoteDock::slotHistoryItemSelected()
-{
-    bool hasSelection = m_d->listHistory->currentRow() >= 0;
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotHistoryItemSelected currentRow=" << m_d->listHistory->currentRow()
-        << " count=" << m_d->listHistory->count()
-        << " hasSelection=" << hasSelection;
-    m_d->btnHistoryReRun->setEnabled(hasSelection);
-    m_d->btnHistoryApply->setEnabled(hasSelection);
-    if (m_d->listHistory)
-        m_d->listHistory->updateOverlayButtons();
-    updateHistoryPreviewFromSelection();
-}
-
 static QString historyEntryDisplayName(const ComfyUIRemoteDock::Private::HistoryEntry &e, int maxLen)
 {
     // FAITHFUL_PORT: ai_diffusion job.params.name — positive prompt after tag strip.
@@ -267,6 +254,156 @@ static QString historyEntryShortLabel(const ComfyUIRemoteDock::Private::HistoryE
     return historyEntryDisplayName(e, 40);
 }
 
+enum HistoryListItemRole {
+    HistoryItemJobIdRole = Qt::UserRole,
+    HistoryItemImageIndexRole = Qt::UserRole + 1,
+    HistoryItemIsHeaderRole = Qt::UserRole + 2,
+};
+
+static bool historyEntryIsHeaderItem(const QListWidgetItem *item)
+{
+    return item && item->data(HistoryItemIsHeaderRole).toInt() == 1;
+}
+
+static bool historyParamsEqualIgnoreSeed(const ComfyUIRemoteDock::Private::HistoryEntry &a,
+                                         const ComfyUIRemoteDock::Private::HistoryEntry &b)
+{
+    return a.prompt == b.prompt && a.negative == b.negative && a.checkpoint == b.checkpoint
+           && a.styleName == b.styleName && a.width == b.width && a.height == b.height && a.steps == b.steps
+           && qAbs(a.cfg - b.cfg) < 1e-6 && a.strength == b.strength && a.samplerName == b.samplerName
+           && a.hasMask == b.hasMask && a.inpaintMode == b.inpaintMode && a.contextBounds == b.contextBounds
+           && a.regionLayerNames == b.regionLayerNames;
+}
+
+static QString historyEntryHeaderLabel(const ComfyUIRemoteDock::Private::HistoryEntry &e)
+{
+    QString prompt = historyEntryDisplayName(e, 0);
+    if (prompt.isEmpty())
+        prompt = QStringLiteral("<no prompt>");
+    const QString strength = e.strength != 100 ? QStringLiteral("%1% - ").arg(e.strength) : QString();
+    const QString time =
+        e.finishedAt.isValid() ? e.finishedAt.time().toString(QStringLiteral("HH:mm")) : QString();
+    return QStringLiteral("%1 - %2%3").arg(time, strength, prompt);
+}
+
+void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
+{
+    if (!m_d->listHistory)
+        return;
+
+    QString keepJobId;
+    int keepImageIndex = -1;
+    if (m_d->listHistory->currentItem() && !historyEntryIsHeaderItem(m_d->listHistory->currentItem())) {
+        keepJobId = m_d->listHistory->currentItem()->data(HistoryItemJobIdRole).toString();
+        keepImageIndex = m_d->listHistory->currentItem()->data(HistoryItemImageIndexRole).toInt();
+    } else if (!m_d->previewHistoryJobId.isEmpty()) {
+        keepJobId = m_d->previewHistoryJobId;
+        keepImageIndex = m_d->previewHistoryImageIndex;
+    }
+
+    m_d->listHistory->clear();
+    const QSize iconSize = m_d->listHistory->iconSize();
+    const int thumbW = iconSize.width();
+    const int thumbH = iconSize.height();
+    const int starX = thumbW - 28;
+    const int starY = 4;
+    const int starSize = 24;
+    QIcon starIcon = ComfyTheme::icon(QStringLiteral("star"));
+    QPixmap starPix = starIcon.pixmap(starSize, starSize);
+    int selectRow = -1;
+    int row = 0;
+    bool haveLastParams = false;
+    Private::HistoryEntry lastParams;
+
+    for (const Private::HistoryEntry &e : m_d->historyEntries) {
+        QStringList paths = e.resultImagePaths;
+        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
+            paths << e.resultImagePath;
+        if (paths.isEmpty())
+            continue;
+
+        if (!haveLastParams || !historyParamsEqualIgnoreSeed(lastParams, e)) {
+            lastParams = e;
+            haveLastParams = true;
+            QListWidgetItem *header = new QListWidgetItem(historyEntryHeaderLabel(e));
+            header->setFlags(Qt::NoItemFlags);
+            header->setData(HistoryItemJobIdRole, e.jobId);
+            header->setData(HistoryItemImageIndexRole, -1);
+            header->setData(HistoryItemIsHeaderRole, 1);
+            header->setToolTip(e.prompt);
+            const int headerH = m_d->listHistory->fontMetrics().lineSpacing() + 4;
+            header->setSizeHint(QSize(9999, headerH));
+            header->setTextAlignment(Qt::AlignLeft);
+            m_d->listHistory->addItem(header);
+            ++row;
+        }
+
+        const QString snippet = historyEntryShortLabel(e);
+        for (int imageIndex = 0; imageIndex < paths.size(); ++imageIndex) {
+            const QString path = paths.at(imageIndex);
+            QString tip = QStringLiteral("%1 (%2×%3)\nSeed: %4")
+                              .arg(snippet)
+                              .arg(e.width)
+                              .arg(e.height)
+                              .arg(e.seed);
+            if (paths.size() > 1)
+                tip = ComfyTr::tr("Image %1 of %2", imageIndex + 1, paths.size()) + QStringLiteral("\n") + tip;
+            QListWidgetItem *item = new QListWidgetItem();
+            if (!path.isEmpty() && QFile::exists(path)) {
+                QPixmap pix(path);
+                if (!pix.isNull()) {
+                    pix = pix.scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                    if (e.imageInUse.value(imageIndex, false) && !starPix.isNull()) {
+                        QPixmap composite(thumbW, thumbH);
+                        composite.fill(Qt::transparent);
+                        QPainter p(&composite);
+                        p.drawPixmap(0, 0, pix);
+                        p.drawPixmap(starX, starY, starPix);
+                        p.end();
+                        item->setIcon(QIcon(composite));
+                    } else {
+                        item->setIcon(QIcon(pix));
+                    }
+                }
+            }
+            if (item->icon().isNull()) {
+                item->setText(paths.size() > 1
+                                  ? snippet + QStringLiteral(" [%1/%2]").arg(imageIndex + 1).arg(paths.size())
+                                  : snippet);
+            }
+            item->setToolTip(tip);
+            item->setData(HistoryItemJobIdRole, e.jobId);
+            item->setData(HistoryItemImageIndexRole, imageIndex);
+            item->setData(HistoryItemIsHeaderRole, 0);
+            m_d->listHistory->addItem(item);
+            if (!keepJobId.isEmpty() && e.jobId == keepJobId && imageIndex == keepImageIndex)
+                selectRow = row;
+            ++row;
+        }
+    }
+
+    if (selectRow >= 0)
+        m_d->listHistory->setCurrentRow(selectRow);
+    else if (scrollToBottom)
+        m_d->listHistory->scrollToBottom();
+    m_d->listHistory->updateOverlayButtons();
+}
+
+void ComfyUIRemoteDock::slotHistoryItemSelected()
+{
+    QListWidgetItem *current = m_d->listHistory ? m_d->listHistory->currentItem() : nullptr;
+    const bool hasSelection = current && !historyEntryIsHeaderItem(current);
+    qCWarning(KIS_COMFYUI_REMOTE).nospace()
+        << "slotHistoryItemSelected currentRow=" << (m_d->listHistory ? m_d->listHistory->currentRow() : -1)
+        << " count=" << (m_d->listHistory ? m_d->listHistory->count() : 0)
+        << " hasSelection=" << hasSelection;
+    m_d->btnHistoryReRun->setEnabled(hasSelection);
+    m_d->btnHistoryApply->setEnabled(hasSelection);
+    if (m_d->listHistory)
+        m_d->listHistory->updateOverlayButtons();
+    updateHistoryPreviewFromSelection();
+}
+
 static QString previewLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e)
 {
     // model.show_preview: trim_text(params.name, 77)
@@ -287,6 +424,15 @@ static void nudgePreviewLayerProjection(KisLayerSP layer);
 static KisNodeSP topDirectRootChild(KisNodeSP root);
 static void raiseLayerToRootTop(KisViewManager *viewManager, KisImageSP image, KisLayerSP layer, bool waitForCompletion = true);
 
+// FAITHFUL_PORT: ai_diffusion layer.py — preview lock/visibility via direct node API, not undo.
+static void configurePreviewLayerState(KisNodeSP node, bool visible, bool locked)
+{
+    if (!node)
+        return;
+    node->setVisible(visible);
+    node->setUserLocked(locked);
+}
+
 static bool updatePreviewPaintLayerFromImage(KisViewManager *viewManager,
                                              KisImageSP image,
                                              KisPaintLayer *pl,
@@ -299,8 +445,7 @@ static bool updatePreviewPaintLayerFromImage(KisViewManager *viewManager,
     if (!loadQImageIntoPaintLayer(pl, image, qimg, offset))
         return false;
     pl->setName(layerName);
-    pl->setVisible(true);
-    KisLayerPropertiesIcons::setNodePropertyAutoUndo(pl, KisLayerPropertiesIcons::locked, true, image);
+    configurePreviewLayerState(pl, true, true);
     KisLayerSP layer = pl;
     raiseLayerToRootTop(viewManager, image, layer, false);
     nudgePreviewLayerProjection(layer);
@@ -335,8 +480,7 @@ static bool addPreviewPaintLayerFromFile(KisViewManager *viewManager,
     const QImage qimg = cachedHistoryPreviewImage(path, nullptr);
     if (qimg.isNull() || !loadQImageIntoPaintLayer(pl.data(), image, qimg, offset))
         return false;
-    pl->setVisible(true);
-    KisLayerPropertiesIcons::setNodePropertyAutoUndo(pl, KisLayerPropertiesIcons::locked, true, image);
+    configurePreviewLayerState(pl, true, true);
     KisNodeSP root = image->rootLayer();
     if (!root)
         return false;
@@ -645,8 +789,7 @@ static bool commitPreviewLayerForApply(KisViewManager *viewManager,
 {
     if (!viewManager || !image || !previewLayer)
         return false;
-    KisLayerPropertiesIcons::setNodePropertyAutoUndo(previewLayer, KisLayerPropertiesIcons::locked, false, image);
-    previewLayer->setVisible(true);
+    configurePreviewLayerState(previewLayer, true, false);
     if (!committedLayerName.isEmpty())
         previewLayer->setName(committedLayerName);
 
@@ -744,10 +887,10 @@ static QListWidgetItem *findHistoryListItem(QListWidget *list, const QString &jo
         return nullptr;
     for (int i = 0; i < list->count(); ++i) {
         QListWidgetItem *item = list->item(i);
-        if (!item)
+        if (!item || historyEntryIsHeaderItem(item))
             continue;
-        if (item->data(Qt::UserRole).toString() == jobId
-            && item->data(Qt::UserRole + 1).toInt() == imageIndex)
+        if (item->data(HistoryItemJobIdRole).toString() == jobId
+            && item->data(HistoryItemImageIndexRole).toInt() == imageIndex)
             return item;
     }
     return nullptr;
@@ -809,7 +952,7 @@ void ComfyUIRemoteDock::hideHistoryPreview(bool deleteLayer)
         savePreviewLayerIdToDocument(QString());
         return;
     }
-    KisLayerPropertiesIcons::setNodePropertyAutoUndo(layer, KisLayerPropertiesIcons::visible, false, image);
+    configurePreviewLayerState(layer, false, layer->userLocked());
     if (m_d->canvas)
         m_d->canvas->updateCanvas();
 }
@@ -835,7 +978,7 @@ void ComfyUIRemoteDock::updateHistoryPreviewFromSelection()
             return;
     }
     QListWidgetItem *item = m_d->listHistory->currentItem();
-    if (!item) {
+    if (!item || historyEntryIsHeaderItem(item)) {
         hideHistoryPreview(false);
         return;
     }
@@ -851,7 +994,7 @@ void ComfyUIRemoteDock::showHistoryPreviewForItem(QListWidgetItem *item)
         << " count=" << (m_d->listHistory ? m_d->listHistory->count() : -1)
         << " workspace=" << (m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1)
         << " currentPreviewLayerId=" << m_d->previewLayerId;
-    if (!item)
+    if (!item || historyEntryIsHeaderItem(item))
         return;
     if (m_d->comboWorkspace) {
         const int ws = m_d->comboWorkspace->currentIndex();
@@ -922,8 +1065,7 @@ void ComfyUIRemoteDock::showHistoryPreviewForItem(QListWidgetItem *item)
             setStatusMessage(ComfyTr::tr("Could not import preview image."), true);
             return;
         }
-        pl->setVisible(true);
-        KisLayerPropertiesIcons::setNodePropertyAutoUndo(pl, KisLayerPropertiesIcons::locked, true, image);
+        configurePreviewLayerState(pl, true, true);
         KisNodeSP root = image->rootLayer();
         if (!root) {
             setStatusMessage(ComfyTr::tr("Could not import preview image."), true);
@@ -1007,11 +1149,18 @@ void ComfyUIRemoteDock::slotHistoryApplyForItem(QListWidgetItem *item)
         if (item)
             m_d->listHistory->setCurrentItem(item);
         else if (m_d->listHistory->currentRow() < 0 && m_d->listHistory->count() > 0) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotHistoryApplyForItem: forcing currentRow=0 (was -1, count>0)";
-            m_d->listHistory->setCurrentItem(m_d->listHistory->item(0));
-            item = m_d->listHistory->currentItem();
+            for (int i = m_d->listHistory->count() - 1; i >= 0; --i) {
+                QListWidgetItem *it = m_d->listHistory->item(i);
+                if (it && !historyEntryIsHeaderItem(it)) {
+                    m_d->listHistory->setCurrentItem(it);
+                    item = it;
+                    break;
+                }
+            }
         }
     }
+    if (historyEntryIsHeaderItem(item))
+        return;
     int entryIndex = -1;
     int imageIndex = -1;
     QString path = historyPathForListItem(item, m_d->historyEntries, &entryIndex, &imageIndex);
@@ -1660,11 +1809,11 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,
 
 void ComfyUIRemoteDock::handleGenerationFinished(const QString &resultImagePath, bool skipAutoActions)
 {
-    refreshHistoryList();
+    refreshHistoryList(true);
     updateHistoryUsageLabel();
     if (skipAutoActions || resultImagePath.isEmpty() || !QFile::exists(resultImagePath))
         return;
-    if (!m_d->historyEntries.isEmpty() && !m_d->historyEntries.first().regionLayerNames.isEmpty())
+    if (!m_d->historyEntries.isEmpty() && !m_d->historyEntries.last().regionLayerNames.isEmpty())
         return;
 
     QJsonObject s = ComfyUIUtils::loadSettingsJson();
@@ -1673,10 +1822,15 @@ void ComfyUIRemoteDock::handleGenerationFinished(const QString &resultImagePath,
         action = QStringLiteral("preview");
 
     if (action == QLatin1String("preview")) {
-        if (m_d->listHistory && m_d->listHistory->count() > 0) {
-            QListWidgetItem *first = m_d->listHistory->item(0);
-            m_d->listHistory->setCurrentRow(0);
-            showHistoryPreviewForItem(first);
+        if (m_d->listHistory) {
+            for (int i = m_d->listHistory->count() - 1; i >= 0; --i) {
+                QListWidgetItem *item = m_d->listHistory->item(i);
+                if (!item || historyEntryIsHeaderItem(item))
+                    continue;
+                m_d->listHistory->setCurrentItem(item);
+                showHistoryPreviewForItem(item);
+                break;
+            }
         }
         return;
     }
@@ -1687,12 +1841,12 @@ void ComfyUIRemoteDock::handleGenerationFinished(const QString &resultImagePath,
 
     QString beh = applyBehaviorFromSettings(m_d.data());
     QRect resultBounds;
-    if (!m_d->historyEntries.isEmpty() && m_d->historyEntries.first().hasMask
-        && !m_d->historyEntries.first().contextBounds.isEmpty()) {
-        resultBounds = m_d->historyEntries.first().contextBounds;
+    if (!m_d->historyEntries.isEmpty() && m_d->historyEntries.last().hasMask
+        && !m_d->historyEntries.last().contextBounds.isEmpty()) {
+        resultBounds = m_d->historyEntries.last().contextBounds;
     }
     if (applyResultFileWithBehavior(resultImagePath, beh, QString(), resultBounds) && !m_d->historyEntries.isEmpty()) {
-        m_d->historyEntries[0].imageInUse.insert(0, true);
+        m_d->historyEntries.last().imageInUse.insert(0, true);
         clearHistoryListSelection();
         refreshHistoryList();
         scheduleDocumentUiJsonSave();
@@ -1782,7 +1936,7 @@ void ComfyUIRemoteDock::persistTopHistoryEntryToDocument(bool skipForAnimationFr
 {
     if (skipForAnimationFrame || m_d->historyEntries.isEmpty())
         return;
-    Private::HistoryEntry &entry = m_d->historyEntries.first();
+    Private::HistoryEntry &entry = m_d->historyEntries.last();
     KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
     if (!img)
         return;

@@ -56,6 +56,7 @@ Q_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE, "krita.comfyui_remote")
 #include <QTemporaryFile>
 #include <QMessageBox>
 #include <QTimer>
+#include <QDateTime>
 #include <QRandomGenerator>
 #include <QPointer>
 #include <QInputDialog>
@@ -466,10 +467,11 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                             for (int j = 0; j < totalImages; j++)
                                 e.resultImagePaths.append(pathsByIndex->value(j));
                             e.resultImagePath = e.resultImagePaths.isEmpty() ? QString() : e.resultImagePaths.first();
+                            e.finishedAt = QDateTime::currentDateTime();
                             m_d->progressBar->setValue(100);
-                            m_d->historyEntries.prepend(e);
+                            m_d->historyEntries.append(e);
                             while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
-                                Private::HistoryEntry old = m_d->historyEntries.takeLast();
+                                Private::HistoryEntry old = m_d->historyEntries.takeFirst();
                                 evictDocumentEmbeddedSlotIfAny(old.documentSlot);
                                 QStringList paths = old.resultImagePaths;
                                 if (paths.isEmpty() && !old.resultImagePath.isEmpty()) paths << old.resultImagePath;
@@ -673,9 +675,10 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
                             }
                         }
                     }
-                    m_d->historyEntries.prepend(entry);
+                    entry.finishedAt = QDateTime::currentDateTime();
+                    m_d->historyEntries.append(entry);
                     while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
-                        Private::HistoryEntry old = m_d->historyEntries.takeLast();
+                        Private::HistoryEntry old = m_d->historyEntries.takeFirst();
                         evictDocumentEmbeddedSlotIfAny(old.documentSlot);
                         QStringList paths = old.resultImagePaths;
                         if (paths.isEmpty() && !old.resultImagePath.isEmpty()) paths << old.resultImagePath;
@@ -2128,6 +2131,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->listHistory->setSelectionMode(QAbstractItemView::SingleSelection);
     m_d->listHistory->setFrameShape(QFrame::NoFrame);
     m_d->listHistory->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);  // §13.28a: vertical scroll only
+    m_d->listHistory->setStyleSheet(QStringLiteral("QListWidget { background-color: transparent; }"));
     m_d->listHistory->setSpacing(4);
     m_d->listHistory->setMovement(QListWidget::Static);
     m_d->listHistory->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -4910,7 +4914,8 @@ QString ComfyUIRemoteDock::pathForCurrentHistoryRow(int *outEntryIndex, int *out
     int row = m_d->listHistory->currentRow();
     if (row < 0) return QString();
     QListWidgetItem *item = m_d->listHistory->item(row);
-    if (!item) return QString();
+    if (!item || item->data(Qt::UserRole + 2).toInt() == 1)
+        return QString();
     QString jobId = item->data(Qt::UserRole).toString();
     int imageIndex = item->data(Qt::UserRole + 1).toInt();
     for (int i = 0; i < m_d->historyEntries.size(); i++) {
@@ -4927,77 +4932,6 @@ QString ComfyUIRemoteDock::pathForCurrentHistoryRow(int *outEntryIndex, int *out
         return QString();
     }
     return QString();
-}
-
-void ComfyUIRemoteDock::refreshHistoryList()
-{
-    QString keepJobId;
-    int keepImageIndex = -1;
-    if (m_d->listHistory && m_d->listHistory->currentItem()) {
-        keepJobId = m_d->listHistory->currentItem()->data(Qt::UserRole).toString();
-        keepImageIndex = m_d->listHistory->currentItem()->data(Qt::UserRole + 1).toInt();
-    } else if (!m_d->previewHistoryJobId.isEmpty()) {
-        keepJobId = m_d->previewHistoryJobId;
-        keepImageIndex = m_d->previewHistoryImageIndex;
-    }
-
-    m_d->listHistory->clear();
-    const QSize iconSize = m_d->listHistory->iconSize();
-    const int thumbW = iconSize.width();
-    const int thumbH = iconSize.height();
-    // §13.28a: applied overlay at (thumb.extent.width - 28, 4), 24×24 star
-    const int starX = thumbW - 28;
-    const int starY = 4;
-    const int starSize = 24;
-    QIcon starIcon = ComfyTheme::icon(QStringLiteral("star"));  // §13.153 / §13.28a
-    QPixmap starPix = starIcon.pixmap(starSize, starSize);
-    int selectRow = -1;
-    int row = 0;
-    // §13.131: One row per image (job_id + index); multi-image entries show multiple rows
-    for (const Private::HistoryEntry &e : m_d->historyEntries) {
-        QStringList paths = e.resultImagePaths;
-        if (paths.isEmpty() && !e.resultImagePath.isEmpty())
-            paths << e.resultImagePath;
-        if (paths.isEmpty()) continue;
-        QString snippet = ComfyUIUtils::sanitizePrompt(e.prompt);  // §13.132: safe label for history
-        if (e.prompt.size() > 40) snippet += "…";
-        for (int imageIndex = 0; imageIndex < paths.size(); imageIndex++) {
-            QString path = paths.at(imageIndex);
-            QString tip = QString("%1 (%2×%3)\nSeed: %4").arg(snippet).arg(e.width).arg(e.height).arg(e.seed);
-            if (paths.size() > 1)
-                tip = ComfyTr::tr("Image %1 of %2", imageIndex + 1, paths.size()) + QStringLiteral("\n") + tip;
-            QListWidgetItem *item = new QListWidgetItem();
-            if (!path.isEmpty() && QFile::exists(path)) {
-                QPixmap pix(path);
-                if (!pix.isNull()) {
-                    pix = pix.scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                    if (e.imageInUse.value(imageIndex, false) && !starPix.isNull()) {
-                        QPixmap composite(thumbW, thumbH);
-                        composite.fill(Qt::transparent);
-                        QPainter p(&composite);
-                        p.drawPixmap(0, 0, pix);
-                        p.drawPixmap(starX, starY, starPix);
-                        p.end();
-                        item->setIcon(QIcon(composite));
-                    } else {
-                        item->setIcon(QIcon(pix));
-                    }
-                }
-            }
-            if (item->icon().isNull())
-                item->setText(paths.size() > 1 ? snippet + QStringLiteral(" [%1/%2]").arg(imageIndex + 1).arg(paths.size()) : snippet);
-            item->setToolTip(tip);
-            item->setData(Qt::UserRole, e.jobId);
-            item->setData(Qt::UserRole + 1, imageIndex);
-            m_d->listHistory->addItem(item);
-            if (!keepJobId.isEmpty() && e.jobId == keepJobId && imageIndex == keepImageIndex)
-                selectRow = row;
-            ++row;
-        }
-    }
-    if (selectRow >= 0)
-        m_d->listHistory->setCurrentRow(selectRow);
-    m_d->listHistory->updateOverlayButtons();
 }
 
 void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
@@ -5456,7 +5390,7 @@ void ComfyUIRemoteDock::pruneHistoryToStorageLimit()
     limitMb = qBound(5, limitMb, 20000);
     const qint64 limitBytes = static_cast<qint64>(limitMb) * 1024 * 1024;
     while (m_d->historyEntries.size() > 0 && historyResultStorageBytes() > limitBytes) {
-        Private::HistoryEntry e = m_d->historyEntries.takeLast();
+        Private::HistoryEntry e = m_d->historyEntries.takeFirst();
         evictDocumentEmbeddedSlotIfAny(e.documentSlot);
         QStringList paths = e.resultImagePaths;
         if (paths.isEmpty() && !e.resultImagePath.isEmpty())

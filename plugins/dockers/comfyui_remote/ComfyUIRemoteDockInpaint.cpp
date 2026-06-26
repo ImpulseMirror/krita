@@ -27,6 +27,7 @@
 #include <QRandomGenerator>
 #include <QFileInfo>
 #include <QLoggingCategory>
+#include <QDateTime>
 
 #include <cmath>
 
@@ -1013,9 +1014,10 @@ void ComfyUIRemoteDock::slotInpaintPoll()
             entry.resultImagePaths = QStringList() << cachePath;
             entry.width = outputImage.width();
             entry.height = outputImage.height();
-            m_d->historyEntries.prepend(entry);
+            entry.finishedAt = QDateTime::currentDateTime();
+            m_d->historyEntries.append(entry);
             while (m_d->historyEntries.size() > Private::maxHistoryEntries) {
-                Private::HistoryEntry old = m_d->historyEntries.takeLast();
+                Private::HistoryEntry old = m_d->historyEntries.takeFirst();
                 evictDocumentEmbeddedSlotIfAny(old.documentSlot);
                 QStringList paths = old.resultImagePaths;
                 if (paths.isEmpty() && !old.resultImagePath.isEmpty()) paths << old.resultImagePath;

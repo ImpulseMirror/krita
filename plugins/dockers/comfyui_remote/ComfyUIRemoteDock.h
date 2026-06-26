@@ -57,7 +57,7 @@ private:
     void startPolling();
     void updateQueueStatus();
     void updateWelcomeVisibility();
-    void refreshHistoryList();
+    void refreshHistoryList(bool scrollToBottom = false);
     // §13.131/13.136: Resolve current history row to entry index + image index; returns path for selected image or empty
     QString pathForCurrentHistoryRow(int *outEntryIndex = nullptr, int *outImageIndex = nullptr) const;
     void refreshRegionsList();

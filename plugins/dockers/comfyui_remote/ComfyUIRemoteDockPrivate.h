@@ -38,6 +38,7 @@ class QWebSocket;
 #include <QUrl>
 #include <QRect>
 #include <QSize>
+#include <QDateTime>
 #include <QJsonObject>
 #include <QVariant>
 #include <QDialog>
@@ -342,6 +343,7 @@ struct ComfyUIRemoteDock::Private
         bool hasMask = false;
         QString inpaintMode;
         QRect contextBounds;
+        QDateTime finishedAt;
     };
     QList<HistoryEntry> historyEntries;
     QMap<QString, HistoryEntry> pendingHistoryByPromptId;
@@ -349,7 +351,7 @@ struct ComfyUIRemoteDock::Private
 
     static const int builtinPresetCount = 5; // None, Portrait, Landscape, Anime, Realistic
 
-    void refreshHistoryList();
+    void refreshHistoryList(bool scrollToBottom = false);
 
     QNetworkAccessManager *nam = nullptr;
     QTimer *pollTimer = nullptr;
