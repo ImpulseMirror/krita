@@ -8,17 +8,33 @@
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 
-#include <kis_icon_utils.h>
-
 #include <QComboBox>
 #include <QDir>
+#include <QFile>
 #include <QHash>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QPainter>
+#include <QPixmap>
 #include <QPalette>
+#include <QSvgRenderer>
 #include <QWidget>
 
+static void initComfyThemeIconResources()
+{
+    Q_INIT_RESOURCE(comfy_theme_icons);
+}
+
 namespace ComfyTheme {
+
+void ensureThemeResourcesLoaded()
+{
+    static bool loaded = false;
+    if (!loaded) {
+        initComfyThemeIconResources();
+        loaded = true;
+    }
+}
 
 namespace {
 
@@ -27,23 +43,34 @@ QString themeSuffix()
     return isDarkTheme() ? QStringLiteral("dark") : QStringLiteral("light");
 }
 
-QString iconFilePath(const QString &stem)
+QIcon iconFromPath(const QString &path)
 {
-    const QString base = ComfyUIUtils::pluginInstallDataDir() + QStringLiteral("/icons/");
-    const QString suffix = themeSuffix();
-    const QString svg = base + stem + QLatin1Char('-') + suffix + QStringLiteral(".svg");
-    if (QFileInfo::exists(svg))
-        return svg;
-    const QString png = base + stem + QLatin1Char('-') + suffix + QStringLiteral(".png");
-    if (QFileInfo::exists(png))
-        return png;
-    const QString svgPlain = base + stem + QStringLiteral(".svg");
-    if (QFileInfo::exists(svgPlain))
-        return svgPlain;
-    const QString pngPlain = base + stem + QStringLiteral(".png");
-    if (QFileInfo::exists(pngPlain))
-        return pngPlain;
-    return QString();
+    if (path.isEmpty())
+        return QIcon();
+    if (path.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive)) {
+        QSvgRenderer renderer;
+        if (path.startsWith(QLatin1Char(':'))) {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly))
+                return QIcon();
+            renderer.load(file.readAll());
+        } else {
+            renderer.load(path);
+        }
+        if (!renderer.isValid())
+            return QIcon();
+        QSize size = renderer.defaultSize();
+        if (!size.isValid() || size.width() <= 0 || size.height() <= 0)
+            size = QSize(32, 32);
+        QPixmap pix(size);
+        pix.fill(Qt::transparent);
+        QPainter painter(&pix);
+        renderer.render(&painter);
+        painter.end();
+        return QIcon(pix);
+    }
+    const QIcon fileIcon(path);
+    return fileIcon.isNull() ? QIcon() : fileIcon;
 }
 
 } // namespace
@@ -216,10 +243,9 @@ QString kritaIconNameForThemeStem(const QString &stem)
 
 QIcon icon(const QString &stem)
 {
-    const QString path = iconFilePath(stem);
-    if (!path.isEmpty())
-        return QIcon(path);
-    return KisIconUtils::loadIcon(kritaIconNameForThemeStem(stem));
+    ensureThemeResourcesLoaded();
+    const QString path = ComfyUIUtils::findBundledThemeIconFile(stem, themeSuffix());
+    return iconFromPath(path);
 }
 
 QIcon checkpointIcon(ComfyResources::Arch arch, bool warn)
@@ -269,11 +295,21 @@ QIcon checkpointIconForArchitectureKey(const QString &architectureKey, const QSt
 
 QPixmap logoPixmap(int size)
 {
-    const QString path = ComfyUIUtils::pluginInstallDataDir() + QStringLiteral("/icons/logo-128.png");
+    const QString path =
+        ComfyUIUtils::findBundledThemeIconFile(QStringLiteral("logo-128"), QStringLiteral("light"));
+    if (path.isEmpty()) {
+        const QString legacy =
+            ComfyUIUtils::pluginInstallDataDir() + QStringLiteral("/icons/logo-128.png");
+        QPixmap pix(legacy);
+        if (!pix.isNull()) {
+            if (size > 0 && (pix.width() != size || pix.height() != size))
+                pix = pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            return pix;
+        }
+        return QPixmap();
+    }
     QPixmap pix(path);
-    if (pix.isNull())
-        pix = icon(QStringLiteral("logo-128")).pixmap(size, size);
-    else if (size > 0 && (pix.width() != size || pix.height() != size))
+    if (size > 0 && !pix.isNull() && (pix.width() != size || pix.height() != size))
         pix = pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     return pix;
 }

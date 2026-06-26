@@ -101,6 +101,16 @@ QList<ComfyControlLayerEntry> controlLayersForGenerate(const ComfyUIRemoteDock::
     return mergedJobControlLayers(d->rootControlLayers, regionsForGenerate(d));
 }
 
+int takeGenerateQueueMode(ComfyUIRemoteDock::Private *d)
+{
+    if (d->generateOneShotQueueMode >= 0) {
+        const int mode = d->generateOneShotQueueMode;
+        d->generateOneShotQueueMode = -1;
+        return mode;
+    }
+    return d->comboQueueMode ? d->comboQueueMode->currentData().toInt() : 0;
+}
+
 QImage maskPngForComfyUpload(const QImage &maskGray)
 {
     QImage maskPng(maskGray.size(), QImage::Format_ARGB32);
@@ -218,6 +228,12 @@ ComfyWorkflowEngine::AnimationFrameParams animationFrameParamsFromDock(const Com
 }
 
 } // namespace
+
+void ComfyUIRemoteDock::slotGenerateReplace()
+{
+    m_d->generateOneShotQueueMode = 2;
+    slotGenerate();
+}
 
 // §13.126: End-to-end flow — user action → workflow build (check_color_mode) → queue per QueueMode → POST prompt → poll result → history + UI → Apply
 void ComfyUIRemoteDock::slotGenerate()
@@ -386,7 +402,7 @@ void ComfyUIRemoteDock::slotGenerate()
             if (m_d->isFullAnimationBatch && batchCount > 0)
                 effectiveBatch = batchCount;
             m_d->batchSeedStep = qMax(1, batchCount); // §13.212: step = settings.batch_size, not capped job count
-            int queueMode = m_d->comboQueueMode->currentData().toInt();
+            int queueMode = takeGenerateQueueMode(m_d.data());
             if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
                 queueMode = 0; // §5.7 / §13.92: Animation — supports_batch=False (no replace/front semantics)
             if (queueMode == 2) {
@@ -519,7 +535,7 @@ void ComfyUIRemoteDock::slotGenerate()
             if (m_d->isFullAnimationBatch && batchCount > 0)
                 effectiveBatch = batchCount; // §13.74: one ComfyUI prompt per timeline frame
             m_d->batchSeedStep = qMax(1, batchCount); // §13.212
-            int queueMode = m_d->comboQueueMode->currentData().toInt();
+            int queueMode = takeGenerateQueueMode(m_d.data());
             if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
                 queueMode = 0; // §5.7 / §13.92: Animation — supports_batch=False
             if (queueMode == 2) {
@@ -649,6 +665,13 @@ void ComfyUIRemoteDock::slotGenerate()
         genParams.width = w;
         genParams.height = h;
         genParams.batchSize = 1;
+        genParams.layerCount = m_d->spinLayerCount ? m_d->spinLayerCount->value() : 1;
+        if (genParams.arch == ComfyResources::Arch::QwenL) {
+            genParams.denoise = 1.0;
+            m_d->generatePendingLayerCount = qMax(1, genParams.layerCount);
+        } else {
+            m_d->generatePendingLayerCount = 1;
+        }
 
         QString userPos = ComfyUIUtils::stripPromptComments(m_d->editPrompt->toPlainText()).trimmed();
         const QList<Private::RegionEntry> regsForGen = regionsForGenerate(m_d.data());
@@ -724,7 +747,7 @@ void ComfyUIRemoteDock::slotGenerate()
         effectiveBatch = batchCount; // §13.74: one ComfyUI prompt per timeline frame
     m_d->batchSeedStep = qMax(1, batchCount); // §13.212: +i * settings.batch_size (performance batch), not effectiveBatch
 
-    int queueMode = m_d->comboQueueMode->currentData().toInt();
+    int queueMode = takeGenerateQueueMode(m_d.data());
     if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
         queueMode = 0; // §5.7 / §13.92: Animation — supports_batch=False
     if (queueMode == 2) { // Replace
@@ -2074,6 +2097,11 @@ void ComfyUIRemoteDock::finalizeGenerateWorkflowAndSubmit(QJsonObject workflow)
             &workflow, ctx.samplerNodeId, m_d->generatePendingArch, ctx.extentWidth, ctx.extentHeight, denoise);
     }
 
+    if (m_d->generatePendingArch == ComfyResources::Arch::QwenL && m_d->generatePendingLayerCount > 1) {
+        ComfyWorkflowEngine::packLatentLayersAfterSampler(
+            &workflow, m_d->generatePendingLayerCount, qMax(1, m_d->generatePendingLayerCount));
+    }
+
     ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
 
     const int genBatch = m_d->generateStashedBatch;
@@ -2091,7 +2119,7 @@ void ComfyUIRemoteDock::finalizeGenerateWorkflowAndSubmit(QJsonObject workflow)
         effectiveBatch = genBatch;
     m_d->batchSeedStep = qMax(1, genBatch);
 
-    int queueMode = m_d->comboQueueMode->currentData().toInt();
+    int queueMode = takeGenerateQueueMode(m_d.data());
     if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3)
         queueMode = 0;
     if (queueMode == 2) {
@@ -2415,6 +2443,19 @@ QString inpaintModeLabel(ComfyUIRemoteDock::Private *d, const QString &mode)
     return ix >= 0 ? d->comboInpaintMode->itemText(ix) : mode;
 }
 
+QString linkedEditStyleIdForPreset(const ComfyUIRemoteDock * /*dock*/, ComfyUIRemoteDock::Private *d)
+{
+    if (!d->comboPreset || d->comboPreset->currentIndex() <= 0)
+        return QString();
+    const QVariant data = d->comboPreset->currentData();
+    const QString styleId = data.isValid() && !data.toString().isEmpty()
+        ? data.toString()
+        : QString(QStringLiteral("custom:") + d->comboPreset->currentText());
+    if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+        return st->linkedEditStyle;
+    return QString();
+}
+
 } // namespace
 
 void ComfyUIRemoteDock::setupGenerateInpaintMenus()
@@ -2422,10 +2463,14 @@ void ComfyUIRemoteDock::setupGenerateInpaintMenus()
     auto mk = [this](const QString &mode, const QString &text, const QString &icon, std::optional<bool> edit) {
         QAction *a = new QAction(text, this);
         a->setIcon(ComfyTheme::icon(icon));
+        a->setIconVisibleInMenu(true);
         connect(a, &QAction::triggered, this, [this, mode, edit]() {
             setInpaintModeKey(m_d.data(), mode);
-            if (edit.has_value() && m_d->checkEditMode)
+            if (edit.has_value() && m_d->checkEditMode) {
                 m_d->checkEditMode->setChecked(*edit);
+                KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("EditMode", *edit);
+                refreshRegionsList();
+            }
             updateGenerateOptions();
         });
         return a;
@@ -2495,10 +2540,12 @@ void ComfyUIRemoteDock::showInpaintModeMenu()
     const bool hasSelection = dockHasPartialSelection(m_d.data());
     const int strength = m_d->spinStrength ? m_d->spinStrength->value() : 100;
     const QString ckpt = checkpointForGenerate();
-    const bool canEdit = ComfyUIUtils::isArchEdit(ckpt);
+    const bool archIsEdit = ComfyUIUtils::isArchEdit(ckpt);
+    const bool canEdit = ComfyUIUtils::hasLinkedEditStyle(linkedEditStyleIdForPreset(this, m_d.data()));
 
     QMenu *menu = m_d->menuGenerate;
-    if (!isEdit && canEdit && !hasSelection && !regionOnly) {
+    // FAITHFUL_PORT: generation.py show_inpaint_menu()
+    if (!isEdit && archIsEdit) {
         menu = m_d->menuEdit;
     } else if (strength >= 100) {
         if (regionOnly)
@@ -2519,10 +2566,11 @@ void ComfyUIRemoteDock::showInpaintModeMenu()
     if (!menu)
         return;
 
-    for (QAction *a : menu->actions()) {
-        if (a->text() == ComfyTr::tr("Edit"))
-            a->setEnabled(canEdit);
-    }
+    const QList<QAction *> actions = menu->actions();
+    if (menu == m_d->menuInpaint && actions.size() >= 2)
+        actions.at(actions.size() - 2)->setEnabled(canEdit);
+    else if ((menu == m_d->menuRefine || menu == m_d->menuRefineSelection) && actions.size() >= 2)
+        actions.at(1)->setEnabled(canEdit);
 
     const int width = m_d->btnGenerate->width() + m_d->btnInpaintMode->width();
     menu->setFixedWidth(qMax(width, 160));
@@ -2566,10 +2614,24 @@ void ComfyUIRemoteDock::updateGenerateOptions()
     }
     const bool isCustom = mode == QLatin1String("custom");
     const QString ckpt = checkpointForGenerate();
-    const bool canEdit = ComfyUIUtils::isArchEdit(ckpt);
+    const QString linkedEditStyleId = linkedEditStyleIdForPreset(this, m_d.data());
+    const bool canToggleEdit =
+        ComfyUIUtils::canToggleEditMode(ckpt, linkedEditStyleId);
+    QString styleArch;
+    if (m_d->comboPreset && m_d->comboPreset->currentIndex() > 0) {
+        const QString styleId = encodeStyleIdFromPresetCombo(m_d->comboPreset);
+        if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId))
+            styleArch = st->architecture;
+    }
+    const ComfyResources::Arch genArch = ComfyWorkflowEngine::resolveArch(ckpt, styleArch);
+    const bool qwenLayered = genArch == ComfyResources::Arch::QwenL;
 
     if (m_d->layerCountRow)
-        m_d->layerCountRow->setVisible(false); // qwen_l arch: enable when style exposes layered arch
+        m_d->layerCountRow->setVisible(qwenLayered);
+    if (m_d->sliderStrength)
+        m_d->sliderStrength->setVisible(!qwenLayered);
+    if (m_d->spinStrength)
+        m_d->spinStrength->setVisible(!qwenLayered);
 
     if (m_d->btnRegionMask) {
         m_d->btnRegionMask->setVisible(hasRegions);
@@ -2589,7 +2651,7 @@ void ComfyUIRemoteDock::updateGenerateOptions()
     QString iconName;
     if (!hasSelection && !regionOnly) {
         if (m_d->btnInpaintMode)
-            m_d->btnInpaintMode->setVisible(canEdit);
+            m_d->btnInpaintMode->setVisible(canToggleEdit);
         if (isEdit) {
             iconName = QStringLiteral("edit");
             text = ComfyTr::tr("Edit");
@@ -2624,6 +2686,9 @@ void ComfyUIRemoteDock::updateGenerateOptions()
     m_d->btnGenerate->setText(text);
     if (!iconName.isEmpty())
         m_d->btnGenerate->setIcon(ComfyTheme::icon(iconName));
+
+    if (m_d->btnInpaintMode && m_d->btnGenerate)
+        m_d->btnInpaintMode->setFixedHeight(qMax(20, m_d->btnGenerate->sizeHint().height() - 3));
 }
 
 void ComfyUIRemoteDock::finalizeGenerateWorkspaceLayout()

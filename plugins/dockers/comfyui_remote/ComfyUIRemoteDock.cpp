@@ -133,6 +133,7 @@ Q_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE, "krita.comfyui_remote")
 #include <kis_image.h>
 #include <kis_image_animation_interface.h>
 #include <kis_node.h>
+#include <kis_mask.h>
 #include <KisPart.h>
 #include <KisDocument.h>
 #include <KisImportExportErrorCode.h>
@@ -1515,6 +1516,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->btnGenerate->setIcon(
         ComfyTheme::icon(QStringLiteral("generate")));  // §5.4: sparkle / magic-style icon
     connect(m_d->btnGenerate, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotGenerate);
+    m_d->btnGenerate->installEventFilter(this);
     // Added to generateActionRowWidget after queue button is created.
 
     m_d->btnInpaint = new QPushButton(ComfyTr::tr("Inpaint (selection)"));
@@ -1525,87 +1527,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     // (inpaint_mode_button). Hide the standalone button; the slot stays available
     // for the dropdown / actions.
     m_d->btnInpaint->setVisible(false);
-    // §13.29: Main action menu — switch Generate / Refine / Edit / region / custom without leaving Generate
-    {
-        // FAITHFUL_PORT: wrap the "Actions: Mode & operations" row in a widget so it
-        // can be hidden as a unit. Upstream surfaces these mode choices via the
-        // Generate-button dropdown menu, not a separate row.
-        m_d->actionsRowWidget = new QWidget(m_d->genContentContainer);
-        QHBoxLayout *opLayout = new QHBoxLayout(m_d->actionsRowWidget);
-        opLayout->setContentsMargins(0, 0, 0, 0);
-        opLayout->addWidget(new QLabel(ComfyTr::tr("Actions:"), m_d->actionsRowWidget));
-        m_d->btnGenerateViewOperations = new QToolButton(genGroup);
-        m_d->btnGenerateViewOperations->setText(ComfyTr::tr("Mode && operations"));
-        m_d->btnGenerateViewOperations->setToolTip(ComfyTr::tr(
-            "Choose Generate, Refine, Edit, region workflows, or custom graph without leaving this workspace."));
-        m_d->btnGenerateViewOperations->setPopupMode(QToolButton::InstantPopup);
-        QMenu *opMenu = new QMenu(m_d->btnGenerateViewOperations);
-        opMenu->addAction(ComfyTr::tr("Generate"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
-                m_d->comboWorkspace->setCurrentIndex(0);
-            if (m_d->checkEditMode)
-                m_d->checkEditMode->setChecked(false);
-            setStatusMessage(ComfyTr::tr("Mode: Generate — use the Generate button when ready."));
-        });
-        opMenu->addAction(ComfyTr::tr("Refine"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
-                m_d->comboWorkspace->setCurrentIndex(0);
-            if (m_d->checkEditMode)
-                m_d->checkEditMode->setChecked(false);
-            if (m_d->comboInpaintMode) {
-                const int fillIdx = m_d->comboInpaintMode->findData(QStringLiteral("fill"));
-                if (fillIdx >= 0)
-                    m_d->comboInpaintMode->setCurrentIndex(fillIdx);
-            }
-            setStatusMessage(ComfyTr::tr("Mode: Refine — use Inpaint (selection) with a selection mask."));
-        });
-        opMenu->addAction(ComfyTr::tr("Edit (instruction-based)"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
-                m_d->comboWorkspace->setCurrentIndex(0);
-            if (m_d->checkEditMode)
-                m_d->checkEditMode->setChecked(true);
-            setStatusMessage(ComfyTr::tr("Mode: Edit — instruction-based editing; use the Regions list for per-area prompts."));
-        });
-        opMenu->addAction(ComfyTr::tr("Refine region"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
-                m_d->comboWorkspace->setCurrentIndex(0);
-            if (m_d->checkEditMode)
-                m_d->checkEditMode->setChecked(false);
-            if (m_d->comboInpaintMode)
-                m_d->comboInpaintMode->setCurrentIndex(0);
-            setStatusMessage(ComfyTr::tr("Mode: Refine region — add regions below, then Generate regions."));
-            if (m_d->regionPromptWidget)
-                m_d->regionPromptWidget->focusPromptEditor();
-        });
-        opMenu->addAction(ComfyTr::tr("Edit (per region)"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
-                m_d->comboWorkspace->setCurrentIndex(0);
-            if (m_d->checkEditMode)
-                m_d->checkEditMode->setChecked(true);
-            setStatusMessage(ComfyTr::tr("Mode: Edit per region — use the Regions panel, then Generate regions."));
-            if (m_d->regionPromptWidget)
-                m_d->regionPromptWidget->focusPromptEditor();
-        });
-        opMenu->addAction(ComfyTr::tr("Edit (Custom)"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->count() > 4)
-                m_d->comboWorkspace->setCurrentIndex(4);
-            setStatusMessage(ComfyTr::tr("Mode: Custom workflow — set API JSON under Settings → Workflow, then use Generate."));
-        });
-        opMenu->addAction(ComfyTr::tr("Generate region"), this, [this]() {
-            if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() != 0)
-                m_d->comboWorkspace->setCurrentIndex(0);
-            if (m_d->checkEditMode)
-                m_d->checkEditMode->setChecked(false);
-            setStatusMessage(ComfyTr::tr("Mode: Generate region — choose a region below, then Generate regions."));
-            if (m_d->regionPromptWidget)
-                m_d->regionPromptWidget->focusPromptEditor();
-        });
-        m_d->btnGenerateViewOperations->setMenu(opMenu);
-        opLayout->addWidget(m_d->btnGenerateViewOperations);
-        opLayout->addStretch();
-        genContentLayout->addWidget(m_d->actionsRowWidget);
-        m_d->actionsRowWidget->setVisible(false);
-    }
     // §13.206 / P4.1: InpaintMode — all seven Python modes with theme icons
     m_d->customInpaintRowWidget = new QWidget(m_d->genContentContainer);
     QHBoxLayout *customInpaintLay = new QHBoxLayout(m_d->customInpaintRowWidget);
@@ -2727,12 +2648,48 @@ void ComfyUIRemoteDock::updateInpaintControlsForArch()
     const bool editUi = m_d->checkEditMode && m_d->checkEditMode->isChecked();
     if (m_d->checkInpaintUseModel)
         m_d->checkInpaintUseModel->setEnabled(ComfyResources::isSdxlLike(arch) || ComfyResources::hasControlnetInpaint(arch));
-    // FAITHFUL_PORT: visibility is owned by applyInterfaceAppearanceSettings() in
-    // the compact view; do NOT re-show the Focus switch based on architecture.
+    if (m_d->checkInpaintUsePromptFocus) {
+        const bool showFocus = arch == ComfyResources::Arch::Sd15 || ComfyResources::isSdxlLike(arch);
+        m_d->checkInpaintUsePromptFocus->setVisible(showFocus);
+    }
     if (m_d->comboFillMode) {
         const bool strengthFull = m_d->spinStrength && m_d->spinStrength->value() >= 100;
         m_d->comboFillMode->setEnabled(strengthFull && !editArch && !editUi);
     }
+}
+
+void ComfyUIRemoteDock::refreshInpaintContextLayers()
+{
+    if (!m_d->comboInpaintContext || !m_d->viewManager)
+        return;
+    KisImageSP image = m_d->viewManager->image();
+    if (!image)
+        return;
+
+    const QVariant current = m_d->comboInpaintContext->currentData();
+    QSignalBlocker blocker(m_d->comboInpaintContext);
+    while (m_d->comboInpaintContext->count() > 4)
+        m_d->comboInpaintContext->removeItem(m_d->comboInpaintContext->count() - 1);
+
+    const QIcon layerIcon = ComfyTheme::icon(QStringLiteral("context-layer"));
+    QList<KisNodeSP> stack;
+    if (KisNodeSP root = image->rootLayer())
+        stack.append(root);
+    while (!stack.isEmpty()) {
+        KisNodeSP node = stack.takeFirst();
+        for (int i = 0; i < static_cast<int>(node->childCount()); ++i)
+            stack.append(node->at(i));
+        if (!dynamic_cast<KisMask *>(node.data()))
+            continue;
+        const QString layerId = node->uuid().toString();
+        if (layerId.isEmpty())
+            continue;
+        m_d->comboInpaintContext->addItem(layerIcon, node->name(), layerId);
+    }
+
+    const int restore = m_d->comboInpaintContext->findData(current);
+    if (restore >= 0)
+        m_d->comboInpaintContext->setCurrentIndex(restore);
 }
 
 void ComfyUIRemoteDock::saveInpaintWorkspaceToDocument()
@@ -3238,7 +3195,14 @@ bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
     }
-    // §13.196: Shift+Enter in main prompt → same as clicking Generate
+    // §13.196: Ctrl+click Generate → replace queue for one job (upstream generate_replace).
+    if (obj == m_d->btnGenerate && event->type() == QEvent::MouseButtonPress) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton && (me->modifiers() & Qt::ControlModifier)) {
+            slotGenerateReplace();
+            return true;
+        }
+    }
     if (obj == m_d->editPrompt && event->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && (ke->modifiers() & Qt::ShiftModifier)) {
@@ -3666,6 +3630,8 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
             loadDocumentHistoryFromAnnotations();
             loadAnimationWorkspaceFromDocument();
             tryBindPreviewLayerFromDocument();
+            refreshInpaintContextLayers();
+            updateGenerateOptions();
         } else {
             if (m_d->documentSyncPoller)
                 m_d->documentSyncPoller->stop();
@@ -4252,6 +4218,7 @@ void ComfyUIRemoteDock::slotDocumentSyncPoll()
 
     if (m_d->regionPromptWidget)
         m_d->regionPromptWidget->onActiveLayerChanged();
+    refreshInpaintContextLayers();
 }
 
 void ComfyUIRemoteDock::slotDebouncedAnimationTargetPreview()
@@ -5082,7 +5049,6 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     if (m_d->stepsParametersWidget) m_d->stepsParametersWidget->setVisible(false);
     if (m_d->seedRowWidget) m_d->seedRowWidget->setVisible(false);
     if (m_d->sizeRowWidget) m_d->sizeRowWidget->setVisible(false);
-    if (m_d->actionsRowWidget) m_d->actionsRowWidget->setVisible(false);
     if (m_d->btnInpaint) m_d->btnInpaint->setVisible(false);
     if (m_d->comboInpaintMode) m_d->comboInpaintMode->setVisible(false);
     if (m_d->comboFillMode) m_d->comboFillMode->setVisible(false);
@@ -5091,7 +5057,6 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     if (m_d->checkInpaintUsePromptFocus) m_d->checkInpaintUsePromptFocus->setVisible(false);
     if (m_d->checkRegionOnly) m_d->checkRegionOnly->setVisible(false);
     if (m_d->checkEditMode) m_d->checkEditMode->setVisible(false);
-    if (m_d->btnGenerateViewOperations) m_d->btnGenerateViewOperations->setVisible(false);
     if (m_d->btnRefreshSamplers) m_d->btnRefreshSamplers->setVisible(false);
     if (m_d->btnRefreshCheckpoints) m_d->btnRefreshCheckpoints->setVisible(false);
     // FAITHFUL_PORT: "Control preprocessor preview" groupbox is not part of the

@@ -89,7 +89,6 @@ struct ComfyUIRemoteDock::Private
     // in the Settings dialog or per-style preset, not on the main docker).
     QWidget *seedRowWidget = nullptr;
     QWidget *sizeRowWidget = nullptr;
-    QWidget *actionsRowWidget = nullptr;
     QWidget *presetRowWidget = nullptr;
     // Settings dialog Styles tab — must outlive slotConfigureHelp() because
     // the dialog (and its long-lived signal/slot lambdas) keep references to
@@ -144,7 +143,6 @@ struct ComfyUIRemoteDock::Private
     QPushButton *btnGenerate = nullptr;
     QPushButton *btnCancelQueue = nullptr;
     QPushButton *btnInpaint = nullptr;
-    QToolButton *btnGenerateViewOperations = nullptr; // §13.29: main action menu (Generate / Refine / Edit / …)
     QLabel *labelPrompt = nullptr;
     QSlider *sliderStrength = nullptr;
     QWidget *strengthRowWidget = nullptr;
@@ -280,6 +278,9 @@ struct ComfyUIRemoteDock::Private
     double generateStashedMul = 1.0;
     QJsonObject generatePendingBaseWorkflow;
     ComfyResources::Arch generatePendingArch = ComfyResources::Arch::Sd15;
+    int generatePendingLayerCount = 1;
+    /// FAITHFUL_PORT: Ctrl+click Generate → QueueMode.replace for one submit only (-1 = use combo).
+    int generateOneShotQueueMode = -1;
     QList<ComfyWorkflowEngine::RegionalPromptInput> generateRegionalInputs;
     QList<ComfyRegionProcess::ProcessedRegionEntry> generateProcessedRegions;
     bool generateAwaitingRegionMaskUploads = false;

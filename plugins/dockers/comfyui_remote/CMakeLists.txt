@@ -1,4 +1,19 @@
 # Static lib for dock (used by plugin and tests)
+file(GLOB _comfy_theme_icons CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/icons/*.svg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/icons/*.png")
+set(_comfy_icons_qrc "${CMAKE_CURRENT_BINARY_DIR}/comfy_theme_icons.qrc")
+if(_comfy_theme_icons)
+    file(WRITE "${_comfy_icons_qrc}" "<RCC>\n  <qresource prefix=\"/comfyicons\">\n")
+    foreach(_icon IN LISTS _comfy_theme_icons)
+        get_filename_component(_fname "${_icon}" NAME)
+        file(APPEND "${_comfy_icons_qrc}" "    <file alias=\"${_fname}\">${_icon}</file>\n")
+    endforeach()
+    file(APPEND "${_comfy_icons_qrc}" "  </qresource>\n</RCC>\n")
+else()
+    file(WRITE "${_comfy_icons_qrc}" "<RCC/>\n")
+endif()
+
 set(kritacomfyuiremote_static_SOURCES
     ComfyControlLayer.cpp
     ComfyControlLayerRowWidget.cpp
@@ -38,8 +53,10 @@ set(kritacomfyuiremote_static_SOURCES
     ComfyUIRemoteDockSettings.cpp
     ComfyUIRemoteDockUpscale.cpp
     ComfyUIRemoteDockWebWorkflow.cpp
+    ${_comfy_icons_qrc}
 )
 kis_add_library(kritacomfyuiremote_static STATIC ${kritacomfyuiremote_static_SOURCES})
+set_target_properties(kritacomfyuiremote_static PROPERTIES AUTORCC ON)
 target_link_libraries(kritacomfyuiremote_static PRIVATE kritaimage kritaui)
 target_compile_definitions(kritacomfyuiremote_static PRIVATE
     "COMFYUI_PLUGIN_SOURCE_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")

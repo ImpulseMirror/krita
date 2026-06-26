@@ -200,6 +200,8 @@ private Q_SLOTS:
     void slotSaveCurrentPreset();
     void slotDeletePreset();
     void slotGenerate();
+    /// FAITHFUL_PORT: GenerateButton.ctrl_clicked → model.generate_replace (QueueMode.replace for one job).
+    void slotGenerateReplace();
     void slotBatchSubmitNext();
     void slotCancelQueue();
     void slotHistoryReRun();
@@ -330,6 +332,7 @@ private:
     void saveInpaintWorkspaceToDocument();
     void loadInpaintWorkspaceFromDocument();
     void updateInpaintControlsForArch();
+    void refreshInpaintContextLayers();
     /// FAITHFUL_PORT: GenerationWidget.update_generate_options — dynamic CTA + inpaint chrome
     void updateGenerateOptions();
     void setupGenerateInpaintMenus();

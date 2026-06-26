@@ -26,6 +26,7 @@ struct TextToImageParams {
     int width = 512;
     int height = 512;
     int batchSize = 1;
+    int layerCount = 1;
     QString positivePrompt;
     QString negativePrompt;
     /// P4.2: 2-letter code when translation_enabled (ETN_Translate via lang:xx directives); empty = off.
@@ -55,6 +56,9 @@ void finishWorkflowWithSamplerCustom(QJsonObject *workflow,
                                      int extentWidth,
                                      int extentHeight,
                                      double denoiseStrength);
+
+/// Python pack_latent_layers — LatentCutToBatch before VAEDecode when Qwen Layered layer_count > 1.
+void packLatentLayersAfterSampler(QJsonObject *workflow, int layerCount, int batchSlice);
 
 /// Control / IP-Adapter / regional inputs applied after base graph (Python Conditioning).
 struct GenerationConditioningParams {
@@ -145,6 +149,8 @@ struct RefineRegionParams {
     int extentHeight = 512;
     int growMaskBy = 6;
     int featherMaskBy = 0;
+    int blendMaskBy = 0;
+    QRect targetBoundsRelative;
     bool colorMatch = false;
 };
 
@@ -197,6 +203,8 @@ struct InpaintBuildParams {
     int featherMaskBy = 0;
     int blendMaskBy = 0;
     QRect targetBoundsRelative;
+    int contextExtentWidth = 512;
+    int contextExtentHeight = 512;
     QString fillKind = QStringLiteral("none");
     bool useConditionMask = false;
     QString backgroundPrompt;

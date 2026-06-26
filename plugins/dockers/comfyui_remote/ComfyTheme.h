@@ -41,7 +41,9 @@ void applyFlatComboStyle(QWidget *widget);
 /// Krita/Breeze fallback when bundled SVG is missing (moved from ComfyUIUtils).
 QString kritaIconNameForThemeStem(const QString &stem);
 
-/// Python theme.icon(name): data/icons/{name}-{dark|light}.svg|.png, else Krita icon.
+void ensureThemeResourcesLoaded();
+
+/// Python theme.icon(name): bundled data/icons/{name}-{dark|light}.svg|.png from ai_diffusion.
 QIcon icon(const QString &stem);
 
 /// Python theme.checkpoint_icon(arch).

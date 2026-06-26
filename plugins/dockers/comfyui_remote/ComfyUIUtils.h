@@ -51,6 +51,8 @@ QString historyCacheDir();
 /// Installed plugin data (styles, presets, tags) — sibling to kritacomfyuiremote module or source tree in dev.
 QString pluginInstallDataDir();
 void ensureBundledPluginDataInstalled();
+/// ai_diffusion theme.icon(): bundled SVG/PNG under data/icons ({stem}-{themeSuffix}.svg).
+QString findBundledThemeIconFile(const QString &stem, const QString &themeSuffix);
 QString pluginUserDataDir();
 #ifdef COMFYUI_ENABLE_TEST_HOOKS
 namespace ComfyUITestHooks {
@@ -539,6 +541,12 @@ QString classifyCheckpointArch(const QString &ckptName);
 
 // §13.206: True when arch is an edit model (flux_k, qwen_e, qwen_e_p, qwen_l) — result.mode = custom, result.fill = none
 bool isArchEdit(const QString &ckptName);
+
+/// Python DocumentModel.can_edit — linked instruction-edit style configured.
+bool hasLinkedEditStyle(const QString &linkedEditStyleId);
+
+/// Python DocumentModel.can_toggle_edit — dropdown visible on full canvas (non-edit arch + linked edit).
+bool canToggleEditMode(const QString &ckptName, const QString &linkedEditStyleId);
 
 // §13.206: InpaintParams derived from mode, arch, strength, and conditioning (detect_inpaint equivalent)
 struct InpaintParams {

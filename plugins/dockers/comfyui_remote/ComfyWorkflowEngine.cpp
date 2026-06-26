@@ -213,6 +213,43 @@ static QString insertCropImage(QJsonObject *workflow, int *nextId, const QString
     return id;
 }
 
+static QString insertScaleImage(QJsonObject *workflow, int *nextId, const QString &imageNodeId, int imageSlot, int width,
+                                int height)
+{
+    if (!workflow || width <= 0 || height <= 0)
+        return imageNodeId;
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ImageScale")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("image"), QJsonArray{imageNodeId, imageSlot}},
+                                              {QStringLiteral("width"), width},
+                                              {QStringLiteral("height"), height},
+                                              {QStringLiteral("upscale_method"), QStringLiteral("lanczos")},
+                                              {QStringLiteral("crop"), QStringLiteral("disabled")}}}});
+    return id;
+}
+
+static QString insertMaskToImage(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int maskSlot)
+{
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("MaskToImage")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}}}}});
+    return id;
+}
+
+static QString insertScaleMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int maskSlot, int width,
+                               int height)
+{
+    if (!workflow || width <= 0 || height <= 0)
+        return maskNodeId;
+    const QString asImage = insertMaskToImage(workflow, nextId, maskNodeId, maskSlot);
+    const QString scaled = insertScaleImage(workflow, nextId, asImage, 0, width, height);
+    return insertImageToMask(workflow, nextId, scaled, QStringLiteral("red"));
+}
+
 static QString insertShrinkMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int maskSlot, int shrink, int blur)
 {
     if (!workflow || shrink <= 0 && blur <= 0)
@@ -225,6 +262,18 @@ static QString insertShrinkMask(QJsonObject *workflow, int *nextId, const QStrin
                                               {QStringLiteral("shrink"), qMax(0, shrink)},
                                               {QStringLiteral("blur"), qMax(0, blur)},
                                               {QStringLiteral("blur_type"), QStringLiteral("gaussian")}}}});
+    return id;
+}
+
+static QString insertThresholdMask(QJsonObject *workflow, int *nextId, const QString &maskNodeId, int maskSlot,
+                                   double threshold = 0.0)
+{
+    const QString id = QString::number((*nextId)++);
+    workflow->insert(id,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ThresholdMask")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("mask"), QJsonArray{maskNodeId, maskSlot}},
+                                              {QStringLiteral("value"), threshold}}}});
     return id;
 }
 
@@ -532,6 +581,12 @@ QJsonObject buildTextToImage(const TextToImageParams &params)
         i5.insert(QStringLiteral("width"), qMax(64, params.width));
         i5.insert(QStringLiteral("height"), qMax(64, params.height));
         i5.insert(QStringLiteral("batch_size"), qMax(1, params.batchSize));
+        if (arch == ComfyResources::Arch::QwenL && params.layerCount > 1) {
+            n5.insert(QStringLiteral("class_type"), QStringLiteral("EmptyHunyuanLatentVideo"));
+            i5.insert(QStringLiteral("length"), 1 + params.layerCount * 4);
+            i5.remove(QStringLiteral("batch_size"));
+            i5.insert(QStringLiteral("batch_size"), qMax(1, params.batchSize));
+        }
         n5.insert(QStringLiteral("inputs"), i5);
         workflow.insert(QStringLiteral("5"), n5);
     }
@@ -1634,6 +1689,43 @@ QList<ComfyWorkflowEngine::RegionalPromptInput> filterRegionalPromptsForTile(
 }
 
 } // namespace
+
+void packLatentLayersAfterSampler(QJsonObject *workflow, int layerCount, int batchSlice)
+{
+    if (!workflow || layerCount <= 1)
+        return;
+
+    QString decodeId;
+    for (auto it = workflow->constBegin(); it != workflow->constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("VAEDecode")) {
+            decodeId = it.key();
+            break;
+        }
+    }
+    if (decodeId.isEmpty())
+        return;
+
+    QJsonObject decode = workflow->value(decodeId).toObject();
+    QJsonObject inputs = decode.value(QStringLiteral("inputs")).toObject();
+    const QJsonArray samplesLink = inputs.value(QStringLiteral("samples")).toArray();
+    if (samplesLink.size() < 2)
+        return;
+
+    int nextId = 500;
+    while (workflow->contains(QString::number(nextId)))
+        ++nextId;
+    const QString cutId = QString::number(nextId++);
+    workflow->insert(cutId,
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("LatentCutToBatch")},
+                                 {QStringLiteral("inputs"),
+                                  QJsonObject{{QStringLiteral("samples"), samplesLink},
+                                              {QStringLiteral("dim"), QStringLiteral("t")},
+                                              {QStringLiteral("slice_size"), qMax(1, batchSlice)}}}});
+    inputs.insert(QStringLiteral("samples"), QJsonArray{cutId, 0});
+    decode.insert(QStringLiteral("inputs"), inputs);
+    workflow->insert(decodeId, decode);
+}
 
 QJsonObject buildUpscaleTiled(const UpscaleTiledParams &params)
 {

@@ -1271,9 +1271,126 @@ static bool copyFileIfMissing(const QString &src, const QString &dest)
     return QFile::copy(src, dest);
 }
 
+static QStringList pluginIconSearchBases()
+{
+    QStringList bases;
+    bases << pluginUserDataDir() + QStringLiteral("/icons/");
+    const QString install = pluginInstallDataDir();
+    if (!install.isEmpty())
+        bases << install + QStringLiteral("/icons/");
+    const QString binDir = pluginBinaryDirectory();
+    if (!binDir.isEmpty()) {
+        bases << binDir + QStringLiteral("/data/icons/");
+        bases << binDir + QStringLiteral("/comfyui_remote/data/icons/");
+    }
+#ifdef COMFYUI_PLUGIN_SOURCE_DATA_DIR
+    bases << QStringLiteral(COMFYUI_PLUGIN_SOURCE_DATA_DIR) + QStringLiteral("/icons/");
+#endif
+    return bases;
+}
+
+static void copyBundledIconsIfNeeded(const QString &install, const QString &user)
+{
+    const QDir src(install + QStringLiteral("/icons"));
+    if (!src.exists())
+        return;
+    const QString dstPath = user + QStringLiteral("/icons");
+    QDir().mkpath(dstPath);
+    const QDir dst(dstPath);
+
+    int srcCount = 0;
+    const QStringList files = src.entryList(QDir::Files);
+    for (const QString &fn : files) {
+        if (fn.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive)
+            || fn.endsWith(QLatin1String(".png"), Qt::CaseInsensitive))
+            ++srcCount;
+    }
+
+    const QString marker = dst.absoluteFilePath(QStringLiteral(".bundled_icon_count"));
+    if (QFile::exists(marker)) {
+        QFile mf(marker);
+        if (mf.open(QIODevice::ReadOnly)) {
+            if (mf.readAll().trimmed() == QByteArray::number(srcCount))
+                return;
+        }
+    }
+
+    for (const QString &fn : files) {
+        if (!(fn.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive)
+              || fn.endsWith(QLatin1String(".png"), Qt::CaseInsensitive)))
+            continue;
+        const QString dest = dst.absoluteFilePath(fn);
+        if (QFile::exists(dest))
+            QFile::remove(dest);
+        QFile::copy(src.absoluteFilePath(fn), dest);
+    }
+    QFile mf(marker);
+    if (mf.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        mf.write(QByteArray::number(srcCount));
+}
+
+QString findBundledThemeIconFile(const QString &stem, const QString &themeSuffix)
+{
+    if (stem.isEmpty())
+        return QString();
+    const QString suffix = themeSuffix.isEmpty() ? QStringLiteral("light") : themeSuffix;
+
+    const auto qrcPath = [&](const QString &name) -> QString {
+        const QString p = QStringLiteral(":/comfyicons/") + name;
+        return QFile::exists(p) ? p : QString();
+    };
+    {
+        const QString p = qrcPath(stem + QLatin1Char('-') + suffix + QStringLiteral(".svg"));
+        if (!p.isEmpty())
+            return p;
+    }
+    {
+        const QString p = qrcPath(stem + QLatin1Char('-') + suffix + QStringLiteral(".png"));
+        if (!p.isEmpty())
+            return p;
+    }
+    {
+        const QString p = qrcPath(stem + QStringLiteral(".svg"));
+        if (!p.isEmpty())
+            return p;
+    }
+    {
+        const QString p = qrcPath(stem + QStringLiteral(".png"));
+        if (!p.isEmpty())
+            return p;
+    }
+
+    ensureBundledPluginDataInstalled();
+    for (const QString &base : pluginIconSearchBases()) {
+        if (base.isEmpty())
+            continue;
+        const QString svg = base + stem + QLatin1Char('-') + suffix + QStringLiteral(".svg");
+        if (QFileInfo::exists(svg))
+            return svg;
+        const QString png = base + stem + QLatin1Char('-') + suffix + QStringLiteral(".png");
+        if (QFileInfo::exists(png))
+            return png;
+    }
+    for (const QString &base : pluginIconSearchBases()) {
+        if (base.isEmpty())
+            continue;
+        const QString svgPlain = base + stem + QStringLiteral(".svg");
+        if (QFileInfo::exists(svgPlain))
+            return svgPlain;
+        const QString pngPlain = base + stem + QStringLiteral(".png");
+        if (QFileInfo::exists(pngPlain))
+            return pngPlain;
+    }
+    return QString();
+}
+
 void ensureBundledPluginDataInstalled()
 {
-    const QString install = pluginInstallDataDir();
+    QString install = pluginInstallDataDir();
+#ifdef COMFYUI_PLUGIN_SOURCE_DATA_DIR
+    if (install.isEmpty())
+        install = QStringLiteral(COMFYUI_PLUGIN_SOURCE_DATA_DIR);
+#endif
     if (install.isEmpty())
         return;
     const QString user = pluginUserDataDir();
@@ -1288,6 +1405,7 @@ void ensureBundledPluginDataInstalled()
             copyFileIfMissing(tagSrc.absoluteFilePath(fn), tagDst + QLatin1Char('/') + fn);
         }
     }
+    copyBundledIconsIfNeeded(install, user);
 }
 
 QString pluginLogDir()
@@ -3189,6 +3307,16 @@ bool isArchEdit(const QString &ckptName)
     return arch == QLatin1String("flux_k") || arch.startsWith(QLatin1String("qwen"));
 }
 
+bool hasLinkedEditStyle(const QString &linkedEditStyleId)
+{
+    return !linkedEditStyleId.trimmed().isEmpty();
+}
+
+bool canToggleEditMode(const QString &ckptName, const QString &linkedEditStyleId)
+{
+    return !isArchEdit(ckptName) && hasLinkedEditStyle(linkedEditStyleId);
+}
+
 // §13.206: detect_inpaint() — InpaintParams from mode, arch, strength, conditioning
 InpaintParams detectInpaintParams(const QString &mode, const QString &arch, double strength0to1,
                                  bool positiveEmpty, bool hasStructuralControl, bool editReference)
@@ -3608,6 +3736,27 @@ QRect computeInpaintContextBounds(KisImageSP image, KisViewManager *viewManager,
         }
         const QRect r = layerR.isEmpty() ? selectionRect : layerR.united(selectionRect);
         return padRect(r);
+    }
+
+    {
+        const QUuid layerUuid = QUuid::fromString(ctx);
+        if (!layerUuid.isNull() && image) {
+            KisNodeSP root = image->rootLayer();
+            QList<KisNodeSP> stack;
+            if (root)
+                stack.append(root);
+            while (!stack.isEmpty()) {
+                KisNodeSP node = stack.takeFirst();
+                for (int i = 0; i < static_cast<int>(node->childCount()); ++i)
+                    stack.append(node->at(i));
+                if (node->uuid() != layerUuid)
+                    continue;
+                const QRect layerR = node->exactBounds() & doc;
+                if (!layerR.isEmpty())
+                    return padRect(layerR.united(selectionRect));
+                break;
+            }
+        }
     }
 
     // mask_bounds: selectionRect is already padded (create_mask_from_selection equivalent).

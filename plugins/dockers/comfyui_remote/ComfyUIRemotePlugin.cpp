@@ -14,6 +14,7 @@
 #include <KoDockFactoryBase.h>
 #include <KoDockRegistry.h>
 #include "ComfyUIRemoteDock.h"
+#include "ComfyTheme.h"
 
 #include <QCoreApplication>
 #include <QVersionNumber>
@@ -66,6 +67,7 @@ public:
 ComfyUIRemotePlugin::ComfyUIRemotePlugin(QObject *parent, const QVariantList &)
     : QObject(parent)
 {
+    ComfyTheme::ensureThemeResourcesLoaded();
     warnIfKritaBelowDocumentedMinimum();
     ComfyUIUtils::migrateMainWindowDockLayoutComfyUIRemoteToImageDiffusion(); // §10.2: preserve layout after factory id change
     ComfyUIUtils::checkPluginInstallationPath();  // §13.165: warn if not in expected location

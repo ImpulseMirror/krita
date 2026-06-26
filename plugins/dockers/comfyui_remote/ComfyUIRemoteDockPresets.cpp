@@ -41,6 +41,7 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
     updateNegativePromptAlertVisibility();  // §13.143: update alert when style changes
     if (index <= 0) {
         persistDocumentDefaultsToSettings();  // §13.194
+        updateGenerateOptions();
         return; // None
     }
     if (index < firstCustom) {
@@ -51,6 +52,7 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
         if (styleIdx >= 0 && styleIdx < styles.size())
             applyComfyStyleEntry(*styles.at(styleIdx));
         persistDocumentDefaultsToSettings();  // §13.194
+        updateGenerateOptions();
         return;
     }
     // Custom preset: load from config
@@ -82,6 +84,7 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
         else m_d->comboCheckpoint->setCurrentText(ckpt);
     }
     persistDocumentDefaultsToSettings();  // §13.194
+    updateGenerateOptions();
 }
 
 void ComfyUIRemoteDock::slotSaveAsPreset()
