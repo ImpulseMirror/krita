@@ -105,7 +105,7 @@ QString pathFromRequestLine(const QByteArray &line)
 ComfyMockHttpServer::ComfyMockHttpServer(QObject *parent)
     : QObject(parent)
 {
-    connect(&m_server, &QTcpServer::newConnection, this, &ComfyMockHttpServer::onNewConnection);
+    QObject::connect(&m_server, &QTcpServer::newConnection, this, &ComfyMockHttpServer::onNewConnection);
 }
 
 bool ComfyMockHttpServer::listen()
@@ -127,14 +127,29 @@ void ComfyMockHttpServer::onNewConnection()
 {
     while (QTcpSocket *socket = m_server.nextPendingConnection()) {
         auto *buffer = new QByteArray();
-        connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer]() {
+        QObject::connect(socket, &QTcpSocket::readyRead, this, [this, socket, buffer]() {
             buffer->append(socket->readAll());
             if (!buffer->contains("\r\n\r\n"))
                 return;
+
+            const int headerEnd = buffer->indexOf("\r\n\r\n");
+            int contentLength = 0;
+            const QList<QByteArray> headerLines = buffer->left(headerEnd).split('\n');
+            for (int i = 1; i < headerLines.size(); ++i) {
+                const QByteArray hl = headerLines.at(i).trimmed();
+                if (hl.toLower().startsWith("content-length:")) {
+                    contentLength = hl.mid(15).trimmed().toInt();
+                    break;
+                }
+            }
+            const int bodyStart = headerEnd + 4;
+            if (buffer->size() - bodyStart < contentLength)
+                return;
+
             handleRequest(socket, buffer);
             delete buffer;
         });
-        connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
     }
 }
 
@@ -189,6 +204,9 @@ void ComfyMockHttpServer::handleRequest(QTcpSocket *socket, QByteArray *buffer)
         responseBody = QByteArrayLiteral("translated-mock");
     } else if (pathOnly.contains(QLatin1String("/api/etn/upload/loras/"))) {
         responseBody = QByteArrayLiteral("{\"ok\":true}");
+    } else if (pathOnly.endsWith(QLatin1String("/upload/image")) || pathOnly.contains(QLatin1String("/upload/image"))) {
+        m_uploadImageHitCount++;
+        responseBody = QByteArrayLiteral("{\"name\":\"mock-upload.png\"}");
     } else if (pathOnly.endsWith(QLatin1String("/prompt")) || pathOnly == QLatin1String("/prompt")) {
         responseBody = QByteArrayLiteral("{\"prompt_id\":\"mock-prompt-42\"}");
     } else if (pathOnly.contains(QLatin1String("/history/"))) {

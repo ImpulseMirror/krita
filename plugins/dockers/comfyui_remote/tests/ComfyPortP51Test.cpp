@@ -19,11 +19,13 @@
 #include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
 
+using namespace ComfyUIUtils;
+
 class ComfyPortP51Test : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
     void init();
     void cleanup();
 
@@ -45,11 +47,18 @@ private slots:
     void testBuildGenerateUsesSamplerCustom();
     void testBuildControlPreviewInEngine();
     void testBuildRefineRegionUsesInpaintGraph();
+    void testBuildRefineRegionSdxlUsesInpaintConditioning();
     void testControlNetLineInvertAndUnionType();
     void testUnionControlNetTypeForMode();
     void testLoadCheckpointWithLoraInsertsLoraLoader();
     void testBuildRefineRegionColorMatchNode();
     void testBuildRefineRegionDifferentialDiffusionNoCycle();
+    void testBuildInpaintFillUsesMaskedBlurAndLatentMask();
+    void testBuildInpaintInpaintModelNoControlUsesVaeEncodeInpaintConditioning();
+    void testBuildInpaintInpaintModelSamplerLatentOutputSlot();
+
+private:
+    QTemporaryDir m_tempDir;
 };
 
 void ComfyPortP51Test::init()
@@ -430,7 +439,7 @@ void ComfyPortP51Test::testBuildRefineRegionUsesInpaintGraph()
 {
     ComfyWorkflowEngine::RefineRegionParams rp;
     rp.refine.imageName = QStringLiteral("canvas.png");
-    rp.refine.maskImageName = QStringLiteral("mask.png");
+    rp.maskImageName = QStringLiteral("mask.png");
     rp.refine.positivePrompt = QStringLiteral("refine region");
     rp.refine.arch = ComfyResources::Arch::Sd15;
     rp.growMaskBy = 4;
@@ -481,6 +490,35 @@ void ComfyPortP51Test::testBuildRefineRegionUsesInpaintGraph()
         QCOMPARE(vae.at(1).toInt(), 2);
         break;
     }
+}
+
+void ComfyPortP51Test::testBuildRefineRegionSdxlUsesInpaintConditioning()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("canvas.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sdxl;
+    rp.refine.denoise = 0.7;
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    bool hasInpaintCond = false;
+    bool hasPlainVaeEncode = false;
+    bool hasLatentNoiseMask = false;
+    bool hasApplyMaskSave = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("INPAINT_VAEEncodeInpaintConditioning"))
+            hasInpaintCond = true;
+        if (cls == QLatin1String("VAEEncode"))
+            hasPlainVaeEncode = true;
+        if (cls == QLatin1String("SetLatentNoiseMask"))
+            hasLatentNoiseMask = true;
+        if (cls == QLatin1String("ETN_ApplyMaskToImage"))
+            hasApplyMaskSave = true;
+    }
+    QVERIFY(hasInpaintCond);
+    QVERIFY(!hasPlainVaeEncode);
+    QVERIFY(!hasLatentNoiseMask);
+    QVERIFY(!hasApplyMaskSave);
 }
 
 void ComfyPortP51Test::testUnionControlNetTypeForMode()
@@ -553,7 +591,7 @@ void ComfyPortP51Test::testBuildRefineRegionColorMatchNode()
 {
     ComfyWorkflowEngine::RefineRegionParams rp;
     rp.refine.imageName = QStringLiteral("img.png");
-    rp.refine.maskImageName = QStringLiteral("mask.png");
+    rp.maskImageName = QStringLiteral("mask.png");
     rp.refine.arch = ComfyResources::Arch::Sd15;
     rp.colorMatch = true;
     const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
@@ -580,7 +618,7 @@ void ComfyPortP51Test::testBuildRefineRegionDifferentialDiffusionNoCycle()
 {
     ComfyWorkflowEngine::RefineRegionParams rp;
     rp.refine.imageName = QStringLiteral("img.png");
-    rp.refine.maskImageName = QStringLiteral("mask.png");
+    rp.maskImageName = QStringLiteral("mask.png");
     rp.refine.arch = ComfyResources::Arch::Sdxl;
     const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
     QString diffId;
@@ -600,11 +638,23 @@ void ComfyPortP51Test::testBuildRefineRegionDifferentialDiffusionNoCycle()
     QVERIFY2(!modelSourceId.isEmpty(), "DifferentialDiffusion model source missing");
     bool samplerUsesDiff = false;
     for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
-        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
-        if (cls != QLatin1String("SamplerCustomAdvanced") && cls != QLatin1String("KSampler"))
+        const QJsonObject node = it.value().toObject();
+        const QString cls = node.value(QStringLiteral("class_type")).toString();
+        const QJsonObject inputs = node.value(QStringLiteral("inputs")).toObject();
+        if (cls == QLatin1String("SamplerCustomAdvanced")) {
+            const QJsonArray guider = inputs.value(QStringLiteral("guider")).toArray();
+            if (guider.size() >= 2) {
+                const QJsonObject guiderNode = wf.value(guider.at(0).toString()).toObject();
+                const QJsonArray model =
+                    guiderNode.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("model")).toArray();
+                if (model.size() >= 2 && model.at(0).toString() == diffId)
+                    samplerUsesDiff = true;
+            }
             continue;
-        const QJsonArray model =
-            it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("model")).toArray();
+        }
+        if (cls != QLatin1String("KSampler"))
+            continue;
+        const QJsonArray model = inputs.value(QStringLiteral("model")).toArray();
         if (model.size() >= 2 && model.at(0).toString() == diffId)
             samplerUsesDiff = true;
     }
@@ -637,9 +687,114 @@ void ComfyPortP51Test::testWorkflowEngineStyleVaeAndClipSkip()
     QVERIFY(hasClipLayer);
 }
 
-private:
-    QTemporaryDir m_tempDir;
-};
+void ComfyPortP51Test::testBuildInpaintFillUsesMaskedBlurAndLatentMask()
+{
+    ComfyWorkflowEngine::InpaintBuildParams bp;
+    bp.imageName = QStringLiteral("canvas.png");
+    bp.maskImageName = QStringLiteral("mask.png");
+    bp.fillKind = QStringLiteral("blur");
+    bp.growMaskBy = 12;
+    bp.initialExtentWidth = 512;
+    bp.initialExtentHeight = 512;
+    bp.contextExtentWidth = 512;
+    bp.contextExtentHeight = 512;
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(bp);
+    bool hasMaskedBlur = false;
+    bool hasVaeEncode = false;
+    bool hasSetLatentNoiseMask = false;
+    bool hasDifferentialDiffusion = false;
+    bool hasVaeEncodeForInpaint = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("INPAINT_MaskedBlur"))
+            hasMaskedBlur = true;
+        if (cls == QLatin1String("VAEEncode"))
+            hasVaeEncode = true;
+        if (cls == QLatin1String("SetLatentNoiseMask"))
+            hasSetLatentNoiseMask = true;
+        if (cls == QLatin1String("DifferentialDiffusion"))
+            hasDifferentialDiffusion = true;
+        if (cls == QLatin1String("VAEEncodeForInpaint"))
+            hasVaeEncodeForInpaint = true;
+    }
+    QVERIFY(hasMaskedBlur);
+    QVERIFY(hasVaeEncode);
+    QVERIFY(hasSetLatentNoiseMask);
+    QVERIFY(hasDifferentialDiffusion);
+    QVERIFY(!hasVaeEncodeForInpaint);
+}
+
+void ComfyPortP51Test::testBuildInpaintInpaintModelNoControlUsesVaeEncodeInpaintConditioning()
+{
+    ComfyWorkflowEngine::InpaintBuildParams bp;
+    bp.imageName = QStringLiteral("canvas.png");
+    bp.maskImageName = QStringLiteral("mask.png");
+    bp.useInpaintModel = true;
+    bp.controlNetInpaintFile.clear();
+    bp.initialExtentWidth = 512;
+    bp.initialExtentHeight = 512;
+    bp.contextExtentWidth = 512;
+    bp.contextExtentHeight = 512;
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(bp);
+    bool hasInpaintCond = false;
+    bool hasVaeEncodeForInpaint = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("INPAINT_VAEEncodeInpaintConditioning"))
+            hasInpaintCond = true;
+        if (cls == QLatin1String("VAEEncodeForInpaint"))
+            hasVaeEncodeForInpaint = true;
+    }
+    QVERIFY(hasInpaintCond);
+    QVERIFY(!hasVaeEncodeForInpaint);
+}
+
+void ComfyPortP51Test::testBuildInpaintInpaintModelSamplerLatentOutputSlot()
+{
+    ComfyWorkflowEngine::InpaintBuildParams bp;
+    bp.imageName = QStringLiteral("canvas.png");
+    bp.maskImageName = QStringLiteral("mask.png");
+    bp.useInpaintModel = true;
+    bp.controlNetInpaintFile.clear();
+    bp.arch = ComfyResources::Arch::Sdxl;
+    bp.initialExtentWidth = 512;
+    bp.initialExtentHeight = 512;
+    bp.contextExtentWidth = 512;
+    bp.contextExtentHeight = 512;
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(bp);
+    QString inpaintCondId;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("INPAINT_VAEEncodeInpaintConditioning")) {
+            inpaintCondId = it.key();
+            break;
+        }
+    }
+    QVERIFY(!inpaintCondId.isEmpty());
+    bool foundSampler = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            != QLatin1String("SamplerCustomAdvanced"))
+            continue;
+        const QJsonArray latentLink =
+            it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("latent_image")).toArray();
+        QCOMPARE(latentLink.at(0).toString(), inpaintCondId);
+        QCOMPARE(latentLink.at(1).toInt(), 3);
+        const QJsonArray negLink =
+            it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("guider")).toArray();
+        QVERIFY(negLink.size() >= 2);
+        const QJsonObject guider = wf.value(negLink.at(0).toString()).toObject();
+        if (guider.value(QStringLiteral("class_type")).toString() == QLatin1String("CFGGuider")) {
+            const QJsonArray negative =
+                guider.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("negative")).toArray();
+            QCOMPARE(negative.at(0).toString(), inpaintCondId);
+            QCOMPARE(negative.at(1).toInt(), 1);
+        }
+        foundSampler = true;
+        break;
+    }
+    QVERIFY(foundSampler);
+}
 
 SIMPLE_TEST_MAIN(ComfyPortP51Test)
 #include "ComfyPortP51Test.moc"

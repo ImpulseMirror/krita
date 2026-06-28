@@ -27,8 +27,9 @@ public:
     QString lastPath() const { return m_lastPath; }
     QByteArray lastBody() const { return m_lastBody; }
     int lastStatusSent() const { return m_lastStatusSent; }
+    int uploadImageHitCount() const { return m_uploadImageHitCount; }
 
-private slots:
+private Q_SLOTS:
     void onNewConnection();
 
 private:
@@ -39,6 +40,7 @@ private:
     QString m_lastPath;
     QByteArray m_lastBody;
     int m_lastStatusSent = 0;
+    int m_uploadImageHitCount = 0;
 };
 
 #endif

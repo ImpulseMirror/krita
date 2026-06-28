@@ -14,52 +14,34 @@ else()
     file(WRITE "${_comfy_icons_qrc}" "<RCC/>\n")
 endif()
 
-set(kritacomfyuiremote_static_SOURCES
-    ComfyControlLayer.cpp
-    ComfyControlLayerRowWidget.cpp
-    ComfyControlLayerListWidget.cpp
-    ComfyOpenPose.cpp
-    ComfyRegionProcess.cpp
-    ComfyRegionLink.cpp
-    ComfyRegionPromptWidget.cpp
-    ComfyPromptResizeHandle.cpp
-    ComfyResources.cpp
-    ComfyStyleCollection.cpp
-    ComfyLocalization.cpp
-    ComfyFileLibrary.cpp
-    ComfyTheme.cpp
-    ComfySwitchWidget.cpp
-    ComfyStyleLoraItemWidget.cpp
-    ComfyStyleLoraListWidget.cpp
-    ComfyStyleSamplerWidget.cpp
-    ComfyQueueButton.cpp
-    ComfyWorkspaceSelectButton.cpp
-    ComfyHistoryListWidget.cpp
-    ComfyWorkflowEngine.cpp
-    ComfyUIRemoteDockControl.cpp
-    ComfyUIRemoteDockControlGenerate.cpp
-    ComfyUIIntervalSlider.cpp
-    ComfyUIPoseLayers.cpp
-    ComfyUIUtils.cpp
-    ComfyUIWorkflows.cpp
-    ComfyUIRemoteDock.cpp
-    ComfyUIRemoteDockConnection.cpp
-    ComfyUIRemoteDockGenerate.cpp
-    ComfyUIRemoteDockHistory.cpp
-    ComfyUIRemoteDockInpaint.cpp
-    ComfyUIRemoteDockLive.cpp
-    ComfyUIRemoteDockPresets.cpp
-    ComfyUIRemoteDockRegions.cpp
-    ComfyUIRemoteDockSettings.cpp
-    ComfyUIRemoteDockUpscale.cpp
-    ComfyUIRemoteDockWebWorkflow.cpp
-    ${_comfy_icons_qrc}
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ComfyIncludeDirs.cmake)
+
+set(_comfy_source_roots
+    core
+    network
+    ui
+    settings
+    workflow
+    utils
+    runners
+    dock
+    history
 )
+set(kritacomfyuiremote_static_SOURCES "")
+foreach(_root IN LISTS _comfy_source_roots)
+    file(GLOB_RECURSE _comfy_found CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/${_root}/*.cpp")
+    list(APPEND kritacomfyuiremote_static_SOURCES ${_comfy_found})
+endforeach()
+list(APPEND kritacomfyuiremote_static_SOURCES ${_comfy_icons_qrc})
+list(SORT kritacomfyuiremote_static_SOURCES)
 kis_add_library(kritacomfyuiremote_static STATIC ${kritacomfyuiremote_static_SOURCES})
 set_target_properties(kritacomfyuiremote_static PROPERTIES AUTORCC ON)
+target_include_directories(kritacomfyuiremote_static PUBLIC ${COMFYUI_REMOTE_INCLUDE_DIRS})
 target_link_libraries(kritacomfyuiremote_static PRIVATE kritaimage kritaui)
 target_compile_definitions(kritacomfyuiremote_static PRIVATE
-    "COMFYUI_PLUGIN_SOURCE_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\"")
+    "COMFYUI_PLUGIN_SOURCE_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\""
+    COMFYUI_REMOTE_DOCK_IMPL=1)
 
 # §13.37: optional ZIP extract after verified download (KF Archive)
 find_package(KF${KF_MAJOR} ${MIN_FRAMEWORKS_VERSION} QUIET COMPONENTS Archive)
@@ -89,11 +71,12 @@ if(_comfy_ws_libs)
 endif()
 
 # Plugin module
-set(kritacomfyuiremote_SOURCES ComfyUIRemotePlugin.cpp)
+set(kritacomfyuiremote_SOURCES plugin/ComfyUIRemotePlugin.cpp)
 kis_add_library(kritacomfyuiremote MODULE ${kritacomfyuiremote_SOURCES})
 # MODULE needs kritaui (Qt includes) for MOC/ComfyUIRemotePlugin.h; static lib alone does not propagate them.
 # Link order: static first, then resolve symbols from kritaimage/kritaui (Unix linkers are order-sensitive).
 target_link_libraries(kritacomfyuiremote PRIVATE kritacomfyuiremote_static kritaimage kritaui)
+target_include_directories(kritacomfyuiremote PRIVATE ${COMFYUI_REMOTE_INCLUDE_DIRS})
 install(TARGETS kritacomfyuiremote DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/ DESTINATION ${KRITA_PLUGIN_INSTALL_DIR}/data)
 install(FILES ComfyUIRemote.action DESTINATION ${KDE_INSTALL_DATADIR}/krita/actions)

@@ -17,7 +17,7 @@
 | Check | Command | Maps to |
 |-------|---------|---------|
 | Golden fixtures | `python3 plugins/dockers/comfyui_remote/scripts/export_workflow_fixture.py` | workflow parity |
-| Unit tests | `cd _build && ctest -R 'ComfyPort|ComfyWorkflow|ComfyUIRemoteDock'` | P5.1, M1 HTTP mock (P5.2) |
+| Unit tests | `plugins/dockers/comfyui_remote/scripts/build_verify.sh` or `cd build && ctest -R 'ComfyPort\|ComfyWorkflow\|ComfyUIRemoteDock'` | P5.1, M1 HTTP mock (P5.2) |
 
 ## Run order
 

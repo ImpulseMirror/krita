@@ -90,6 +90,8 @@ If `build-android-package.py` failed but `krita_build_apk` exists, APK may be un
 
 ### One-shot: build → deploy → launch (plugin / dock changes)
 
+**Read [ComfyUI plugin: stale `.so` pitfall](#comfyui-plugin-stale-so-pitfall) first.** `gradlew assembleDebug` alone often repackages an old `kritacomfyuiremote` even when `_build/lib/` is fresh.
+
 ```shell
 source ~/.bashrc
 export KDECI_WORKDIR_PATH=~/source/krita/android-build-wd
@@ -97,15 +99,32 @@ export KDECI_SHARED_INSTALL_PATH=~/source/krita/android-build-wd/krita/_install
 export ANDROID_ABI="$KDECI_ANDROID_ABI"
 export KRITA_INSTALL_PREFIX="$KDECI_SHARED_INSTALL_PATH"
 
-cd ~/source/krita/android-build-wd/krita/_build
-make -j"$(nproc)" install
-cd ~/source/krita/android-build-wd/krita/_build/krita_build_apk
-./gradlew assembleDebug -Dorg.gradle.jvmargs=-Xmx8192m
+BUILD=~/source/krita/android-build-wd/krita/_build
+APKDIR="$BUILD/krita_build_apk"
+
+cd "$BUILD"
+cmake --build . --target kritacomfyuiremote -j"$(nproc)"
+cp -f "$BUILD/lib/kritacomfyuiremote_${ANDROID_ABI}.so" \
+      "$KRITA_INSTALL_PREFIX/lib/kritacomfyuiremote_${ANDROID_ABI}.so"
+
+cd "$APKDIR"
+rm -rf build/intermediates/merged_native_libs \
+       build/intermediates/stripped_native_libs \
+       build/intermediates/merged_jni_libs
+./gradlew copyLibs assembleDebug -Dorg.gradle.jvmargs=-Xmx8192m
+
+# verify new plugin is inside APK (size must match _build/lib; see pitfall section)
+unzip -p build/outputs/apk/debug/*.apk \
+  "lib/${ANDROID_ABI}/lib_kritacomfyuiremote_${ANDROID_ABI}.so" | wc -c
+stat -c '%s' "$BUILD/lib/kritacomfyuiremote_${ANDROID_ABI}.so"
+
 APK=$(ls -t build/outputs/apk/debug/*.apk | head -1)
 adb-mac logcat -c
 adb-mac install -d -r "$APK"
 adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
 ```
+
+Full `make install` still works when it completes (bundles + all plugins), but often fails on `msgfmt`/po files — use the targeted flow above for `comfyui_remote` only.
 
 ### Reset app data (rare)
 
@@ -122,7 +141,9 @@ Uninstall (`adb-mac uninstall org.krita.debug`) has the same effect as `pm clear
 
 ## Fast iter loop (code tweak → emulator)
 
-From the official guide — only after at least one full `make install` + `build-android-package.py` has created `krita_build_apk`:
+From the official guide — only after at least one full `make install` + `build-android-package.py` has created `krita_build_apk`.
+
+For **`kritacomfyuiremote` changes**, use the [one-shot plugin flow](#one-shot-build--deploy--launch-plugin--dock-changes) (install prefix + `copyLibs` + clear native-lib intermediates). The generic loop below does **not** refresh a single plugin reliably.
 
 ```shell
 source ~/.bashrc
@@ -136,6 +157,64 @@ make -j"$(nproc)" install -C ..
 adb-mac logcat -c
 adb-mac shell am start -n org.krita.debug/org.krita.android.MainActivity
 ```
+
+## ComfyUI plugin: stale `.so` pitfall
+
+Gradle can **silently ship an old `kritacomfyuiremote`** while `_build/lib/kritacomfyuiremote_${ANDROID_ABI}.so` is already rebuilt. Symptoms:
+
+- Code/logging changes never appear on device after “successful” install
+- Logcat still shows old message prefixes (e.g. `slotInpaintPoll: rawResult=` instead of `downloaded bytes=` / `compositeInpaintServerOntoContext`)
+- APK plugin byte size ≠ `_build/lib/kritacomfyuiremote_${ANDROID_ABI}.so`
+
+### Why it happens
+
+| Step | What actually runs |
+|------|-------------------|
+| `cmake --build … --target kritacomfyuiremote` | Writes fresh `.so` to **`_build/lib/`** |
+| Gradle `copyLibs` | Copies from **`$KRITA_INSTALL_PREFIX/lib/`** (`_install/lib/`), **not** `_build/lib/` |
+| Manual `cp` into `krita_build_apk/libs/` | **Overwritten** on next `copyLibs` / `preBuild` |
+| `mergeDebugNativeLibs` | Caches under `build/intermediates/` — often **UP-TO-DATE** with stale bytes |
+
+So: build tree fresh + install prefix stale + Gradle cache = APK still old.
+
+### Correct plugin-only refresh
+
+```shell
+source ~/.bashrc
+export ANDROID_ABI="$KDECI_ANDROID_ABI"
+export KRITA_INSTALL_PREFIX=~/source/krita/android-build-wd/krita/_install
+BUILD=~/source/krita/android-build-wd/krita/_build
+APKDIR="$BUILD/krita_build_apk"
+PLUGIN="kritacomfyuiremote_${ANDROID_ABI}"
+
+cd "$BUILD"
+cmake --build . --target kritacomfyuiremote -j"$(nproc)"
+cp -f "$BUILD/lib/${PLUGIN}.so" "$KRITA_INSTALL_PREFIX/lib/${PLUGIN}.so"
+
+cd "$APKDIR"
+rm -rf build/intermediates/merged_native_libs \
+       build/intermediates/stripped_native_libs \
+       build/intermediates/merged_jni_libs
+./gradlew copyLibs assembleDebug -Dorg.gradle.jvmargs=-Xmx8192m
+```
+
+### Verify before `adb-mac install`
+
+Both sizes must match (example: ~41 MB, not ~40.7 MB if you know the old artifact):
+
+```shell
+APK=$(ls -t "$APKDIR"/build/outputs/apk/debug/*.apk | head -1)
+stat -c '%s %n' "$BUILD/lib/${PLUGIN}.so"
+unzip -p "$APK" "lib/${ANDROID_ABI}/lib_${PLUGIN}.so" | wc -c
+```
+
+Optional string check (replace with a log tag you recently added):
+
+```shell
+unzip -p "$APK" "lib/${ANDROID_ABI}/lib_${PLUGIN}.so" | strings | grep compositeInpaintServerOntoContext
+```
+
+If sizes differ or expected strings are missing, **do not deploy** — fix install prefix / intermediates / `copyLibs` first.
 
 ## One-time / rare: (re)configure CMake
 
@@ -195,6 +274,7 @@ Official guide: https://docs.krita.org/en/untranslatable_pages/building/build_kr
 | `make install` fails on `*Test.cpp` | Reconfigure with `-DBUILD_TESTING=OFF`. |
 | `create-apk` / `:packageDebug` Java heap OOM | `cd …/_build/krita_build_apk && ./gradlew assembleDebug -Dorg.gradle.jvmargs=-Xmx8192m` — no config file edits. Never `gradlew clean`. |
 | `msgfmt: libgettextsrc …` during build | `export LD_LIBRARY_PATH="$KRITA_INSTALL_PREFIX/lib:$LD_LIBRARY_PATH"`. |
+| **ComfyUI plugin code unchanged on device** / old logcat strings after deploy | Stale `.so` in APK — see **[ComfyUI plugin: stale `.so` pitfall](#comfyui-plugin-stale-so-pitfall)**. Copy `_build/lib` → `_install/lib`, `copyLibs`, rm `merged_native_libs` intermediates, verify APK size before install. |
 | Stale bundled assets / plugin `data/` not updating after install | Try force-stop + relaunch first. Use `pm clear` only if you accept losing configs (see **Reset app data** above). |
 | Lost ComfyUI settings after deploy | Deploy used `pm clear` or uninstall — use `install -d -r` only for routine updates. |
 
@@ -204,6 +284,9 @@ Official guide: https://docs.krita.org/en/untranslatable_pages/building/build_kr
 - Stop after `adb-mac install` without `am start` (deploy incomplete)
 - `cmake --build . --target krita` then package (missing install step)
 - `gradlew assembleDebug` alone without prior `build-android-package.py` / `create-apk`
+- Assume `cmake --build … --target kritacomfyuiremote` updated the APK — Gradle reads **`_install/lib/`**, not `_build/lib/`
+- `cp` plugin only into `krita_build_apk/libs/` and call it done — `copyLibs` overwrites from install prefix
+- Skip APK `.so` size check before install when debugging plugin behavior
 - Edit `gradle.properties`, `build.gradle`, or CMake cache to fix packaging
-- `gradlew clean` (breaks intermediates)
+- `gradlew clean` (breaks intermediates; often OOM)
 - `pm clear` or uninstall before routine deploy (wipes ComfyUI / plugin configs)

@@ -32,3 +32,7 @@ Reference: [Python `PerformanceSettings` L826–937](https://github.com/Acly/kri
 ## Save compat
 
 Write Python keys plus legacy: `history_size`/`history_active_mb`, `history_storage`/`history_document_storage_mb`, `max_pixel_count`/`max_pixel_count_mp`, `tiled_vae` + `tiled_vae_mode`.
+
+## Status
+
+**Implemented:** scroll area, target widget order, Cloud preset, advanced block hidden unless Custom, Dynamic Caching + Multi-Threading top-level, `ComfySwitchWidget` tiled VAE, Python + legacy save keys. Removed rows per plan.

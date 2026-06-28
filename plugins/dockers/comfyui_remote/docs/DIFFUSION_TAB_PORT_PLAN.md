@@ -7,7 +7,7 @@ Reference: [ai_diffusion/ui/settings.py `DiffusionSettings`](https://github.com/
 Configure → **Diffusion** matches Python `DiffusionSettings` only (five settings + stretch).
 
 **Out of scope (removed from Diffusion tab):**
-- Advanced mask preprocess UI (`selection_min_transition`, `selection_grow_offset`, `selection_invert`, `selection_square`) — not in upstream tab; values remain in `settings.json` with code defaults
+- Advanced mask preprocess UI (`selection_min_transition`, `selection_grow_offset`, `selection_invert`, `selection_square`) — not in upstream tab; `selection_min_transition` / `selection_grow_offset` remain in `settings.json` with code defaults; **`selection_invert` / `selection_square` readers removed** (invert only via `replace_background` @ 100% in `getSelectionModifiers`)
 - Custom ComfyUI workflow editor — Graph workspace only (upstream)
 
 **Filesystem:** none on this tab.

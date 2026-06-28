@@ -30,21 +30,39 @@ QJsonObject loadGoldenApi(const QString &name)
 {
     const QString path = goldenDataDir() + QLatin1Char('/') + name + QStringLiteral(".api.json");
     QFile f(path);
-    QVERIFY2(f.open(QIODevice::ReadOnly), qPrintable(QStringLiteral("Missing golden fixture: ") + path));
+    if (!f.open(QIODevice::ReadOnly))
+        return QJsonObject();
     QJsonParseError err;
     const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
-    QVERIFY2(err.error == QJsonParseError::NoError, qPrintable(err.errorString()));
+    if (err.error != QJsonParseError::NoError)
+        return QJsonObject();
     return doc.object();
 }
 
 void assertWorkflowMatchesGolden(const QJsonObject &built, const QString &goldenName)
 {
     const QJsonObject expected = loadGoldenApi(goldenName);
+    QVERIFY2(!expected.isEmpty(), qPrintable(QStringLiteral("Missing golden fixture: ") + goldenName));
     const QString normBuilt =
         ComfyWorkflowNormalize::canonicalJson(ComfyWorkflowNormalize::normalizeApiWorkflow(built));
     const QString normExpected =
         ComfyWorkflowNormalize::canonicalJson(ComfyWorkflowNormalize::normalizeApiWorkflow(expected));
     QCOMPARE(normBuilt, normExpected);
+}
+
+QJsonObject buildGoldenTextToImage(const ComfyWorkflowEngine::TextToImageParams &p)
+{
+    ComfyWorkflowEngine::GenerateParams gp;
+    static_cast<ComfyWorkflowEngine::TextToImageParams &>(gp) = p;
+    return ComfyWorkflowEngine::buildGenerate(gp);
+}
+
+QJsonObject buildGoldenRefine(const ComfyWorkflowEngine::RefineParams &p)
+{
+    QJsonObject workflow = ComfyWorkflowEngine::buildRefine(p);
+    ComfyWorkflowEngine::finishWorkflowWithSamplerCustom(
+        &workflow, QStringLiteral("6"), p.arch, 512, 512, p.denoise);
+    return workflow;
 }
 
 } // namespace
@@ -104,7 +122,7 @@ void ComfyWorkflowEngineGoldenTest::testGoldenSd15TextToImage()
     p.positivePrompt = QStringLiteral("golden positive");
     p.negativePrompt = QStringLiteral("golden negative");
     p.arch = ComfyResources::Arch::Sd15;
-    assertWorkflowMatchesGolden(ComfyWorkflowEngine::buildTextToImage(p), QStringLiteral("sd15_text2img"));
+    assertWorkflowMatchesGolden(buildGoldenTextToImage(p), QStringLiteral("sd15_text2img"));
 }
 
 void ComfyWorkflowEngineGoldenTest::testGoldenSd15Refine()
@@ -120,7 +138,7 @@ void ComfyWorkflowEngineGoldenTest::testGoldenSd15Refine()
     p.scheduler = QStringLiteral("normal");
     p.positivePrompt = QStringLiteral("golden positive");
     p.negativePrompt = QStringLiteral("golden negative");
-    assertWorkflowMatchesGolden(ComfyWorkflowEngine::buildRefine(p), QStringLiteral("sd15_refine"));
+    assertWorkflowMatchesGolden(buildGoldenRefine(p), QStringLiteral("sd15_refine"));
 }
 
 void ComfyWorkflowEngineGoldenTest::testGoldenSd15Inpaint()
@@ -167,7 +185,7 @@ void ComfyWorkflowEngineGoldenTest::testGoldenSdxlTextToImage()
     p.positivePrompt = QStringLiteral("golden positive");
     p.negativePrompt = QStringLiteral("golden negative");
     p.arch = ComfyResources::Arch::Sdxl;
-    assertWorkflowMatchesGolden(ComfyWorkflowEngine::buildTextToImage(p), QStringLiteral("sdxl_text2img"));
+    assertWorkflowMatchesGolden(buildGoldenTextToImage(p), QStringLiteral("sdxl_text2img"));
 }
 
 void ComfyWorkflowEngineGoldenTest::testGoldenFluxTextToImage()
@@ -186,7 +204,7 @@ void ComfyWorkflowEngineGoldenTest::testGoldenFluxTextToImage()
     p.positivePrompt = QStringLiteral("golden positive");
     p.negativePrompt = QString();
     p.arch = ComfyResources::Arch::Flux;
-    assertWorkflowMatchesGolden(ComfyWorkflowEngine::buildTextToImage(p), QStringLiteral("flux_text2img"));
+    assertWorkflowMatchesGolden(buildGoldenTextToImage(p), QStringLiteral("flux_text2img"));
 }
 
 void ComfyWorkflowEngineGoldenTest::testGoldenSd15UpscaleRefine()
@@ -234,7 +252,7 @@ void ComfyWorkflowEngineGoldenTest::testWriteGoldenFixturesFromEngine()
         p.scheduler = QStringLiteral("normal");
         p.positivePrompt = QStringLiteral("golden positive");
         p.negativePrompt = QStringLiteral("golden negative");
-        write(QStringLiteral("sd15_text2img"), ComfyWorkflowEngine::buildTextToImage(p));
+        write(QStringLiteral("sd15_text2img"), buildGoldenTextToImage(p));
     }
     {
         ComfyWorkflowEngine::TextToImageParams p;
@@ -251,7 +269,7 @@ void ComfyWorkflowEngineGoldenTest::testWriteGoldenFixturesFromEngine()
         p.positivePrompt = QStringLiteral("golden positive");
         p.negativePrompt = QStringLiteral("golden negative");
         p.arch = ComfyResources::Arch::Sdxl;
-        write(QStringLiteral("sdxl_text2img"), ComfyWorkflowEngine::buildTextToImage(p));
+        write(QStringLiteral("sdxl_text2img"), buildGoldenTextToImage(p));
     }
     {
         ComfyWorkflowEngine::TextToImageParams p;
@@ -268,7 +286,7 @@ void ComfyWorkflowEngineGoldenTest::testWriteGoldenFixturesFromEngine()
         p.positivePrompt = QStringLiteral("golden positive");
         p.negativePrompt = QString();
         p.arch = ComfyResources::Arch::Flux;
-        write(QStringLiteral("flux_text2img"), ComfyWorkflowEngine::buildTextToImage(p));
+        write(QStringLiteral("flux_text2img"), buildGoldenTextToImage(p));
     }
     {
         ComfyWorkflowEngine::RefineParams p;
@@ -282,7 +300,7 @@ void ComfyWorkflowEngineGoldenTest::testWriteGoldenFixturesFromEngine()
         p.scheduler = QStringLiteral("normal");
         p.positivePrompt = QStringLiteral("golden positive");
         p.negativePrompt = QStringLiteral("golden negative");
-        write(QStringLiteral("sd15_refine"), ComfyWorkflowEngine::buildRefine(p));
+        write(QStringLiteral("sd15_refine"), buildGoldenRefine(p));
     }
     {
         ComfyWorkflowEngine::InpaintBuildParams p;

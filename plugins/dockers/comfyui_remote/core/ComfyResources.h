@@ -1,0 +1,114 @@
+/*
+ * SPDX-FileCopyrightText: 2025 Krita Project
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef COMFY_RESOURCES_H_
+#define COMFY_RESOURCES_H_
+
+#include <QString>
+#include <QVector>
+
+namespace ComfyResources {
+
+/// Diffusion architecture keys (match ai_diffusion/resources.py Arch → string keys).
+enum class Arch {
+    Unknown,
+    Sd15,
+    Sdxl,
+    Sd3,
+    Flux,
+    FluxK,
+    Flux2_4b,
+    Flux2_9b,
+    Illu,
+    IlluV,
+    Chroma,
+    Qwen,
+    QwenE,
+    QwenEP,
+    QwenL,
+    ZImage,
+};
+
+QString archToKey(Arch arch);
+Arch archFromKey(const QString &key);
+/// Human-readable architecture label (matches ai_diffusion/resources.py Arch enum values).
+QString archDisplayName(Arch arch);
+QString architectureKeyDisplayName(const QString &key);
+/// Valid architecture keys for the Styles tab advanced dropdown (always includes "auto").
+QVector<QString> validArchitectureKeysForResolvedArch(Arch resolved);
+Arch archFromCheckpointName(const QString &checkpoint);
+bool archFromCheckpointFilename(const QString &filename, Arch *outArch);
+
+bool supportsCfg(Arch arch);
+bool isEditArch(Arch arch);
+bool isFluxLike(Arch arch);
+bool isFlux2(Arch arch);
+bool isSdxlLike(Arch arch);
+bool isQwenLike(Arch arch);
+/// Python Arch.supports_edit — edit models + Flux2 can use inpaint instruction prefixes.
+bool supportsEditInstructions(Arch arch);
+/// Python Arch.has_controlnet_inpaint — dedicated inpaint ControlNet available for arch.
+bool hasControlnetInpaint(Arch arch);
+bool supportsRegions(Arch arch);
+bool supportsClipSkip(Arch arch);
+bool supportsAttentionGuidance(Arch arch);
+int latentCompressionFactor(Arch arch);
+
+/// Control layer mode keys (ai_diffusion/resources.py ControlMode names).
+namespace ControlMode {
+extern const char reference[];
+extern const char style[];
+extern const char composition[];
+extern const char face[];
+extern const char scribble[];
+extern const char line_art[];
+extern const char soft_edge[];
+extern const char canny_edge[];
+extern const char depth[];
+extern const char normal[];
+extern const char pose[];
+extern const char segmentation[];
+extern const char blur[];
+extern const char stencil[];
+extern const char hands[];
+extern const char inpaint[];
+extern const char universal[];
+
+bool isIpAdapter(const QString &mode);
+bool isLines(const QString &mode);
+bool isStructural(const QString &mode);
+/// Python ControlMode.is_part_of_image — reference, line_art, blur stay in canvas composite.
+bool isPartOfImage(const QString &mode);
+} // namespace ControlMode
+
+/// Default ControlNet filename for ComfyUI ControlNetLoader.
+QString defaultControlNetFileName(Arch arch, const QString &mode);
+
+/// SetUnionControlNetType `type` input (Python comfy_workflow.set_controlnet_type).
+QString unionControlNetTypeForMode(const QString &mode);
+
+bool controlNetUsesUnionTypeNode(const QString &controlNetFileName, const QString &mode);
+
+bool isNunchakuCheckpointFilename(const QString &checkpointFile);
+
+struct DualClipLoadSpec {
+    QString clipName1;
+    QString clipName2;
+    QString type;
+};
+DualClipLoadSpec defaultDualClipLoadSpec(Arch arch);
+
+QString defaultZImageFunControlPatchFileName();
+
+QString defaultClipVisionFileName(Arch arch);
+QString defaultIpAdapterFileName(Arch arch, const QString &mode);
+QString defaultIpAdapterFaceFileName(Arch arch);
+
+/// True when arch supports ComfyUI_IPAdapter_plus nodes (SD1.5 / SDXL family).
+bool supportsIpAdapterWorkflow(Arch arch);
+
+} // namespace ComfyResources
+
+#endif

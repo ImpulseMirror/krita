@@ -17,6 +17,7 @@
 #include <QPalette>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QPainter>
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
@@ -31,7 +32,17 @@
 #include "ComfyTheme.h"
 #include "ComfyRegionProcess.h"
 #include "ComfyUIUtils.h"
+#include "ComfyPrepareGenerateWorkflow.h"
+#include "ComfyPrepareLiveWorkflow.h"
 #include "ComfyRegionLink.h"
+
+using ComfyUIUtils::ComfyRegionUiStateEntry;
+using ComfyUIUtils::readRegionUiArrayFromDocumentUi;
+using ComfyUIUtils::regionUiStateEntryFromJson;
+using ComfyUIUtils::regionUiStateEntryToJson;
+using ComfyUIUtils::rootRegionUiWrapFromJson;
+using ComfyUIUtils::rootRegionUiWrapToJson;
+using ComfyUIUtils::persistenceFormatVersion;
 
 class ComfyUIRemoteDockTest : public QObject
 {
@@ -74,6 +85,34 @@ private Q_SLOTS:
     void testKritaIconNameForThemeStem();
     void testComfyResourcesArchFromCheckpoint();
     void testComfyResourcesControlModeHelpers();
+    void testGetSelectionModifiersAndBounds();
+    void testPrepareGenerateWorkflowKindPromotion();
+    void testSelectionModifiersInvertReplaceBackgroundOnly();
+    void testPrepareDiffusionInputExtentInpaintContext();
+    void testApplyNsfwFilterToWorkflowOutput();
+    void testCompositeJobResultOnDocumentPassthrough();
+    void testInpaintCompositeMaskedServerResultPreservesContext();
+    void testPrepareLiveWorkflowKindPromotion();
+    void testLiveMinMaskSizeByArch();
+    void testResolveSamplingFromStyleStrength();
+    void testBuildRefineRegionFooocusBranch();
+    void testBuildRefineRegionInpaintControlNet();
+    void testApplyStrengthResolvedSamplingToRefine();
+    void testBuildRefineRegionSplitSigmasAtStrength();
+    void testBuildInpaintUseReferenceAndColorMatch();
+    void testBuildInpaintRefinementUpscalePass();
+    void testCustomInpaintContextAndParams();
+    void testRecentlyUsedSyncDocumentDefaultsFields();
+    void testCustomWorkflowKritaSelectionPrepare();
+    void testCustomWorkflowKritaSelectionPrepareAndExpand();
+    void testCustomWorkflowInvalidSelectionContext();
+    void testCustomWorkflowLayerExportAndFingerprint();
+    void testCustomWorkflowFullSelectionPipeline();
+    void testExpandCustomKritaWorkflowNodes();
+    void testExpandCustomKritaWorkflowParameterAndStyle();
+    void testCustomWorkflowLiveCapturePolicy();
+    void testPrepareCustomWorkflowStyleAndPrompts();
+    void testExtractLorasFromPromptAndMerge();
     void testComfyWorkflowEngineBuildTextToImage();
     void testComfyWorkflowEngineApplyCheckpointStyleOptions();
     void testComfyStyleCollectionEntryToJson();
@@ -559,12 +598,14 @@ void ComfyUIRemoteDockTest::testControlPresetsBuiltinDefault()
     const QJsonObject root = ComfyUIUtils::builtinControlPresetsRoot();
     const QList<ComfyUIUtils::ControlLayerPreset> ps =
         ComfyUIUtils::controlPresetsForMode(root, QStringLiteral("default"), QString());
-    QCOMPARE(ps.size(), 2);
+    QCOMPARE(ps.size(), 3);
     QCOMPARE(ps.at(0).strength, 0.7);
     QCOMPARE(ps.at(0).start, 0.0);
     QCOMPARE(ps.at(0).end, 0.5);
     QCOMPARE(ps.at(1).strength, 1.0);
-    QCOMPARE(ps.at(1).end, 1.0);
+    QCOMPARE(ps.at(1).end, 0.8);
+    QCOMPARE(ps.at(2).strength, 1.0);
+    QCOMPARE(ps.at(2).end, 1.0);
 }
 
 void ComfyUIRemoteDockTest::testControlPresetsArchKeyFallback()
@@ -600,7 +641,7 @@ void ComfyUIRemoteDockTest::testResolveDefaultControlLayerPreset()
 {
     ComfyUIUtils::reloadControlPresetsCache();
     QJsonObject s;
-    s.insert(QStringLiteral("control_layer_default_preset_index"), 1);
+    s.insert(QStringLiteral("control_layer_default_preset_index"), 2);
     ComfyUIUtils::ControlLayerPreset p;
     QVERIFY(ComfyUIUtils::resolveDefaultControlLayerPreset(s, &p));
     QCOMPARE(p.strength, 1.0);
@@ -848,8 +889,939 @@ void ComfyUIRemoteDockTest::testComfyResourcesControlModeHelpers()
     QVERIFY(ComfyResources::ControlMode::isLines(QStringLiteral("canny_edge")));
     QVERIFY(!ComfyResources::ControlMode::isStructural(QStringLiteral("reference")));
     QVERIFY(ComfyResources::ControlMode::isStructural(QStringLiteral("depth")));
+    QVERIFY(ComfyResources::ControlMode::isPartOfImage(QStringLiteral("reference")));
+    QVERIFY(ComfyResources::ControlMode::isPartOfImage(QStringLiteral("line_art")));
+    QVERIFY(ComfyResources::ControlMode::isPartOfImage(QStringLiteral("blur")));
+    QVERIFY(!ComfyResources::ControlMode::isPartOfImage(QStringLiteral("depth")));
+    QVERIFY(!ComfyResources::ControlMode::isPartOfImage(QStringLiteral("canny_edge")));
     QVERIFY(ComfyResources::supportsRegions(ComfyResources::Arch::Sdxl));
     QVERIFY(!ComfyResources::supportsRegions(ComfyResources::Arch::Flux));
+}
+
+void ComfyUIRemoteDockTest::testGetSelectionModifiersAndBounds()
+{
+    const auto fillMods = ComfyUIUtils::getSelectionModifiers(QStringLiteral("sdxl"), QStringLiteral("fill"), 1.0);
+    QVERIFY(!fillMods.invert);
+    QVERIFY(fillMods.square == false);
+
+    const auto replaceMods =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sdxl"), QStringLiteral("replace_background"), 1.0);
+    QVERIFY(replaceMods.invert);
+    QVERIFY(replaceMods.featherRel <= 0.01);
+
+    const auto refineMods =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sdxl"), QStringLiteral("replace_background"), 0.5);
+    QVERIFY(!refineMods.invert);
+
+    QCOMPARE(ComfyUIUtils::resolveInpaintMode(QStringLiteral("custom"), 1000, 800, QRect(10, 10, 50, 50)),
+             QStringLiteral("custom"));
+    QCOMPARE(ComfyUIUtils::resolveInpaintMode(QStringLiteral("automatic"), 1000, 800, QRect(0, 0, 1000, 800)),
+             QStringLiteral("expand"));
+
+    const QRect mask(100, 100, 80, 60);
+    const QRect refineBounds = ComfyUIUtils::computeInpaintDiffusionBounds(1000, 800, mask, true);
+    QCOMPARE(refineBounds, mask);
+    const QRect fillBounds = ComfyUIUtils::computeInpaintDiffusionBounds(1000, 800, mask, false);
+    QVERIFY(fillBounds.width() >= 512);
+    QVERIFY(fillBounds.contains(mask));
+
+    const QRect original(200, 200, 40, 30);
+    const auto mods = ComfyUIUtils::getSelectionModifiers(QStringLiteral("sdxl"), QStringLiteral("fill"), 1.0);
+    const ComfyUIUtils::SelectionPreProcess pp =
+        ComfyUIUtils::calcSelectionPreProcessFromModifiers(original, 1000, 800, mods);
+    QVERIFY(pp.feather > 0);
+    QVERIFY(pp.grow >= mods.padOffsetPx);
+}
+
+void ComfyUIRemoteDockTest::testPrepareGenerateWorkflowKindPromotion()
+{
+    // Document promotion rules without KisImage (logic mirror of prepare()).
+    auto promoted = [](bool refineInitial, bool hasMask) -> ComfyPrepareGenerateWorkflow::WorkflowKind {
+        ComfyPrepareGenerateWorkflow::WorkflowKind kind =
+            refineInitial ? ComfyPrepareGenerateWorkflow::WorkflowKind::Refine
+                          : ComfyPrepareGenerateWorkflow::WorkflowKind::Generate;
+        if (hasMask) {
+            if (kind == ComfyPrepareGenerateWorkflow::WorkflowKind::Generate)
+                kind = ComfyPrepareGenerateWorkflow::WorkflowKind::Inpaint;
+            else if (kind == ComfyPrepareGenerateWorkflow::WorkflowKind::Refine)
+                kind = ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion;
+        }
+        return kind;
+    };
+    QCOMPARE(promoted(false, true), ComfyPrepareGenerateWorkflow::WorkflowKind::Inpaint);
+    QCOMPARE(promoted(true, true), ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion);
+    QCOMPARE(promoted(true, false), ComfyPrepareGenerateWorkflow::WorkflowKind::Refine);
+    QCOMPARE(promoted(false, false), ComfyPrepareGenerateWorkflow::WorkflowKind::Generate);
+}
+
+void ComfyUIRemoteDockTest::testSelectionModifiersInvertReplaceBackgroundOnly()
+{
+    const auto modsFill =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sd15"), QStringLiteral("fill"), 1.0);
+    QVERIFY(!modsFill.invert);
+
+    const auto modsReplaceHalf =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sd15"), QStringLiteral("replace_background"), 0.5);
+    QVERIFY(!modsReplaceHalf.invert);
+
+    const auto modsReplaceFull =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sd15"), QStringLiteral("replace_background"), 1.0);
+    QVERIFY(modsReplaceFull.invert);
+    QCOMPARE(modsReplaceFull.featherRel, 0.01);
+}
+
+void ComfyUIRemoteDockTest::testPrepareDiffusionInputExtentInpaintContext()
+{
+    const ComfyUIUtils::DiffusionPreparedExtent small =
+        ComfyUIUtils::prepareDiffusionInputExtent(QSize(200, 180), ComfyResources::Arch::Sd15);
+    QVERIFY(small.initial.width() >= 512);
+    QVERIFY(small.initial.height() >= 512);
+    QCOMPARE(small.initial.width() % 16, 0);
+    QCOMPARE(small.initial.height() % 16, 0);
+
+    const ComfyUIUtils::DiffusionPreparedExtent large =
+        ComfyUIUtils::prepareDiffusionInputExtent(QSize(1024, 768), ComfyResources::Arch::Sd15);
+    QCOMPARE(large.initial, QSize(1024, 768));
+}
+
+void ComfyUIRemoteDockTest::testApplyNsfwFilterToWorkflowOutput()
+{
+    QJsonObject wf;
+    wf.insert(QStringLiteral("4"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("VAEDecode")},
+                          {QStringLiteral("inputs"), QJsonObject{}}});
+    wf.insert(QStringLiteral("5"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("images"), QJsonArray{QStringLiteral("4"), 0}}}}});
+    ComfyWorkflowEngine::applyNsfwFilterToWorkflowOutput(&wf, 0.0);
+    QCOMPARE(wf.value(QStringLiteral("5")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray().at(0).toString(),
+             QStringLiteral("4"));
+    ComfyWorkflowEngine::applyNsfwFilterToWorkflowOutput(&wf, 0.8);
+    bool hasFilter = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString() == QLatin1String("ETN_NSFWFilter"))
+            hasFilter = true;
+    }
+    QVERIFY(hasFilter);
+    const QJsonArray saveImages =
+        wf.value(QStringLiteral("5")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
+    QVERIFY(saveImages.at(0).toString() != QStringLiteral("4"));
+}
+
+void ComfyUIRemoteDockTest::testCompositeJobResultOnDocumentPassthrough()
+{
+    QImage patch(32, 32, QImage::Format_ARGB32);
+    patch.fill(Qt::green);
+    const QImage out = ComfyUIUtils::compositeJobResultOnDocument(KisImageSP(), {}, patch, QRect(), false);
+    QCOMPARE(out.size(), patch.size());
+}
+
+void ComfyUIRemoteDockTest::testInpaintCompositeMaskedServerResultPreservesContext()
+{
+    // Mirrors upstream image.draw_image: masked server patch merged onto context.
+    QImage context(64, 64, QImage::Format_ARGB32);
+    context.fill(QColor(100, 120, 140));
+    QImage mask(64, 64, QImage::Format_Grayscale8);
+    mask.fill(0);
+    for (int y = 16; y < 48; ++y) {
+        for (int x = 16; x < 48; ++x)
+            mask.setPixel(x, y, qRgb(255, 255, 255));
+    }
+    QImage server(64, 64, QImage::Format_RGB32);
+    server.fill(Qt::black);
+    for (int y = 16; y < 48; ++y) {
+        for (int x = 16; x < 48; ++x)
+            server.setPixel(x, y, qRgb(200, 50, 50));
+    }
+    QImage out = context;
+    const QImage compositeMask = ComfyUIUtils::denoiseToCompositingMask(mask, 0, 0, 0);
+    ComfyUIUtils::compositeWithMask(out, server, compositeMask);
+    QCOMPARE(out.pixel(8, 8), context.pixel(8, 8));
+    QCOMPARE(qRed(out.pixel(32, 32)), 200);
+    QCOMPARE(qGreen(out.pixel(32, 32)), 50);
+}
+
+void ComfyUIRemoteDockTest::testPrepareLiveWorkflowKindPromotion()
+{
+    auto liveKind = [](bool refineInitial, bool hasMask) -> ComfyPrepareGenerateWorkflow::WorkflowKind {
+        ComfyPrepareGenerateWorkflow::WorkflowKind kind =
+            refineInitial ? ComfyPrepareGenerateWorkflow::WorkflowKind::Refine
+                          : ComfyPrepareGenerateWorkflow::WorkflowKind::Generate;
+        if (hasMask)
+            kind = ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion;
+        return kind;
+    };
+    QCOMPARE(liveKind(false, true), ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion);
+    QCOMPARE(liveKind(true, true), ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion);
+    QCOMPARE(liveKind(true, false), ComfyPrepareGenerateWorkflow::WorkflowKind::Refine);
+    QCOMPARE(liveKind(false, false), ComfyPrepareGenerateWorkflow::WorkflowKind::Generate);
+}
+
+void ComfyUIRemoteDockTest::testLiveMinMaskSizeByArch()
+{
+    const auto sd15Mods =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sd15"), QStringLiteral("fill"), 1.0, 512);
+    QCOMPARE(sd15Mods.sizeMinPx, 512);
+    const auto sdxlMods =
+        ComfyUIUtils::getSelectionModifiers(QStringLiteral("sdxl"), QStringLiteral("fill"), 1.0, 800);
+    QCOMPARE(sdxlMods.sizeMinPx, 800);
+
+    QRect region(100, 100, 80, 60);
+    const QRect doc(0, 0, 512, 512);
+    const QRect padded = ComfyUIUtils::padMaskBounds(region, doc, 8, 512, 16, true);
+    QVERIFY(padded.width() >= 512);
+    QVERIFY(padded.height() >= 512);
+}
+
+void ComfyUIRemoteDockTest::testResolveSamplingFromStyleStrength()
+{
+    const ComfyUIUtils::ResolvedSamplingInputs at85 =
+        ComfyUIUtils::resolveSamplingFromStyle(nullptr, QJsonObject(), QStringLiteral("euler"), 20, 8.0, 0.85, true);
+    QCOMPARE(at85.totalSteps, 20);
+    QVERIFY(at85.startAtStep > 0);
+    QVERIFY(at85.denoiseStrength < 1.0);
+    QVERIFY(qAbs(at85.denoiseStrength - 0.85) < 0.08);
+
+    const ComfyUIUtils::ResolvedSamplingInputs full =
+        ComfyUIUtils::resolveSamplingFromStyle(nullptr, QJsonObject(), QStringLiteral("euler"), 20, 8.0, 1.0, false);
+    QCOMPARE(full.startAtStep, 0);
+    QCOMPARE(full.denoiseStrength, 1.0);
+}
+
+void ComfyUIRemoteDockTest::testBuildRefineRegionFooocusBranch()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sdxl;
+    rp.useInpaintModel = true;
+    rp.fooocusInpaintHead = QStringLiteral("inpaint_head.safetensors");
+    rp.fooocusInpaintPatch = QStringLiteral("inpaint_patch.safetensors");
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    bool hasInpaintCond = false;
+    bool hasFooocus = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("INPAINT_VAEEncodeInpaintConditioning"))
+            hasInpaintCond = true;
+        if (cls == QLatin1String("INPAINT_ApplyFooocusInpaint"))
+            hasFooocus = true;
+    }
+    QVERIFY(hasInpaintCond);
+    QVERIFY(hasFooocus);
+}
+
+void ComfyUIRemoteDockTest::testBuildRefineRegionInpaintControlNet()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sd15;
+    rp.useInpaintModel = true;
+    rp.controlNetInpaintFile = QStringLiteral("inpaint.safetensors");
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    bool hasInpaintCn = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("ControlNetInpaintingAliMamaApply"))
+            hasInpaintCn = true;
+    }
+    QVERIFY(hasInpaintCn);
+}
+
+void ComfyUIRemoteDockTest::testApplyStrengthResolvedSamplingToRefine()
+{
+    ComfyWorkflowEngine::RefineParams rp;
+    rp.steps = 20;
+    rp.denoise = 1.0;
+    rp.sampler = QStringLiteral("euler");
+    rp.scheduler = QStringLiteral("normal");
+    rp.cfg = 8.0;
+    ComfyUIUtils::applyStrengthResolvedSamplingToRefine(
+        &rp, nullptr, QJsonObject(), rp.sampler, rp.steps, rp.cfg, 0.85);
+    QCOMPARE(rp.steps, 20);
+    QVERIFY(rp.denoise < 1.0);
+    QVERIFY(qAbs(rp.denoise - 0.85) < 0.08);
+
+    rp.imageName = QStringLiteral("canvas.png");
+    rp.checkpoint = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    QJsonObject wf = ComfyWorkflowEngine::buildRefine(rp);
+    ComfyWorkflowEngine::finishWorkflowWithSamplerCustom(
+        &wf, QStringLiteral("6"), ComfyResources::Arch::Sd15, 512, 512, rp.denoise);
+    int splitStep = -1;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        if (node.value(QStringLiteral("class_type")).toString() == QLatin1String("SplitSigmas")) {
+            splitStep = node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("step")).toInt();
+            break;
+        }
+    }
+    QVERIFY(splitStep > 0);
+    QCOMPARE(splitStep, 3);
+}
+
+void ComfyUIRemoteDockTest::testBuildRefineRegionSplitSigmasAtStrength()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.steps = 20;
+    rp.refine.denoise = 0.85;
+    rp.refine.arch = ComfyResources::Arch::Sd15;
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    int splitStep = -1;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        if (node.value(QStringLiteral("class_type")).toString() == QLatin1String("SplitSigmas")) {
+            splitStep = node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("step")).toInt();
+            break;
+        }
+    }
+    QVERIFY(splitStep > 0);
+    QCOMPARE(splitStep, 3);
+}
+
+void ComfyUIRemoteDockTest::testBuildInpaintUseReferenceAndColorMatch()
+{
+    ComfyWorkflowEngine::InpaintBuildParams bp;
+    bp.imageName = QStringLiteral("img.png");
+    bp.maskImageName = QStringLiteral("mask.png");
+    bp.arch = ComfyResources::Arch::Sdxl;
+    bp.useReference = true;
+    bp.colorMatch = true;
+    bp.useInpaintModel = true;
+    bp.fooocusInpaintHead = QStringLiteral("inpaint_head.safetensors");
+    bp.fooocusInpaintPatch = QStringLiteral("inpaint_patch.safetensors");
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(bp);
+    bool hasIp = false;
+    bool hasColorMatch = false;
+    bool hasFooocus = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls.contains(QLatin1String("IPAdapter")))
+            hasIp = true;
+        if (cls == QLatin1String("INPAINT_ColorMatch"))
+            hasColorMatch = true;
+        if (cls == QLatin1String("INPAINT_ApplyFooocusInpaint"))
+            hasFooocus = true;
+    }
+    QVERIFY(hasIp);
+    QVERIFY(hasColorMatch);
+    QVERIFY(hasFooocus);
+}
+
+void ComfyUIRemoteDockTest::testBuildInpaintRefinementUpscalePass()
+{
+    ComfyWorkflowEngine::InpaintBuildParams bp;
+    bp.imageName = QStringLiteral("img.png");
+    bp.maskImageName = QStringLiteral("mask.png");
+    bp.refinementUpscale = true;
+    bp.refinementScaleMode = QStringLiteral("upscale_small");
+    bp.initialExtentWidth = 512;
+    bp.initialExtentHeight = 512;
+    bp.desiredExtentWidth = 1024;
+    bp.desiredExtentHeight = 1024;
+    bp.contextExtentWidth = 2048;
+    bp.contextExtentHeight = 2048;
+    bp.steps = 20;
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(bp);
+    QVERIFY(!wf.isEmpty());
+
+    int upscaleLoaderCount = 0;
+    int upscaleWithModelCount = 0;
+    int secondSamplerCount = 0;
+    int setLatentNoiseMaskCount = 0;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("UpscaleModelLoader"))
+            ++upscaleLoaderCount;
+        if (cls == QLatin1String("ImageUpscaleWithModel"))
+            ++upscaleWithModelCount;
+        if (cls == QLatin1String("SamplerCustomAdvanced"))
+            ++secondSamplerCount;
+        if (cls == QLatin1String("SetLatentNoiseMask"))
+            ++setLatentNoiseMaskCount;
+    }
+    QCOMPARE(upscaleLoaderCount, 1);
+    QCOMPARE(upscaleWithModelCount, 1);
+    QVERIFY(secondSamplerCount >= 2);
+    QCOMPARE(setLatentNoiseMaskCount, 2);
+
+    QString loaderModel;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        if (node.value(QStringLiteral("class_type")).toString() != QLatin1String("UpscaleModelLoader"))
+            continue;
+        loaderModel = node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("model_name")).toString();
+        break;
+    }
+    QCOMPARE(loaderModel, QStringLiteral("RealESRGAN_x2plus.pth"));
+
+    const QJsonArray saveImages =
+        wf.value(QStringLiteral("10")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
+    QVERIFY(saveImages.size() >= 2);
+    const QString saveSource = saveImages.at(0).toString();
+    QVERIFY(saveSource != QStringLiteral("9"));
+}
+
+void ComfyUIRemoteDockTest::testCustomInpaintContextAndParams()
+{
+    QString ctx;
+    QString layerId;
+    ComfyUIUtils::decodeInpaintContextComboData(QVariant(QStringLiteral("mask_bounds")), &ctx, &layerId);
+    QCOMPARE(ctx, QStringLiteral("mask_bounds"));
+    QVERIFY(layerId.isEmpty());
+
+    ComfyUIUtils::decodeInpaintContextComboData(QVariant(QStringLiteral("layer_bounds")), &ctx, &layerId);
+    QCOMPARE(ctx, QStringLiteral("automatic"));
+    QVERIFY(layerId.isEmpty());
+
+    const QString uid = QStringLiteral("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    ComfyUIUtils::decodeInpaintContextComboData(QVariant(uid), &ctx, &layerId);
+    QCOMPARE(ctx, QStringLiteral("layer_bounds"));
+    QCOMPARE(layerId, uid);
+
+    const ComfyUIUtils::InpaintParams editing =
+        ComfyUIUtils::customInpaintGetParams(QStringLiteral("blur"), true, true, true);
+    QCOMPARE(editing.fillKind, QStringLiteral("none"));
+    QVERIFY(editing.useInpaintModel);
+    QVERIFY(editing.useConditionMask);
+
+    const ComfyUIUtils::InpaintParams fill =
+        ComfyUIUtils::customInpaintGetParams(QStringLiteral("blur"), false, false, false);
+    QCOMPARE(fill.fillKind, QStringLiteral("blur"));
+
+    QVERIFY(!ComfyUIUtils::customInpaintGetContext(KisImageSP(), QStringLiteral("automatic"), QString(), QRect(0, 0, 10, 10)));
+    QVERIFY(!ComfyUIUtils::customInpaintGetContext(KisImageSP(), QStringLiteral("mask_bounds"), QString(), QRect(1, 2, 3, 4)));
+
+    QCOMPARE(ComfyUIUtils::inpaintContextKeyFromJson(QJsonValue(1)), QStringLiteral("mask_bounds"));
+    QCOMPARE(ComfyUIUtils::inpaintContextKeyFromJson(QJsonValue(QStringLiteral("entire_image"))),
+             QStringLiteral("entire_image"));
+    QCOMPARE(ComfyUIUtils::inpaintModeKeyFromJson(QJsonValue(6)), QStringLiteral("custom"));
+    QCOMPARE(ComfyUIUtils::fillModeKeyFromJson(QJsonValue(2)), QStringLiteral("blur"));
+
+    ComfyUIUtils::InpaintWorkspaceSnapshot snap;
+    snap.mode = QStringLiteral("custom");
+    snap.fill = QStringLiteral("blur");
+    snap.context = QStringLiteral("layer_bounds");
+    snap.contextLayerId = QStringLiteral("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    const QJsonObject saved = ComfyUIUtils::inpaintWorkspaceToJson(snap);
+    QCOMPARE(saved.value(QStringLiteral("mode")).toInt(), 6);
+    QCOMPARE(saved.value(QStringLiteral("fill")).toInt(), 2);
+    QCOMPARE(saved.value(QStringLiteral("context")).toInt(), 3);
+    QVERIFY(saved.value(QStringLiteral("context_layer_id")).toString().contains(QLatin1Char('{')));
+    ComfyUIUtils::InpaintWorkspaceSnapshot loaded;
+    QVERIFY(ComfyUIUtils::inpaintWorkspaceFromJson(saved, &loaded));
+    QCOMPARE(loaded.mode, snap.mode);
+    QCOMPARE(loaded.fill, snap.fill);
+    QCOMPARE(loaded.context, snap.context);
+    QCOMPARE(loaded.contextLayerId, snap.contextLayerId);
+
+    // Python-plugin ui.json slice (serialize uses enum .value)
+    QJsonObject pythonSlice;
+    pythonSlice.insert(QStringLiteral("mode"), 6);
+    pythonSlice.insert(QStringLiteral("fill"), 2);
+    pythonSlice.insert(QStringLiteral("use_inpaint"), true);
+    pythonSlice.insert(QStringLiteral("use_prompt_focus"), false);
+    pythonSlice.insert(QStringLiteral("context"), 3);
+    pythonSlice.insert(QStringLiteral("context_layer_id"),
+                       QStringLiteral("{a1b2c3d4-e5f6-7890-abcd-ef1234567890}"));
+    ComfyUIUtils::InpaintWorkspaceSnapshot fromPython;
+    QVERIFY(ComfyUIUtils::inpaintWorkspaceFromJson(pythonSlice, &fromPython));
+    QCOMPARE(fromPython.mode, QStringLiteral("custom"));
+    QCOMPARE(fromPython.fill, QStringLiteral("blur"));
+    QCOMPARE(fromPython.context, QStringLiteral("layer_bounds"));
+    QCOMPARE(fromPython.contextLayerId, snap.contextLayerId);
+}
+
+void ComfyUIRemoteDockTest::testRecentlyUsedSyncDocumentDefaultsFields()
+{
+    QCOMPARE(ComfyUIUtils::inpaintContextForFreshDocumentDefaults(QStringLiteral("layer_bounds")),
+             QStringLiteral("automatic"));
+
+    QJsonObject settings;
+    QJsonObject dd;
+    dd.insert(QStringLiteral("inpaint_mode"), QStringLiteral("replace_background"));
+    dd.insert(QStringLiteral("inpaint_fill"), QStringLiteral("border"));
+    dd.insert(QStringLiteral("inpaint_use_model"), false);
+    dd.insert(QStringLiteral("inpaint_use_prompt_focus"), true);
+    dd.insert(QStringLiteral("inpaint_context"), QStringLiteral("entire_image"));
+    dd.insert(QStringLiteral("batch_count"), 3);
+    settings.insert(QStringLiteral("document_defaults"), dd);
+    const QJsonObject loaded = ComfyUIUtils::documentDefaultsFromSettingsRoot(settings);
+    QCOMPARE(loaded.value(QStringLiteral("inpaint_mode")).toString(), QStringLiteral("replace_background"));
+    QCOMPARE(loaded.value(QStringLiteral("inpaint_fill")).toString(), QStringLiteral("border"));
+    QCOMPARE(loaded.value(QStringLiteral("inpaint_use_model")).toBool(), false);
+    QCOMPARE(loaded.value(QStringLiteral("inpaint_use_prompt_focus")).toBool(), true);
+    QCOMPARE(loaded.value(QStringLiteral("inpaint_context")).toString(), QStringLiteral("entire_image"));
+    QCOMPARE(loaded.value(QStringLiteral("batch_count")).toInt(), 3);
+}
+
+void ComfyUIRemoteDockTest::testCustomWorkflowKritaSelectionPrepare()
+{
+    QJsonObject selInputs;
+    selInputs.insert(QStringLiteral("context"), QStringLiteral("mask_bounds"));
+    selInputs.insert(QStringLiteral("padding"), 10);
+
+    ComfyUIUtils::MaskFromSelectionResult mask;
+    mask.valid = true;
+    mask.originalBounds = QRect(100, 100, 50, 50);
+    mask.paddedBounds = QRect(90, 90, 70, 70);
+    mask.maskGray = QImage(70, 70, QImage::Format_Grayscale8);
+    mask.maskGray.fill(255);
+
+    const QRect doc(0, 0, 512, 512);
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult prep =
+        ComfyUIUtils::prepareCustomWorkflowMask(selInputs, mask, doc);
+    QVERIFY(prep.hasSelectionMask);
+    QVERIFY(prep.captureBounds.width() >= 50);
+    QVERIFY(!prep.maskInCaptureCoords.isNull());
+
+    const ComfyUIUtils::SelectionModifiers mods =
+        ComfyUIUtils::getSelectionModifiersForContext(QStringLiteral("mask_bounds"), 1.0);
+    QCOMPARE(mods.multiple, 1);
+    QCOMPARE(mods.sizeMinPx, 0);
+
+    QCOMPARE(ComfyUIUtils::getInpaintContextFromSelectionNode(selInputs), QStringLiteral("mask_bounds"));
+    QVERIFY(ComfyUIUtils::workflowContainsKritaInjectionNodes(
+        QJsonObject{{QStringLiteral("9"),
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaSelection")}}}}));
+}
+
+void ComfyUIRemoteDockTest::testCustomWorkflowKritaSelectionPrepareAndExpand()
+{
+    QJsonObject autoInputs;
+    autoInputs.insert(QStringLiteral("context"), QStringLiteral("automatic"));
+    autoInputs.insert(QStringLiteral("padding"), 8);
+
+    ComfyUIUtils::MaskFromSelectionResult mask;
+    mask.valid = true;
+    mask.originalBounds = QRect(100, 100, 50, 50);
+    mask.paddedBounds = QRect(80, 80, 90, 90);
+    mask.maskGray = QImage(90, 90, QImage::Format_Grayscale8);
+    mask.maskGray.fill(255);
+
+    const QRect doc(0, 0, 512, 512);
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult autoPrep =
+        ComfyUIUtils::prepareCustomWorkflowMask(autoInputs, mask, doc);
+    QVERIFY(autoPrep.ok);
+    QVERIFY(autoPrep.hasSelectionMask);
+    QVERIFY(autoPrep.captureBounds.width() >= 50);
+    QCOMPARE(autoPrep.maskInCaptureCoords.size(), autoPrep.captureBounds.size());
+
+    // Upstream test_prepare_mask: automatic + padding 3 on 40×40 mask → 48×48 bounds
+    QJsonObject autoPadInputs;
+    autoPadInputs.insert(QStringLiteral("context"), QStringLiteral("automatic"));
+    autoPadInputs.insert(QStringLiteral("padding"), 3);
+    ComfyUIUtils::MaskFromSelectionResult padMask;
+    padMask.valid = true;
+    padMask.originalBounds = QRect(10, 10, 40, 40);
+    padMask.paddedBounds = QRect(10, 10, 40, 40);
+    padMask.maskGray = QImage(40, 40, QImage::Format_Grayscale8);
+    padMask.maskGray.fill(255);
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult autoPadPrep =
+        ComfyUIUtils::prepareCustomWorkflowMask(autoPadInputs, padMask, QRect(0, 0, 100, 100));
+    QVERIFY(autoPadPrep.ok);
+    QCOMPARE(autoPadPrep.captureBounds, QRect(6, 6, 48, 48));
+
+    QJsonObject maskBoundsInputs;
+    maskBoundsInputs.insert(QStringLiteral("context"), QStringLiteral("mask_bounds"));
+    maskBoundsInputs.insert(QStringLiteral("padding"), 3);
+    ComfyUIUtils::MaskFromSelectionResult selMask;
+    selMask.valid = true;
+    selMask.originalBounds = QRect(12, 12, 34, 34);
+    selMask.paddedBounds = QRect(10, 10, 40, 40);
+    selMask.maskGray = QImage(40, 40, QImage::Format_Grayscale8);
+    selMask.maskGray.fill(255);
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult maskBoundsPrep =
+        ComfyUIUtils::prepareCustomWorkflowMask(maskBoundsInputs, selMask, QRect(0, 0, 100, 100));
+    QVERIFY(maskBoundsPrep.ok);
+    QCOMPARE(maskBoundsPrep.captureBounds, QRect(9, 9, 40, 40));
+
+    QJsonObject entireInputs;
+    entireInputs.insert(QStringLiteral("context"), QStringLiteral("entire_image"));
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult entirePrep =
+        ComfyUIUtils::prepareCustomWorkflowMask(entireInputs, mask, doc);
+    QCOMPARE(entirePrep.captureBounds, doc);
+
+    QJsonObject wf;
+    wf.insert(QStringLiteral("1"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaSelection")},
+                          {QStringLiteral("inputs"), autoInputs}});
+    wf.insert(QStringLiteral("2"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("KSampler")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("seed"), QJsonArray{QStringLiteral("1"), 2}},
+                                       {QStringLiteral("steps"), QJsonArray{QStringLiteral("1"), 3}},
+                                       {QStringLiteral("cfg"), QJsonArray{QStringLiteral("1"), 1}},
+                                       {QStringLiteral("sampler_name"), QStringLiteral("euler")},
+                                       {QStringLiteral("scheduler"), QStringLiteral("normal")},
+                                       {QStringLiteral("denoise"), 1.0},
+                                       {QStringLiteral("model"), QJsonArray{QStringLiteral("9"), 0}},
+                                       {QStringLiteral("positive"), QJsonArray{QStringLiteral("9"), 0}},
+                                       {QStringLiteral("negative"), QJsonArray{QStringLiteral("9"), 0}},
+                                       {QStringLiteral("latent_image"), QJsonArray{QStringLiteral("9"), 0}}}}});
+
+    ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams p;
+    p.workflow = wf;
+    p.maskImageName = QStringLiteral("mask.png");
+    p.captureBounds = autoPrep.captureBounds;
+    p.hasSelectionMask = true;
+    p.seed = 99;
+
+    const QJsonObject out = ComfyWorkflowEngine::expandCustomKritaWorkflowNodes(p);
+    QVERIFY(!out.contains(QStringLiteral("1")));
+    const QJsonObject samplerInputs = out.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(samplerInputs.value(QStringLiteral("seed")).toInt(), autoPrep.captureBounds.x());
+    QCOMPARE(samplerInputs.value(QStringLiteral("steps")).toInt(), autoPrep.captureBounds.y());
+    QVERIFY(samplerInputs.value(QStringLiteral("cfg")).toBool());
+
+    bool foundMaskLoad = false;
+    for (auto it = out.constBegin(); it != out.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        if (node.value(QStringLiteral("class_type")).toString() == QLatin1String("LoadImage")
+            && node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString()
+                   == QLatin1String("mask.png")) {
+            foundMaskLoad = true;
+            break;
+        }
+    }
+    QVERIFY(foundMaskLoad);
+
+    QCOMPARE(ComfyUIUtils::layerPlaceholderReplacementForArch(ComfyResources::Arch::Flux2_4b),
+             QStringLiteral("image {}"));
+    QString fluxPrompt = QStringLiteral("scene <layer:Hair>");
+    ComfyUIUtils::extractLayerPlaceholders(fluxPrompt, QStringLiteral("image {}"));
+    QCOMPARE(fluxPrompt, QStringLiteral("scene image 1"));
+
+    ComfyStyleEntry style;
+    style.stylePrompt = QStringLiteral("{prompt}");
+    style.loras = QJsonArray();
+    const ComfyUIUtils::CustomWorkflowEvaluatedPrompts fluxEv =
+        ComfyUIUtils::prepareCustomWorkflowStyleAndPrompts(QStringLiteral("sky <layer:BG>"), QString(), &style, 1, 7.0,
+                                                           QString(), ComfyResources::Arch::Flux2_9b);
+    QVERIFY(fluxEv.ok);
+    QVERIFY(fluxEv.positiveFinal.contains(QStringLiteral("image 1")));
+    QVERIFY(!fluxEv.positiveFinal.contains(QStringLiteral("<layer:")));
+}
+
+void ComfyUIRemoteDockTest::testCustomWorkflowInvalidSelectionContext()
+{
+    QVERIFY(ComfyUIUtils::isValidCustomWorkflowSelectionContext(QStringLiteral("automatic")));
+    QVERIFY(ComfyUIUtils::isValidCustomWorkflowSelectionContext(QStringLiteral("mask_bounds")));
+    QVERIFY(ComfyUIUtils::isValidCustomWorkflowSelectionContext(QStringLiteral("entire_image")));
+    QVERIFY(!ComfyUIUtils::isValidCustomWorkflowSelectionContext(QStringLiteral("layer_bounds")));
+
+    QJsonObject badInputs;
+    badInputs.insert(QStringLiteral("context"), QStringLiteral("layer_bounds"));
+    ComfyUIUtils::MaskFromSelectionResult mask;
+    mask.valid = true;
+    mask.originalBounds = QRect(10, 10, 20, 20);
+    mask.paddedBounds = QRect(5, 5, 30, 30);
+    mask.maskGray = QImage(30, 30, QImage::Format_Grayscale8);
+    mask.maskGray.fill(255);
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult badPrep =
+        ComfyUIUtils::prepareCustomWorkflowMask(badInputs, mask, QRect(0, 0, 128, 128));
+    QVERIFY(!badPrep.ok);
+    QVERIFY(!badPrep.errorMessage.isEmpty());
+}
+
+void ComfyUIRemoteDockTest::testCustomWorkflowLayerExportAndFingerprint()
+{
+    QImage doc(64, 64, QImage::Format_ARGB32);
+    doc.fill(Qt::black);
+    QPainter p(&doc);
+    p.fillRect(20, 20, 10, 10, Qt::white);
+    p.end();
+    const QRect exportRect(20, 20, 10, 10);
+    const QImage cropped = ComfyUIUtils::cropImageToDocumentRect(doc, exportRect, QRect(0, 0, 64, 64));
+    QCOMPARE(cropped.size(), exportRect.size());
+
+    ComfyUIUtils::CustomWorkflowKritaCapture capture;
+    capture.ok = true;
+    capture.captureBounds = exportRect;
+    capture.canvasImage = cropped;
+    capture.hasSelectionMask = false;
+    const QByteArray fp1 = ComfyUIUtils::computeCustomWorkflowInputFingerprint(
+        QJsonObject{{QStringLiteral("1"), QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")}}}},
+        capture, 42, QStringLiteral("cat"), QString(), QJsonArray(), {});
+    const QByteArray fp2 = ComfyUIUtils::computeCustomWorkflowInputFingerprint(
+        QJsonObject{{QStringLiteral("1"), QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")}}}},
+        capture, 42, QStringLiteral("cat"), QString(), QJsonArray(), {});
+    QCOMPARE(fp1, fp2);
+    const QByteArray fp3 = ComfyUIUtils::computeCustomWorkflowInputFingerprint(
+        QJsonObject{{QStringLiteral("1"), QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")}}}},
+        capture, 43, QStringLiteral("cat"), QString(), QJsonArray(), {});
+    QVERIFY(fp3 != fp1);
+}
+
+void ComfyUIRemoteDockTest::testCustomWorkflowFullSelectionPipeline()
+{
+    // P9 #14 unit chain: prepare_mask → capture bounds → expand ETN_KritaSelection outputs.
+    QJsonObject selInputs;
+    selInputs.insert(QStringLiteral("context"), QStringLiteral("mask_bounds"));
+    selInputs.insert(QStringLiteral("padding"), 4);
+
+    ComfyUIUtils::MaskFromSelectionResult mask;
+    mask.valid = true;
+    mask.originalBounds = QRect(64, 64, 32, 32);
+    mask.paddedBounds = QRect(56, 56, 48, 48);
+    mask.maskGray = QImage(48, 48, QImage::Format_Grayscale8);
+    mask.maskGray.fill(255);
+
+    const QRect doc(0, 0, 256, 256);
+    const ComfyUIUtils::CustomWorkflowMaskPrepareResult prep =
+        ComfyUIUtils::prepareCustomWorkflowMask(selInputs, mask, doc);
+    QVERIFY(prep.ok);
+    QVERIFY(prep.hasSelectionMask);
+    QCOMPARE(prep.maskInCaptureCoords.size(), prep.captureBounds.size());
+
+    QJsonObject wf;
+    wf.insert(QStringLiteral("1"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaSelection")},
+                          {QStringLiteral("inputs"), selInputs}});
+    wf.insert(QStringLiteral("2"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaCanvas")},
+                          {QStringLiteral("inputs"), QJsonObject{}}});
+    wf.insert(QStringLiteral("3"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("KSampler")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("seed"), QJsonArray{QStringLiteral("1"), 2}},
+                                       {QStringLiteral("steps"), QJsonArray{QStringLiteral("1"), 3}},
+                                       {QStringLiteral("cfg"), QJsonArray{QStringLiteral("1"), 1}}}}});
+
+    ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams ep;
+    ep.workflow = wf;
+    ep.canvasImageName = QStringLiteral("canvas.png");
+    ep.maskImageName = QStringLiteral("mask.png");
+    ep.captureBounds = prep.captureBounds;
+    ep.hasSelectionMask = true;
+    ep.seed = 7;
+
+    const QJsonObject expanded = ComfyWorkflowEngine::expandCustomKritaWorkflowNodes(ep);
+    QVERIFY(!expanded.contains(QStringLiteral("1")));
+    QVERIFY(!expanded.contains(QStringLiteral("2")));
+    const QJsonObject samplerInputs =
+        expanded.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject();
+    QCOMPARE(samplerInputs.value(QStringLiteral("seed")).toInt(), prep.captureBounds.x());
+    QCOMPARE(samplerInputs.value(QStringLiteral("steps")).toInt(), prep.captureBounds.y());
+    QVERIFY(samplerInputs.value(QStringLiteral("cfg")).toBool());
+
+    ComfyUIUtils::CustomWorkflowKritaCapture capture;
+    capture.ok = true;
+    capture.captureBounds = prep.captureBounds;
+    capture.canvasImage = prep.maskInCaptureCoords.convertToFormat(QImage::Format_ARGB32);
+    capture.maskImage = prep.maskInCaptureCoords;
+    capture.hasSelectionMask = true;
+    const QByteArray fp = ComfyUIUtils::computeCustomWorkflowInputFingerprint(
+        wf, capture, 7, QStringLiteral("test prompt"), QString(), QJsonArray(), {});
+    QVERIFY(!fp.isEmpty());
+
+    ComfyStyleEntry style;
+    style.stylePrompt = QStringLiteral("{prompt}");
+    style.negativePrompt = QStringLiteral("bad");
+    style.loras = QJsonArray();
+    const ComfyUIUtils::CustomWorkflowEvaluatedPrompts ev =
+        ComfyUIUtils::prepareCustomWorkflowStyleAndPrompts(QStringLiteral("sunset"), QStringLiteral("blur"), &style, 9,
+                                                           7.0, QString(), ComfyResources::Arch::Sd15);
+    QVERIFY(ev.ok);
+    QCOMPARE(ev.metadata.value(QStringLiteral("prompt")).toString(), QStringLiteral("sunset"));
+    QCOMPARE(ev.metadata.value(QStringLiteral("prompt_final")).toString(), QStringLiteral("sunset"));
+    QCOMPARE(ev.negativeFinal, QStringLiteral("bad, blur"));
+}
+
+void ComfyUIRemoteDockTest::testExpandCustomKritaWorkflowNodes()
+{
+    QJsonObject wf;
+    wf.insert(QStringLiteral("1"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaCanvas")},
+                          {QStringLiteral("inputs"), QJsonObject{}}});
+    wf.insert(QStringLiteral("2"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaSelection")},
+                          {QStringLiteral("inputs"), QJsonObject{}}});
+    wf.insert(QStringLiteral("3"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("images"), QJsonArray{QStringLiteral("1"), 0}}}}});
+
+    ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams p;
+    p.workflow = wf;
+    p.canvasImageName = QStringLiteral("canvas.png");
+    p.maskImageName = QStringLiteral("mask.png");
+    p.captureBounds = QRect(10, 20, 100, 80);
+    p.hasSelectionMask = true;
+    p.seed = 42;
+
+    const QJsonObject out = ComfyWorkflowEngine::expandCustomKritaWorkflowNodes(p);
+    QVERIFY(!out.contains(QStringLiteral("1")));
+    QVERIFY(!out.contains(QStringLiteral("2")));
+    QVERIFY(out.contains(QStringLiteral("3")));
+    const QJsonArray imgLink =
+        out.value(QStringLiteral("3")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
+    QVERIFY(imgLink.at(0).toString() != QStringLiteral("1"));
+    QCOMPARE(imgLink.at(0).toString(), QStringLiteral("4"));
+}
+
+void ComfyUIRemoteDockTest::testExpandCustomKritaWorkflowParameterAndStyle()
+{
+    QVERIFY(ComfyUIUtils::workflowNeedsCustomKritaExpansion(
+        QJsonObject{{QStringLiteral("5"),
+                     QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_Parameter")}}}}));
+    QVERIFY(!ComfyUIUtils::workflowNeedsCustomKritaExpansion(
+        QJsonObject{{QStringLiteral("5"), QJsonObject{{QStringLiteral("class_type"), QStringLiteral("SaveImage")}}}}));
+
+    QJsonObject wf;
+    wf.insert(QStringLiteral("1"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_Parameter")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("name"), QStringLiteral("cfg_scale")},
+                                       {QStringLiteral("default"), 7.5}}}});
+    wf.insert(QStringLiteral("2"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("KSampler")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("cfg"), QJsonArray{QStringLiteral("1"), 0}}}}});
+
+    ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams p;
+    p.workflow = wf;
+    p.captureBounds = QRect(0, 0, 64, 64);
+    const QJsonObject paramOut = ComfyWorkflowEngine::expandCustomKritaWorkflowNodes(p);
+    QVERIFY(!paramOut.contains(QStringLiteral("1")));
+    const QJsonValue cfgVal =
+        paramOut.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("cfg"));
+    QCOMPARE(cfgVal.toDouble(), 7.5);
+
+    QJsonObject styleWf;
+    styleWf.insert(QStringLiteral("10"),
+                   QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaStyleAndPrompt")},
+                               {QStringLiteral("inputs"), QJsonObject{}}});
+    styleWf.insert(QStringLiteral("11"),
+                   QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CLIPTextEncode")},
+                               {QStringLiteral("inputs"),
+                                QJsonObject{{QStringLiteral("text"), QJsonArray{QStringLiteral("10"), 3}},
+                                            {QStringLiteral("clip"), QJsonArray{QStringLiteral("10"), 1}}}}});
+    ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams sp;
+    sp.workflow = styleWf;
+    sp.captureBounds = QRect(0, 0, 512, 512);
+    sp.checkpoint = QStringLiteral("sd_xl_base.safetensors");
+    sp.positivePrompt = QStringLiteral("a cat");
+    sp.negativePrompt = QStringLiteral("blurry");
+    sp.sampler = QStringLiteral("dpmpp_2m");
+    sp.scheduler = QStringLiteral("karras");
+    sp.steps = 25;
+    sp.cfg = 6.0;
+    const QJsonObject styleOut = ComfyWorkflowEngine::expandCustomKritaWorkflowNodes(sp);
+    QVERIFY(!styleOut.contains(QStringLiteral("10")));
+    QVERIFY(styleOut.contains(QStringLiteral("11")));
+    const QString text =
+        styleOut.value(QStringLiteral("11")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("text")).toString();
+    QCOMPARE(text, QStringLiteral("a cat"));
+}
+
+void ComfyUIRemoteDockTest::testCustomWorkflowLiveCapturePolicy()
+{
+    QVERIFY(ComfyUIUtils::customWorkflowCaptureExcludesInternal(false));
+    QVERIFY(!ComfyUIUtils::customWorkflowCaptureExcludesInternal(true));
+    QVERIFY(!ComfyUIUtils::customWorkflowNodeUsesLiveSampling(QStringLiteral("regular"), true));
+    QVERIFY(ComfyUIUtils::customWorkflowNodeUsesLiveSampling(QStringLiteral("live"), false));
+    QVERIFY(ComfyUIUtils::customWorkflowNodeUsesLiveSampling(QStringLiteral("auto"), true));
+
+    QJsonObject wf;
+    wf.insert(QStringLiteral("1"),
+              QJsonObject{{QStringLiteral("class_type"), QStringLiteral("ETN_KritaStyle")},
+                          {QStringLiteral("inputs"),
+                           QJsonObject{{QStringLiteral("name"), QStringLiteral("style")},
+                                       {QStringLiteral("sampler_preset"), QStringLiteral("live")}}}});
+    QVERIFY(ComfyUIUtils::isCustomWorkflowLiveCapture(wf));
+
+    ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams ks;
+    ks.workflow = wf;
+    ks.captureBounds = QRect(0, 0, 64, 64);
+    ComfyWorkflowEngine::CustomWorkflowStyleExpandInput styleIn;
+    styleIn.checkpoint = QStringLiteral("v1-5-pruned-emaonly.safetensors");
+    styleIn.positivePrompt = QStringLiteral("style pos");
+    styleIn.negativePrompt = QStringLiteral("style neg");
+    styleIn.sampler = QStringLiteral("euler");
+    styleIn.steps = 12;
+    styleIn.cfg = 5.5;
+    ks.kritaStyleByNodeId.insert(QStringLiteral("1"), styleIn);
+    ks.workflow.insert(QStringLiteral("2"),
+                       QJsonObject{{QStringLiteral("class_type"), QStringLiteral("CLIPTextEncode")},
+                                   {QStringLiteral("inputs"),
+                                    QJsonObject{{QStringLiteral("text"), QJsonArray{QStringLiteral("1"), 3}},
+                                                {QStringLiteral("clip"), QJsonArray{QStringLiteral("1"), 1}}}}});
+    const QJsonObject styleOut = ComfyWorkflowEngine::expandCustomKritaWorkflowNodes(ks);
+    QVERIFY(!styleOut.contains(QStringLiteral("1")));
+    QCOMPARE(styleOut.value(QStringLiteral("2"))
+                 .toObject()
+                 .value(QStringLiteral("inputs"))
+                 .toObject()
+                 .value(QStringLiteral("text"))
+                 .toString(),
+             QStringLiteral("style pos"));
+}
+
+void ComfyUIRemoteDockTest::testPrepareCustomWorkflowStyleAndPrompts()
+{
+    ComfyStyleEntry style;
+    style.stylePrompt = QStringLiteral("masterpiece, {prompt}");
+    style.negativePrompt = QStringLiteral("low quality");
+    style.loras = QJsonArray();
+
+    const ComfyUIUtils::CustomWorkflowEvaluatedPrompts ev =
+        ComfyUIUtils::prepareCustomWorkflowStyleAndPrompts(QStringLiteral("a cat"), QStringLiteral("blur"),
+                                                           &style, 42, 7.0, QString());
+    QVERIFY(ev.positiveFinal.contains(QStringLiteral("a cat")));
+    QVERIFY(ev.positiveFinal.contains(QStringLiteral("masterpiece")));
+    QCOMPARE(ev.negativeFinal, QStringLiteral("low quality, blur"));
+
+    const ComfyUIUtils::CustomWorkflowEvaluatedPrompts noNeg =
+        ComfyUIUtils::prepareCustomWorkflowStyleAndPrompts(QStringLiteral("x"), QStringLiteral("y"), &style, 1, 1.0,
+                                                           QString());
+    QVERIFY(noNeg.negativeFinal.isEmpty());
+}
+
+void ComfyUIRemoteDockTest::testExtractLorasFromPromptAndMerge()
+{
+    ComfyFileLibrary::instance().init();
+    ComfyFileLibrary::instance().updateRemoteLoras({QStringLiteral("hero.safetensors")});
+
+    const ComfyUIUtils::ExtractLorasFromPromptResult extracted =
+        ComfyUIUtils::extractLorasFromPrompt(QStringLiteral("a cat <lora:hero:0.75>"));
+    QCOMPARE(extracted.cleanedPrompt, QStringLiteral("a cat"));
+    QCOMPARE(extracted.loras.size(), 1);
+    QCOMPARE(extracted.loras.first().name, QStringLiteral("hero.safetensors"));
+    QCOMPARE(extracted.loras.first().strength, 0.75);
+
+    QList<ComfyWorkflowEngine::CheckpointLoraWeight> base;
+    ComfyWorkflowEngine::CheckpointLoraWeight existing;
+    existing.name = QStringLiteral("hero.safetensors");
+    existing.strengthModel = 0.5;
+    existing.strengthClip = 0.5;
+    base.append(existing);
+    ComfyWorkflowEngine::CheckpointLoraWeight fromPrompt;
+    fromPrompt.name = QStringLiteral("hero.safetensors");
+    fromPrompt.strengthModel = 0.75;
+    fromPrompt.strengthClip = 0.75;
+    const QList<ComfyWorkflowEngine::CheckpointLoraWeight> merged =
+        ComfyWorkflowEngine::mergeCheckpointLorasUnique(base, {fromPrompt});
+    QCOMPARE(merged.size(), 1);
+    QCOMPARE(merged.first().strengthModel, 0.75);
+
+    const ComfyUIUtils::ExtractLorasFromPromptResult missing =
+        ComfyUIUtils::extractLorasFromPrompt(QStringLiteral("<lora:nonexistent:1>"));
+    QVERIFY(!missing.errorMessage.isEmpty());
+
+    ComfyStyleEntry style;
+    style.stylePrompt = QStringLiteral("{prompt}");
+    style.negativePrompt = QString();
+    style.loras = QJsonArray();
+    const ComfyUIUtils::CustomWorkflowEvaluatedPrompts withLora =
+        ComfyUIUtils::prepareCustomWorkflowStyleAndPrompts(QStringLiteral("scene <lora:hero:0.5>"), QString(), &style,
+                                                           1, 7.0, QString());
+    QVERIFY(withLora.ok);
+    QVERIFY(!withLora.positiveFinal.contains(QStringLiteral("<lora:")));
+    QCOMPARE(withLora.promptLoras.size(), 1);
 }
 
 void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildTextToImage()
@@ -1035,9 +2007,21 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildInpaint()
     QCOMPARE(wf.value(QStringLiteral("2")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("image")).toString(),
              QStringLiteral("mask.png"));
     const QJsonObject i7 = wf.value(QStringLiteral("7")).toObject().value(QStringLiteral("inputs")).toObject();
-    QCOMPARE(i7.value(QStringLiteral("grow_mask_by")).toInt(), 12);
-    const QJsonObject i8 = wf.value(QStringLiteral("8")).toObject().value(QStringLiteral("inputs")).toObject();
-    QCOMPARE(i8.value(QStringLiteral("denoise")).toDouble(), 0.6);
+    QCOMPARE(i7.value(QStringLiteral("grow_mask_by")).toInt(), 0);
+    bool hasSamplerCustom = false;
+    int splitStep = -1;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        const QString cls = node.value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("SamplerCustomAdvanced"))
+            hasSamplerCustom = true;
+        if (cls == QLatin1String("SplitSigmas"))
+            splitStep = node.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("step")).toInt();
+    }
+    QVERIFY(hasSamplerCustom);
+    QVERIFY(!wf.contains(QStringLiteral("8")));
+    QVERIFY(splitStep > 0);
+    QCOMPARE(splitStep, 8);
 }
 
 void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildLive()
@@ -1099,10 +2083,14 @@ void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildUpscaleRefine()
     p.positivePrompt = QStringLiteral("sharp details");
     const QJsonObject wf = ComfyWorkflowEngine::buildUpscaleRefine(p);
     QVERIFY(!wf.isEmpty());
-    QCOMPARE(wf.value(QStringLiteral("7")).toObject().value(QStringLiteral("class_type")).toString(),
-             QStringLiteral("KSampler"));
-    QCOMPARE(wf.value(QStringLiteral("7")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("denoise")).toDouble(),
-             0.3);
+    bool hasSamplerCustom = false;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
+            == QLatin1String("SamplerCustomAdvanced"))
+            hasSamplerCustom = true;
+    }
+    QVERIFY(hasSamplerCustom);
+    QVERIFY(!wf.contains(QStringLiteral("7")));
 }
 
 void ComfyUIRemoteDockTest::testComfyWorkflowEngineBuildUpscaleTiled()
@@ -1295,6 +2283,16 @@ void ComfyUIRemoteDockTest::testComfyInpaintModeDetectAndInstructions()
     ComfyUIUtils::InpaintParams replaceBg = ComfyUIUtils::detectInpaintParams(
         QStringLiteral("replace_background"), QStringLiteral("sd15"), 0.6, false, false, false);
     QCOMPARE(replaceBg.fillKind, QStringLiteral("replace"));
+
+    ComfyUIUtils::InpaintParams qwenFill = ComfyUIUtils::detectInpaintParams(
+        QStringLiteral("fill"), QStringLiteral("qwen"), 1.0, false, false, false);
+    QCOMPARE(qwenFill.fillKind, QStringLiteral("blur"));
+    QVERIFY(!qwenFill.isEditMode);
+
+    ComfyUIUtils::InpaintParams fluxKFill = ComfyUIUtils::detectInpaintParams(
+        QStringLiteral("fill"), QStringLiteral("flux_k"), 1.0, false, false, false);
+    QCOMPARE(fluxKFill.fillKind, QStringLiteral("none"));
+    QVERIFY(fluxKFill.isEditMode);
 
     const QString instr = ComfyUIUtils::buildInpaintPromptInstructions(QStringLiteral("add_object"), QStringLiteral("sd15"));
     QVERIFY(instr.isEmpty());

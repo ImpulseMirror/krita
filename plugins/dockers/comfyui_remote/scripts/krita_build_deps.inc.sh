@@ -1,0 +1,76 @@
+# Fedora/Nobara RPMs for a from-source Krita build (from krita.spec f43 BuildRequires).
+# Minimal KF5 gate: kf5_build_deps.inc.sh
+KRITA_BUILD_RPMS=(
+  chrpath
+  gcc-c++
+  extra-cmake-modules
+  kf5-rpm-macros
+  ninja-build
+  desktop-file-utils
+  libappstream-glib
+  sip
+  # KF5
+  kf5-karchive-devel
+  kf5-kcompletion-devel
+  kf5-kconfig-devel
+  kf5-kcoreaddons-devel
+  kf5-kcrash-devel
+  kf5-kguiaddons-devel
+  kf5-ki18n-devel
+  kf5-kitemmodels-devel
+  kf5-kitemviews-devel
+  kf5-kio-devel
+  kf5-kwidgetsaddons-devel
+  kf5-kwindowsystem-devel
+  kf5-libkdcraw-devel
+  # Qt5
+  qt5-qtbase-devel
+  qt5-qtbase-private-devel
+  qt5-qtmultimedia-devel
+  qt5-qtsvg-devel
+  qt5-qtxmlpatterns-devel
+  qt5-qtx11extras-devel
+  qt5-qttools-devel
+  qt5-qtdeclarative-devel
+  qt5-qtquickcontrols2-devel
+  poppler-qt5-devel
+  quazip-qt5-devel
+  # libs
+  boost-devel
+  giflib-devel
+  libtiff-devel
+  fftw-devel
+  eigen3-devel
+  exiv2-devel
+  gsl-devel
+  kseexpr-devel
+  lcms2-devel
+  libcurl-devel
+  libheif-devel
+  libinput-devel
+  libjpeg-turbo-devel
+  turbojpeg
+  libjxl-devel
+  openjpeg2-devel
+  libpng-devel
+  LibRaw-devel
+  libwebp-devel
+  OpenColorIO-devel
+  openexr-devel
+  xcb-util-devel
+  libXi-devel
+  zlib-devel
+  mlt-devel
+  libmypaint-devel
+  fribidi-devel
+  catch2-devel
+  SDL2-devel
+  libunibreak-devel
+  freetype-devel
+  fontconfig-devel
+  harfbuzz-devel
+  xsimd-devel
+  python3-devel
+  python3-qt5-devel
+  python3-sip-devel
+)
