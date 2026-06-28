@@ -568,6 +568,8 @@ struct ComfyUIRemoteDock::Private
     /// P7: stashed at batch start for history save composite + region apply metadata
     QStringList batchStashedRegionLayerNames;
     QRect batchStashedContextBounds;
+    QRect batchStashedTargetBounds;
+    QImage batchStashedCompositingMask;
     bool batchStashedHasMask = false;
 
     // One-click inpaint state

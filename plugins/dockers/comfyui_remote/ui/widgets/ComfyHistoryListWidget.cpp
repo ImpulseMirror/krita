@@ -5,17 +5,77 @@
 
 #include "ComfyHistoryListWidget.h"
 
+#include "ComfyHistoryInternal.h"
 #include "ComfyLocalization.h"
 #include "ComfyTheme.h"
 
 #include <QEvent>
 #include <QFontMetrics>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QTimer>
 
 namespace {
+
+class HistoryThumbnailDelegate : public QStyledItemDelegate
+{
+public:
+    explicit HistoryThumbnailDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        if (index.data(ComfyHistoryInternal::HistoryItemIsHeaderRole).toInt() == 1) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        const QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
+        const QSize deco = opt.decorationSize.isValid() ? opt.decorationSize : opt.rect.size();
+
+        if (!icon.isNull()) {
+            const QList<QSize> availSizes = icon.availableSizes();
+            const QSize pixSize = availSizes.isEmpty() ? deco : availSizes.first();
+            const QPixmap pix = icon.pixmap(pixSize, QIcon::Normal, QIcon::Off);
+            if (!pix.isNull()) {
+                // Top-align under header row; horizontal center in list width.
+                QRect iconRect(QPoint(0, 0), pix.size());
+                iconRect.moveTop(opt.rect.top());
+                iconRect.moveLeft(opt.rect.left() + (opt.rect.width() - pix.width()) / 2);
+                // Preserve masked alpha (circle/feathered selection); opaque fill would square the thumb.
+                painter->drawPixmap(iconRect.topLeft(), pix);
+            } else {
+                painter->fillRect(opt.rect, opt.palette.base());
+                QRect iconRect(QPoint(0, 0), deco);
+                iconRect.moveTop(opt.rect.top());
+                iconRect.moveLeft(opt.rect.left() + (opt.rect.width() - deco.width()) / 2);
+                icon.paint(painter, iconRect, Qt::AlignCenter, QIcon::Normal, QIcon::On);
+            }
+        } else {
+            painter->fillRect(opt.rect, opt.palette.base());
+        }
+
+        if (!opt.text.isEmpty()) {
+            QRect textRect = opt.rect;
+            textRect.setLeft(opt.rect.left() + 4);
+            painter->setPen(opt.palette.text().color());
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, opt.text);
+        }
+        painter->restore();
+    }
+};
 
 QString overlayButtonStyleSheet()
 {
@@ -37,6 +97,7 @@ ComfyHistoryListWidget::ComfyHistoryListWidget(QWidget *parent)
     : QListWidget(parent)
 {
     setViewportMargins(0, 0, 0, 0);
+    setItemDelegate(new HistoryThumbnailDelegate(this));
 
     m_applyButton = new QPushButton(ComfyTheme::icon(QStringLiteral("apply")),
                                     ComfyTr::tr("Apply"),
@@ -112,6 +173,7 @@ void ComfyHistoryListWidget::updateOverlayButtons()
 void ComfyHistoryListWidget::resizeEvent(QResizeEvent *event)
 {
     QListWidget::resizeEvent(event);
+    ComfyHistoryInternal::syncHistoryListItemWidths(this);
     updateOverlayButtons();
 }
 

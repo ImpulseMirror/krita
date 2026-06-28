@@ -11,6 +11,8 @@
 #include <QHash>
 #include <QImage>
 #include <QJsonObject>
+#include <QPixmap>
+#include <QSize>
 #include <QList>
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -87,6 +89,25 @@ QString historyPathForIdentity(const QString &jobId, int imageIndex,
                                const QList<ComfyUIRemoteDock::Private::HistoryEntry> &entries,
                                int *outEntryIndex, int *outImageIndex);
 QListWidgetItem *findHistoryListItem(QListWidget *list, const QString &jobId, int imageIndex);
+
+QString historyCompositingMaskSidecarPath(const QString &resultImagePath);
+QString historyThumbnailSidecarPath(const QString &resultImagePath);
+bool saveHistoryCompositingMaskSidecar(const QString &resultImagePath, const QImage &maskGray);
+bool saveHistoryDisplayThumbnail(const QString &resultImagePath,
+                                 const ComfyUIRemoteDock::Private::HistoryEntry &entry,
+                                 const QImage &resultImage,
+                                 const QImage &compositingMaskGray);
+QPixmap historyThumbnailPixmap(const ComfyUIRemoteDock::Private::HistoryEntry &entry, const QString &path,
+                               const QSize &iconSize, QHash<QString, QImage> *cache);
+/// IconMode row width for header labels (full docker width).
+int historyListRowWidth(const QListWidget *list);
+QSize historyHeaderItemSizeHint(const QListWidget *list, int headerHeight);
+/// Extra width per thumb cell; delegate centers pixmap → horizontal gap between neighbors.
+int historyThumbnailHorizontalCellPadding();
+QSize historyThumbnailItemSizeHint(const QListWidget *list, const QSize &pixmapSize);
+void syncHistoryListItemWidths(QListWidget *list);
+void activateAppliedResultLayer(KisViewManager *viewManager, KisImageSP image, KisLayerSP imported,
+                                KisLayerSP activeBefore, const QString &behavior);
 
 } // namespace ComfyHistoryInternal
 

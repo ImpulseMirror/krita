@@ -37,10 +37,13 @@ public:
     void focusPromptEditor();
     void commitRootPromptEditors();
     void refreshRootPromptFromDock();
+    /// Compact docker: clamp prompt heights, margins, resize-handle visibility (FAITHFUL_PORT).
+    void applyCompactLayout(int positiveLines, int negativeLines, bool showNegative, bool showResizeHandle);
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 Q_SIGNALS:
     void activeIndexChanged(int index);
@@ -50,6 +53,7 @@ Q_SIGNALS:
     void translatePromptRequested(bool negative);
     void requestLinkActiveToRegion(int regionIndex);
     void editingModeChanged(int activeIndex);
+    void layoutHeightsChanged();
 
 private:
     enum class EditorMode { Root, Region, Unlinked, Empty };
@@ -67,6 +71,7 @@ private:
     void updateLinkButton();
     void updateNoRegionStrip();
     void applyPromptLineHeights();
+    void applyPromptLineHeights(int positiveLines, int negativeLines);
     void showLinkMenu(QPushButton *anchor);
 
     KisViewManager *m_viewManager = nullptr;
@@ -90,6 +95,8 @@ private:
     QPushButton *m_btnRemove = nullptr;
     QPlainTextEdit *m_editPrompt = nullptr;
     QPlainTextEdit *m_editNegative = nullptr;
+    QWidget *m_positivePromptColumn = nullptr;
+    QWidget *m_negativePromptColumn = nullptr;
     QComboBox *m_comboMask = nullptr;
     QLabel *m_emptyHint = nullptr;
 
@@ -98,6 +105,8 @@ private:
     QPushButton *m_btnNewRegion = nullptr;
     QPushButton *m_btnLinkRegionMenu = nullptr;
     QPushButton *m_btnTranslation = nullptr;
+    class ComfyPromptResizeHandle *m_posResizeHandle = nullptr;
+    class ComfyPromptResizeHandle *m_negResizeHandle = nullptr;
 
     QUuid m_lastActiveLayerUuid;
     bool m_syncingEditor = false;

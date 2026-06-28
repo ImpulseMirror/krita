@@ -11,6 +11,7 @@
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyUiLayoutDiagnostics.h"
 
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -34,6 +35,16 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
     if (!m_d->history.listHistory)
         return;
 
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_UI_DIAG refreshHistoryList entries=") << m_d->history.historyEntries.size()
+        << QStringLiteral("listGeom=") << m_d->history.listHistory->geometry()
+        << QStringLiteral("histGroupGeom=")
+        << (m_d->history.histGroupBox ? m_d->history.histGroupBox->geometry() : QRect())
+        << QStringLiteral("histParent=")
+        << (m_d->history.histGroupBox && m_d->history.histGroupBox->parentWidget()
+                ? m_d->history.histGroupBox->parentWidget()->objectName()
+                : QString());
+
     QString keepJobId;
     int keepImageIndex = -1;
     if (m_d->history.listHistory->currentItem() && !historyEntryIsHeaderItem(m_d->history.listHistory->currentItem())) {
@@ -46,11 +57,8 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
 
     m_d->history.listHistory->clear();
     const QSize iconSize = m_d->history.listHistory->iconSize();
-    const int thumbW = iconSize.width();
-    const int thumbH = iconSize.height();
-    const int starX = thumbW - 28;
-    const int starY = 4;
     const int starSize = 24;
+    const int starMargin = 4;
     QIcon starIcon = ComfyTheme::icon(QStringLiteral("star"));
     QPixmap starPix = starIcon.pixmap(starSize, starSize);
     int selectRow = -1;
@@ -74,8 +82,8 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
             header->setData(HistoryItemImageIndexRole, -1);
             header->setData(HistoryItemIsHeaderRole, 1);
             header->setToolTip(e.prompt);
-            const int headerH = m_d->history.listHistory->fontMetrics().lineSpacing() + 4;
-            header->setSizeHint(QSize(9999, headerH));
+            const int headerH = m_d->history.listHistory->fontMetrics().lineSpacing() + 2;
+            header->setSizeHint(historyHeaderItemSizeHint(m_d->history.listHistory, headerH));
             header->setTextAlignment(Qt::AlignLeft);
             m_d->history.listHistory->addItem(header);
             ++row;
@@ -93,20 +101,19 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
                 tip = ComfyTr::tr("Image %1 of %2", imageIndex + 1, paths.size()) + QStringLiteral("\n") + tip;
             QListWidgetItem *item = new QListWidgetItem();
             if (!path.isEmpty() && QFile::exists(path)) {
-                QPixmap pix(path);
+                QPixmap pix = historyThumbnailPixmap(e, path, iconSize, &m_d->history.historyPreviewImageCache);
                 if (!pix.isNull()) {
-                    pix = pix.scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                    QPixmap displayPix = pix;
                     if (e.imageInUse.value(imageIndex, false) && !starPix.isNull()) {
-                        QPixmap composite(thumbW, thumbH);
-                        composite.fill(Qt::transparent);
-                        QPainter p(&composite);
+                        displayPix = QPixmap(pix.size());
+                        displayPix.fill(Qt::transparent);
+                        QPainter p(&displayPix);
                         p.drawPixmap(0, 0, pix);
-                        p.drawPixmap(starX, starY, starPix);
+                        p.drawPixmap(pix.width() - starSize - starMargin, starMargin, starPix);
                         p.end();
-                        item->setIcon(QIcon(composite));
-                    } else {
-                        item->setIcon(QIcon(pix));
                     }
+                    item->setIcon(QIcon(displayPix));
+                    item->setSizeHint(historyThumbnailItemSizeHint(m_d->history.listHistory, displayPix.size()));
                 }
             }
             if (item->icon().isNull()) {
@@ -129,7 +136,9 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
         m_d->history.listHistory->setCurrentRow(selectRow);
     else if (scrollToBottom)
         m_d->history.listHistory->scrollToBottom();
+    syncHistoryListItemWidths(m_d->history.listHistory);
     m_d->history.listHistory->updateOverlayButtons();
+    dumpUiLayoutDiagnostics("refreshHistoryList");
 }
 
 void ComfyUIRemoteDock::slotHistoryItemSelected()

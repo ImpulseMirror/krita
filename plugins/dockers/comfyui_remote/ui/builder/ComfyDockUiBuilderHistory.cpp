@@ -46,6 +46,7 @@
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSize>
+#include <QSizePolicy>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -77,12 +78,13 @@ void buildHistoryPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     ComfyUIRemoteDock::Private *d = ctx.d;
     QGroupBox *histGroup = new QGroupBox();
     d->history.histGroupBox = histGroup;
-    histGroup->setFlat(true);
+    histGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     histGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
     QVBoxLayout *histLayout = new QVBoxLayout(histGroup);
     histLayout->setContentsMargins(0, 0, 0, 0);
     d->history.listHistory = new ComfyHistoryListWidget();
-    d->history.listHistory->setMaximumHeight(140);
+    d->history.listHistory->setMinimumHeight(96);
+    d->history.listHistory->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     d->history.listHistory->setViewMode(QListWidget::IconMode);
     d->history.listHistory->setIconSize(QSize(96, 96));  // §13.28a: thumbnail size 96×96 px
     d->history.listHistory->setFlow(QListView::LeftToRight);
@@ -90,8 +92,11 @@ void buildHistoryPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     d->history.listHistory->setSelectionMode(QAbstractItemView::SingleSelection);
     d->history.listHistory->setFrameShape(QFrame::NoFrame);
     d->history.listHistory->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);  // §13.28a: vertical scroll only
-    d->history.listHistory->setStyleSheet(QStringLiteral("QListWidget { background-color: transparent; }"));
-    d->history.listHistory->setSpacing(4);
+    d->history.listHistory->setStyleSheet(QStringLiteral(
+        "QListWidget { background-color: transparent; }"
+        "QListWidget::item { background: transparent; }"));
+    d->history.listHistory->setSpacing(0);
+    d->history.listHistory->setUniformItemSizes(false);
     d->history.listHistory->setMovement(QListWidget::Static);
     d->history.listHistory->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(d->history.listHistory, &QListWidget::customContextMenuRequested, dock,
@@ -112,8 +117,9 @@ void buildHistoryPanel(const Context &ctx, QVBoxLayout *scrollLayout)
         const QRect rect = d->history.listHistory->visualItemRect(d->history.listHistory->currentItem());
         dock->slotHistoryContextMenu(rect.bottomRight());
     });
-    histLayout->addWidget(d->history.listHistory);
+    histLayout->addWidget(d->history.listHistory, 1);
     d->history.historyButtonsRowWidget = new QWidget(histGroup);
+    d->history.historyButtonsRowWidget->setVisible(false); // overlay buttons only (FAITHFUL_PORT)
     QHBoxLayout *historyBtns = new QHBoxLayout(d->history.historyButtonsRowWidget);
     historyBtns->setContentsMargins(0, 0, 0, 0);
     d->history.btnHistoryReRun = new QPushButton(ComfyTr::tr("Re-run"));

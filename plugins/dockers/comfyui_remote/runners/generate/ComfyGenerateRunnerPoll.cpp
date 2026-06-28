@@ -8,6 +8,7 @@
 #include "ComfyLocalization.h"
 #include "ComfyPollRunnerCommon.h"
 #include "ComfyPromptClient.h"
+#include "ComfyHistoryInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
@@ -171,6 +172,18 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                             f.write(data);
                             f.close();
                             pathsByIndex->insert(i, cachePath);
+                            if (dock->m_d->batchStashedHasMask && !dock->m_d->batchStashedCompositingMask.isNull())
+                                ComfyHistoryInternal::saveHistoryCompositingMaskSidecar(cachePath,
+                                                                                        dock->m_d->batchStashedCompositingMask);
+                            if (dock->m_d->history.pendingHistoryByPromptId.contains(completedId)) {
+                                const ComfyUIRemoteDock::Private::HistoryEntry &pending =
+                                    dock->m_d->history.pendingHistoryByPromptId[completedId];
+                                QImage downloaded;
+                                if (downloaded.load(cachePath)) {
+                                    ComfyHistoryInternal::saveHistoryDisplayThumbnail(
+                                        cachePath, pending, downloaded, dock->m_d->batchStashedCompositingMask);
+                                }
+                            }
                         }
                         if (pathsByIndex->size() == totalImages) {
                             ComfyUIRemoteDock::Private::HistoryEntry e = entry;
@@ -235,6 +248,18 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                         dock->m_d->history.pendingHistoryByPromptId[completedId].resultImagePath = cachePath;
                         dock->m_d->history.pendingHistoryByPromptId[completedId].resultImagePaths = QStringList() << cachePath;
                         dock->m_d->history.pendingHistoryByPromptId[completedId].jobId = completedId;
+                        if (dock->m_d->batchStashedHasMask && !dock->m_d->batchStashedCompositingMask.isNull())
+                            ComfyHistoryInternal::saveHistoryCompositingMaskSidecar(cachePath,
+                                                                                    dock->m_d->batchStashedCompositingMask);
+                        if (dock->m_d->history.pendingHistoryByPromptId.contains(completedId)) {
+                            const ComfyUIRemoteDock::Private::HistoryEntry &pending =
+                                dock->m_d->history.pendingHistoryByPromptId[completedId];
+                            QImage downloaded;
+                            if (downloaded.load(cachePath)) {
+                                ComfyHistoryInternal::saveHistoryDisplayThumbnail(
+                                    cachePath, pending, downloaded, dock->m_d->batchStashedCompositingMask);
+                            }
+                        }
                     }
                 }
                 if (!dock->m_d->viewManager || !dock->m_d->viewManager->imageManager()) {

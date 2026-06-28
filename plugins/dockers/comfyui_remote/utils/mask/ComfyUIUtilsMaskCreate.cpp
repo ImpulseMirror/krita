@@ -254,43 +254,125 @@ static void blitGrayMaskInto(QImage *dest, const QImage &src, QPoint topLeft)
     }
 }
 
+static double maskFillFraction(const QImage &maskGray)
+{
+    if (maskGray.isNull())
+        return 0.0;
+    const QImage g = maskGray.format() == QImage::Format_Grayscale8
+                         ? maskGray
+                         : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    int nonWhite = 0;
+    const int total = g.width() * g.height();
+    for (int y = 0; y < g.height(); ++y) {
+        for (int x = 0; x < g.width(); ++x) {
+            if (qGray(g.pixel(x, y)) > 20)
+                ++nonWhite;
+        }
+    }
+    return total > 0 ? nonWhite / double(total) : 0.0;
+}
+
+static QImage grayMaskFromConvertSlice(const QImage &slice, bool invertSelection)
+{
+    if (slice.isNull())
+        return QImage();
+    QImage maskImage(slice.width(), slice.height(), QImage::Format_Grayscale8);
+    for (int y = 0; y < slice.height(); ++y) {
+        for (int x = 0; x < slice.width(); ++x) {
+            int v = qAlpha(slice.pixel(x, y));
+            if (v == 0)
+                v = qGray(slice.pixel(x, y));
+            if (invertSelection)
+                v = 255 - v;
+            maskImage.setPixel(x, y, qRgb(v, v, v));
+        }
+    }
+    return maskImage;
+}
+
+static QImage grayMaskFromReadBytes(KisPaintDeviceSP dev, const QRect &rect, bool invertSelection)
+{
+    if (!dev || rect.isEmpty())
+        return QImage();
+    const int ps = dev->pixelSize();
+    QVector<quint8> data(rect.width() * rect.height() * qMax(1, ps));
+    dev->readBytes(data.data(), rect.x(), rect.y(), rect.width(), rect.height());
+    QImage maskImage(rect.width(), rect.height(), QImage::Format_Grayscale8);
+    for (int y = 0; y < rect.height(); ++y) {
+        for (int x = 0; x < rect.width(); ++x) {
+            const int srcIdx = (y * rect.width() + x) * qMax(1, ps);
+            quint8 v = ps > 0 ? data.value(srcIdx, 0) : 0;
+            if (invertSelection)
+                v = 255 - v;
+            maskImage.setPixel(x, y, qRgb(v, v, v));
+        }
+    }
+    return maskImage;
+}
+
+SelectionMaskReadResult chooseSelectionMaskRead(const QImage &fromConvert, const QImage &fromBytes)
+{
+    SelectionMaskReadResult out;
+    const double convertFill = maskFillFraction(fromConvert);
+    const double bytesFill = maskFillFraction(fromBytes);
+    constexpr double kSolidFillThreshold = 0.98;
+
+    if (!fromConvert.isNull() && convertFill < kSolidFillThreshold) {
+        out.mask = fromConvert;
+        out.source = SelectionMaskReadSource::ConvertToQImage;
+    } else if (!fromBytes.isNull() && bytesFill > 0.0) {
+        out.mask = fromBytes;
+        out.source = !fromConvert.isNull() && convertFill >= kSolidFillThreshold
+                         ? SelectionMaskReadSource::ReadBytesOverSolidConvert
+                         : SelectionMaskReadSource::ReadBytes;
+    } else if (!fromConvert.isNull()) {
+        out.mask = fromConvert;
+        out.source = SelectionMaskReadSource::ConvertToQImageFallback;
+    } else if (!fromBytes.isNull()) {
+        out.mask = fromBytes;
+        out.source = SelectionMaskReadSource::ReadBytesOnly;
+    }
+    return out;
+}
+
+static const char *selectionMaskReadSourceTag(SelectionMaskReadSource source)
+{
+    switch (source) {
+    case SelectionMaskReadSource::ConvertToQImage:
+        return "convertToQImage";
+    case SelectionMaskReadSource::ReadBytes:
+        return "readBytes";
+    case SelectionMaskReadSource::ReadBytesOverSolidConvert:
+        return "readBytes_over_convertSolid";
+    case SelectionMaskReadSource::ConvertToQImageFallback:
+        return "convertToQImage_fallback";
+    case SelectionMaskReadSource::ReadBytesOnly:
+        return "readBytes_only";
+    case SelectionMaskReadSource::None:
+        break;
+    }
+    return "none";
+}
+
 static QImage grayMaskFromPaintDevice(KisPaintDeviceSP dev, KisImageSP image, const QRect &rect, bool invertSelection,
                                       const QRect &fallbackFillInRect = QRect())
 {
     if (!dev || rect.isEmpty())
         return QImage();
-    QImage maskImage(rect.width(), rect.height(), QImage::Format_Grayscale8);
-    maskImage.fill(0);
+
     const KoColorProfile *profile = image && image->colorSpace() ? image->colorSpace()->profile() : nullptr;
-    QImage slice = dev->convertToQImage(profile, rect.x(), rect.y(), rect.width(), rect.height(),
-                                        KoColorConversionTransformation::internalRenderingIntent(),
-                                        KoColorConversionTransformation::internalConversionFlags());
-    const bool usedConvertToQImage = !slice.isNull();
-    if (usedConvertToQImage) {
-        for (int y = 0; y < slice.height(); ++y) {
-            for (int x = 0; x < slice.width(); ++x) {
-                int v = qAlpha(slice.pixel(x, y));
-                if (v == 0)
-                    v = qGray(slice.pixel(x, y));
-                if (invertSelection)
-                    v = 255 - v;
-                maskImage.setPixel(x, y, qRgb(v, v, v));
-            }
-        }
-    } else {
-        const int ps = dev->pixelSize();
-        QVector<quint8> data(rect.width() * rect.height() * qMax(1, ps));
-        dev->readBytes(data.data(), rect.x(), rect.y(), rect.width(), rect.height());
-        for (int y = 0; y < rect.height(); ++y) {
-            for (int x = 0; x < rect.width(); ++x) {
-                const int srcIdx = (y * rect.width() + x) * qMax(1, ps);
-                quint8 v = ps > 0 ? data.value(srcIdx, 0) : 0;
-                if (invertSelection)
-                    v = 255 - v;
-                maskImage.setPixel(x, y, qRgb(v, v, v));
-            }
-        }
-    }
+    const QImage slice = dev->convertToQImage(profile, rect.x(), rect.y(), rect.width(), rect.height(),
+                                              KoColorConversionTransformation::internalRenderingIntent(),
+                                              KoColorConversionTransformation::internalConversionFlags());
+    const QImage fromConvert = grayMaskFromConvertSlice(slice, invertSelection);
+    const QImage fromBytes = grayMaskFromReadBytes(dev, rect, invertSelection);
+
+    const SelectionMaskReadResult chosen = chooseSelectionMaskRead(fromConvert, fromBytes);
+    QImage maskImage = chosen.mask;
+    const char *chosenPath = selectionMaskReadSourceTag(chosen.source);
+
+    const double convertFill = maskFillFraction(fromConvert);
+    const double bytesFill = maskFillFraction(fromBytes);
 
     quint64 sum = 0;
     const int count = rect.width() * rect.height();
@@ -298,11 +380,12 @@ static QImage grayMaskFromPaintDevice(KisPaintDeviceSP dev, KisImageSP image, co
         for (int x = 0; x < rect.width(); ++x)
             sum += static_cast<quint64>(qGray(maskImage.pixel(x, y)));
     }
-    const QString readStats = maskStatsForLog(maskImage, QStringLiteral("read"));
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "INPAINT_DIAG grayMaskFromPaintDevice rect=" << rect << " path="
-        << (usedConvertToQImage ? "convertToQImage" : "readBytes") << " sum=" << sum
-        << " count=" << count << " " << readStats;
+        << "INPAINT_DIAG grayMaskFromPaintDevice rect=" << rect << " chosen=" << chosenPath
+        << " convertFill=" << convertFill << " bytesFill=" << bytesFill << " sum=" << sum << " count=" << count
+        << " " << maskStatsForLog(maskImage, QStringLiteral("chosen"))
+        << " " << maskStatsForLog(fromConvert, QStringLiteral("convert"))
+        << " " << maskStatsForLog(fromBytes, QStringLiteral("bytes"));
 
     if (count > 0 && sum < static_cast<quint64>(count) * 8 && !invertSelection) {
         // Match getMaskAsQImage: bounded-box selections may expose selectedExactRect without
@@ -323,6 +406,37 @@ static QImage grayMaskFromPaintDevice(KisPaintDeviceSP dev, KisImageSP image, co
             << "INPAINT_DIAG grayMaskFromPaintDevice afterFallback " << maskStatsForLog(maskImage, QStringLiteral("fallback"));
     }
     return maskImage;
+}
+
+double maskNonWhiteFraction(const QImage &maskGray)
+{
+    if (maskGray.isNull())
+        return 0.0;
+    const QImage g = maskGray.format() == QImage::Format_Grayscale8
+                         ? maskGray
+                         : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    int nonWhite = 0;
+    const int total = g.width() * g.height();
+    for (int y = 0; y < g.height(); ++y) {
+        for (int x = 0; x < g.width(); ++x) {
+            if (qGray(g.pixel(x, y)) > 20)
+                ++nonWhite;
+        }
+    }
+    return total > 0 ? nonWhite / double(total) : 0.0;
+}
+
+QImage assembleSelectionMaskInPaddedBounds(const QImage &selectionMaskGray,
+                                           const QRect &selectionBoundsInDoc,
+                                           const QRect &paddedBoundsInDoc)
+{
+    if (selectionMaskGray.isNull() || selectionBoundsInDoc.isEmpty() || paddedBoundsInDoc.isEmpty())
+        return QImage();
+    QImage padded(paddedBoundsInDoc.width(), paddedBoundsInDoc.height(), QImage::Format_Grayscale8);
+    padded.fill(0);
+    const QPoint coreOffset = selectionBoundsInDoc.topLeft() - paddedBoundsInDoc.topLeft();
+    blitGrayMaskInto(&padded, selectionMaskGray, coreOffset);
+    return padded;
 }
 
 QImage embedGrayMaskInDocument(const QImage &maskGray, const QRect &maskDocBounds, const QRect &docBounds)
@@ -392,10 +506,8 @@ MaskFromSelectionResult createMaskFromSelection(KisImageSP image, KisViewManager
     if (coreMask.isNull())
         return out;
 
-    QImage paddedMask(bounds.width(), bounds.height(), QImage::Format_Grayscale8);
-    paddedMask.fill(0);
+    const QImage paddedMask = assembleSelectionMaskInPaddedBounds(coreMask, originalBounds, bounds);
     const QPoint coreOffset = originalBounds.topLeft() - bounds.topLeft();
-    blitGrayMaskInto(&paddedMask, coreMask, coreOffset);
 
     qCWarning(KIS_COMFYUI_REMOTE).nospace()
         << "INPAINT_DIAG createMaskFromSelection original=" << originalBounds << " padded=" << bounds

@@ -15,14 +15,128 @@
 #include "ComfyWorkflowEngine.h"
 #include "ComfyStyleLoraListWidget.h"
 #include "ComfyRegionPromptWidget.h"
+#include "ComfyUiLayoutDiagnostics.h"
 #include "ComfySwitchWidget.h"
 
 #include <QComboBox>
+#include <QLoggingCategory>
+#include <QScrollArea>
+#include <QSizePolicy>
+#include <QVBoxLayout>
 #include <KSharedConfig>
 
 #include "ComfyUIRemoteDockShellInternal.h"
 
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
+
 using namespace ComfyDockShellInternal;
+
+namespace {
+
+void collapseCompactLayoutRow(QWidget *widget)
+{
+    if (!widget)
+        return;
+    widget->hide();
+    const QSizePolicy sp = widget->sizePolicy();
+    widget->setSizePolicy(sp.horizontalPolicy(), QSizePolicy::Fixed);
+    widget->setFixedHeight(0);
+}
+
+void restoreCompactLayoutRow(QWidget *widget)
+{
+    if (!widget)
+        return;
+    widget->show();
+    const QSizePolicy sp = widget->sizePolicy();
+    widget->setSizePolicy(sp.horizontalPolicy(), QSizePolicy::Preferred);
+    widget->setMinimumHeight(0);
+    widget->setMaximumHeight(QWIDGETSIZE_MAX);
+    widget->updateGeometry();
+}
+
+} // namespace
+
+void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
+{
+    auto syncLayout = [compactGenerate](QLayout *layout, const auto &isEssential) {
+        if (!layout)
+            return;
+        for (int i = 0; i < layout->count(); ++i) {
+            QLayoutItem *item = layout->itemAt(i);
+            if (!item)
+                continue;
+            QWidget *widget = item->widget();
+            if (!widget)
+                continue;
+            if (compactGenerate) {
+                if (isEssential(widget))
+                    restoreCompactLayoutRow(widget);
+                else
+                    collapseCompactLayoutRow(widget);
+            } else {
+                restoreCompactLayoutRow(widget);
+            }
+        }
+    };
+
+    if (m_d->generate.genContentContainer) {
+        syncLayout(m_d->generate.genContentContainer->layout(), [this](QWidget *w) {
+            return w == m_d->generate.regionPromptWidget || w == m_d->inpaint.strengthRowWidget
+                   || w == m_d->generate.generateActionRowWidget;
+        });
+        if (compactGenerate) {
+            if (m_d->generate.regionPromptWidget)
+                m_d->generate.regionPromptWidget->show();
+            if (m_d->inpaint.strengthRowWidget)
+                m_d->inpaint.strengthRowWidget->show();
+            if (m_d->generate.generateActionRowWidget)
+                m_d->generate.generateActionRowWidget->show();
+        }
+        m_d->generate.genContentContainer->updateGeometry();
+    }
+
+    QWidget *contentPage = nullptr;
+    if (m_d->history.histGroupBox)
+        contentPage = m_d->history.histGroupBox->parentWidget();
+    if (!contentPage && m_d->progressBar)
+        contentPage = m_d->progressBar->parentWidget();
+    if (contentPage) {
+        for (QObject *child : contentPage->children()) {
+            auto *scroll = qobject_cast<QScrollArea *>(child);
+            if (!scroll || !scroll->widget())
+                continue;
+            syncLayout(scroll->widget()->layout(), [this](QWidget *w) {
+                return m_d->generate.genGroupBox && w == m_d->generate.genGroupBox;
+            });
+            scroll->widget()->updateGeometry();
+            scroll->widget()->adjustSize();
+            if (compactGenerate) {
+                scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+                scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+                const int scrollH = ComfyUiLayoutDiagnostics::measureCompactGenerateScrollHeight(m_d.data(), scroll);
+                scroll->setMinimumHeight(scrollH);
+                scroll->setMaximumHeight(scrollH);
+                scroll->setFixedHeight(scrollH);
+            } else {
+                scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+                scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+                scroll->setMinimumHeight(0);
+                scroll->setMaximumHeight(QWIDGETSIZE_MAX);
+                scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            }
+            scroll->updateGeometry();
+            if (contentPage)
+                contentPage->updateGeometry();
+        }
+    }
+
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_UI_DIAG syncCompactGenerateLayoutRows compact=") << compactGenerate
+        << QStringLiteral("genContentHint=")
+        << (m_d->generate.genContentContainer ? m_d->generate.genContentContainer->sizeHint() : QSize())
+        << QStringLiteral("progressH=") << (m_d->progressBar ? m_d->progressBar->height() : -1);
+}
 
 void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
 {
@@ -45,13 +159,20 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
         m_d->generate.editNegative->setFixedHeight(nh);
     }
     const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(false);
+    // FAITHFUL_PORT: compact docker always shows in-field dot grip (upstream GenerationWidget).
+    const bool showResizeHandle = true;
     if (m_d->generate.negativePromptBlock)
         m_d->generate.negativePromptBlock->setVisible(false);
     if (m_d->generate.rootPromptColumnWidget)
         m_d->generate.rootPromptColumnWidget->setVisible(false);
     if (m_d->generate.regionPromptWidget) {
-        m_d->generate.regionPromptWidget->setShowNegativePrompt(showNeg);
+        int negLines = s.value(QStringLiteral("negative_prompt_line_count")).toInt(-1);
+        if (negLines < 1)
+            negLines = lines;
+        else
+            negLines = qBound(1, negLines, 10);
         m_d->generate.regionPromptWidget->setPromptHeaderMode(2);
+        m_d->generate.regionPromptWidget->applyCompactLayout(lines, negLines, showNeg, showResizeHandle);
     }
     if (m_d->generate.regionControlLayersGroupBox)
         m_d->generate.regionControlLayersGroupBox->setVisible(false);
@@ -60,7 +181,6 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     const bool onGenerate = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0;
     if (m_d->labelStatus && onGenerate)
         m_d->labelStatus->setVisible(false);
-    const bool showResizeHandle = s.value(QStringLiteral("prompt_resize_handle")).toBool(true);
     if (m_d->generate.promptResizeHandle)
         m_d->generate.promptResizeHandle->setVisible(showResizeHandle);
     if (m_d->generate.negativeResizeHandle)
@@ -103,6 +223,8 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     if (m_d->inpaint.focusRowWidget) m_d->inpaint.focusRowWidget->setVisible(false);
     // animFramesRowWidget visibility is owned by the workspace lambda — only the
     // Animation workspace shows it, every other workspace hides it.
+    syncCompactGenerateLayoutRows(onGenerate);
+    dumpUiLayoutDiagnostics("applyInterfaceAppearanceSettings");
 }
 void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
 {

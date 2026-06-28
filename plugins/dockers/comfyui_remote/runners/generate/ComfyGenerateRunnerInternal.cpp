@@ -97,6 +97,8 @@ void clearBatchCaptureStash(ComfyUIRemoteDock::Private *d)
         return;
     d->batchStashedRegionLayerNames.clear();
     d->batchStashedContextBounds = QRect();
+    d->batchStashedTargetBounds = QRect();
+    d->batchStashedCompositingMask = QImage();
     d->batchStashedHasMask = false;
 }
 
@@ -110,8 +112,13 @@ void stashBatchCaptureMetadata(ComfyUIRemoteDock::Private *d)
     else
         d->batchStashedRegionLayerNames.clear();
     if (d->generateRt.generateRefinePrepared.ok) {
-        d->batchStashedContextBounds = d->generateRt.generateRefinePrepared.contextBounds;
-        d->batchStashedHasMask = d->generateRt.generateRefinePrepared.hasMask;
+        const auto &prep = d->generateRt.generateRefinePrepared;
+        d->batchStashedContextBounds = prep.contextBounds;
+        d->batchStashedTargetBounds = prep.maskPaddedBounds;
+        d->batchStashedHasMask = prep.hasMask;
+        d->batchStashedCompositingMask = prep.nativeCompositingMask;
+        if (d->batchStashedCompositingMask.isNull())
+            d->batchStashedCompositingMask = prep.compositingMaskCropped;
     }
 }
 
@@ -123,6 +130,7 @@ void applyHistoryCaptureStashToEntry(const ComfyUIRemoteDock::Private *d, ComfyU
         entry->regionLayerNames = d->batchStashedRegionLayerNames;
     if (d->batchStashedHasMask || d->batchStashedContextBounds.isValid()) {
         entry->contextBounds = d->batchStashedContextBounds;
+        entry->targetBounds = d->batchStashedTargetBounds;
         entry->hasMask = d->batchStashedHasMask;
     }
 }

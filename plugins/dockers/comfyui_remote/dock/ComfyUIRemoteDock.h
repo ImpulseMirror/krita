@@ -221,6 +221,12 @@ public:
 protected:
     // §13.196: Shift+Enter in prompt widget triggers Generate
     bool eventFilter(QObject *obj, QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+
+private:
+    QSize m_uiDiagLastSize;
+    bool m_uiDiagLoggedShow = false;
 
 #if defined(COMFYUI_REMOTE_DOCK_IMPL)
 public Q_SLOTS:
@@ -426,6 +432,9 @@ public:
     void refreshPluginInformationTabUpdateUi();
     void refreshWelcomeAutoUpdatePanel();
     void syncPluginUpdateUi();
+    void dumpUiLayoutDiagnostics(const char *reason);
+    /// Zero-height hidden rows so scroll sizeHint matches visible Generate stack only.
+    void syncCompactGenerateLayoutRows(bool compactGenerate);
     QScopedPointer<Private> m_d;
 };
 

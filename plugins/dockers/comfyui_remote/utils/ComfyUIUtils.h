@@ -703,6 +703,33 @@ struct MaskFromSelectionResult {
     bool valid = false;
 };
 
+/// Fraction of grayscale mask pixels brighter than threshold (default 20).
+double maskNonWhiteFraction(const QImage &maskGray);
+
+/// Which decode path `chooseSelectionMaskRead` picked (Android oval regression).
+enum class SelectionMaskReadSource {
+    None,
+    ConvertToQImage,
+    ReadBytes,
+    ReadBytesOverSolidConvert,
+    ConvertToQImageFallback,
+    ReadBytesOnly,
+};
+
+struct SelectionMaskReadResult {
+    QImage mask;
+    SelectionMaskReadSource source = SelectionMaskReadSource::None;
+};
+
+/// Prefer `readBytes` when `convertToQImage` returns a solid selectedExactRect (Android oval bug).
+SelectionMaskReadResult chooseSelectionMaskRead(const QImage &fromConvert, const QImage &fromBytes);
+
+/// Embed selection-sized mask into padded-bounds canvas (black outside selection rect).
+/// Used by createMaskFromSelection and regression tests (Android convertToQImage fix).
+QImage assembleSelectionMaskInPaddedBounds(const QImage &selectionMaskGray,
+                                           const QRect &selectionBoundsInDoc,
+                                           const QRect &paddedBoundsInDoc);
+
 /// Upstream `document.py::create_mask_from_selection` — duplicate, optional invert, pad, export padded mask.
 MaskFromSelectionResult createMaskFromSelection(KisImageSP image, KisViewManager *viewManager,
                                                 const SelectionModifiers &mod);

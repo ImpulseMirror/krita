@@ -179,7 +179,10 @@ plugins/dockers/comfyui_remote/scripts/verify_all.sh --commit-check
 
 # Single plugin target (manual)
 cd build && ninja kritacomfyuiremote_static
-cd build && ctest -R 'ComfyPort|ComfyWorkflow|ComfyUIRemoteDock' --output-on-failure
+cd build && QT_QPA_PLATFORM=offscreen ctest -R 'ComfyPort|ComfyWorkflow|ComfyUIRemoteDock|ComfyInpaintRegression' --output-on-failure
+
+# Live ComfyUI (optional — needs running server)
+COMFY_INTEGRATION_TEST=1 plugins/dockers/comfyui_remote/scripts/run_comfy_integration_test.sh
 ```
 
 ---

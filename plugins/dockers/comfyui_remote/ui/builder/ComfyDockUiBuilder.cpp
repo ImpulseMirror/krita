@@ -10,9 +10,17 @@
 #include "ComfyRegionPromptWidget.h"
 
 #include <QLabel>
+#include <QAbstractScrollArea>
+#include <QLoggingCategory>
+#include <QScrollArea>
+#include <QSizePolicy>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include "ComfyUiLayoutDiagnostics.h"
+
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 namespace ComfyDockUiBuilder {
 
@@ -32,16 +40,27 @@ DockShell buildDockShell(const Context &ctx)
 
 void finalizeContentScroll(DockShell &shell)
 {
-    shell.scrollLayout->addStretch();
     shell.scroll->setWidget(shell.scrollContent);
-    shell.contentLayout->addWidget(shell.scroll);
+    // Upper controls keep natural height; history below takes remaining docker space.
+    shell.scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    shell.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    shell.scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    shell.scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    shell.contentLayout->addWidget(shell.scroll, 0);
+    ComfyUiLayoutDiagnostics::logWidget("finalizeContentScroll.scroll", shell.scroll);
+    ComfyUiLayoutDiagnostics::logLayoutChildren("finalizeContentScroll.contentLayout", shell.contentLayout);
 }
 
-void finalizeGenerateWorkspaceLayout(const Context &ctx)
+void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell)
 {
     ComfyUIRemoteDock::Private *d = ctx.d;
-    if (!d->generate.genContentContainer || !d->generate.regionPromptWidget)
+    if (!d->generate.genContentContainer || !d->generate.regionPromptWidget) {
+        qCWarning(KIS_COMFYUI_REMOTE).noquote()
+            << QStringLiteral("COMFY_UI_DIAG finalizeGenerateWorkspaceLayout EARLY_RETURN genContent=")
+            << (d->generate.genContentContainer != nullptr) << QStringLiteral("regionPrompt=")
+            << (d->generate.regionPromptWidget != nullptr);
         return;
+    }
     auto *lay = qobject_cast<QVBoxLayout *>(d->generate.genContentContainer->layout());
     if (!lay)
         return;
@@ -62,21 +81,46 @@ void finalizeGenerateWorkspaceLayout(const Context &ctx)
     const int insertAt = 0;
     lay->insertWidget(insertAt, d->generate.regionPromptWidget);
 
-    if (d->history.histGroupBox && d->progressBar) {
-        if (d->history.histGroupBox->parentWidget() != d->generate.genContentContainer) {
-            if (QWidget *oldParent = d->history.histGroupBox->parentWidget()) {
-                if (QLayout *oldLay = oldParent->layout())
-                    oldLay->removeWidget(d->history.histGroupBox);
-            }
-            d->history.histGroupBox->setParent(d->generate.genContentContainer);
+    if (d->history.histGroupBox && shell.contentLayout) {
+        if (QWidget *oldParent = d->history.histGroupBox->parentWidget()) {
+            if (QLayout *oldLay = oldParent->layout())
+                oldLay->removeWidget(d->history.histGroupBox);
         }
-        lay->removeWidget(d->history.histGroupBox);
-        const int afterProgress = lay->indexOf(d->progressBar) + 1;
-        lay->insertWidget(afterProgress, d->history.histGroupBox);
+        d->history.histGroupBox->setParent(shell.contentPage);
+        const int statusIndex = shell.contentLayout->indexOf(d->labelStatus);
+        if (statusIndex >= 0)
+            shell.contentLayout->insertWidget(statusIndex, d->history.histGroupBox, 1);
+        else
+            shell.contentLayout->addWidget(d->history.histGroupBox, 1);
     }
 
     if (d->generate.regionsGroupBox)
         d->generate.regionsGroupBox->setVisible(false);
+
+    // Progress sits flush under controls, directly above history (FAITHFUL_PORT).
+    if (d->progressBar && shell.contentLayout) {
+        if (QWidget *oldParent = d->progressBar->parentWidget()) {
+            if (QLayout *oldLay = oldParent->layout())
+                oldLay->removeWidget(d->progressBar);
+        }
+        d->progressBar->setParent(shell.contentPage);
+        const int histIndex = d->history.histGroupBox
+                                  ? shell.contentLayout->indexOf(d->history.histGroupBox)
+                                  : -1;
+        if (histIndex >= 0)
+            shell.contentLayout->insertWidget(histIndex, d->progressBar, 0);
+        else
+            shell.contentLayout->addWidget(d->progressBar, 0);
+    }
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_UI_DIAG finalizeGenerateWorkspaceLayout histParent=")
+        << (d->history.histGroupBox && d->history.histGroupBox->parentWidget()
+                ? d->history.histGroupBox->parentWidget()->objectName()
+                : QStringLiteral("null"))
+        << QStringLiteral("progressParent=")
+        << (d->progressBar && d->progressBar->parentWidget() ? d->progressBar->parentWidget()->objectName()
+                                                             : QStringLiteral("null"));
+    ComfyUiLayoutDiagnostics::logLayoutChildren("finalizeGenerateWorkspaceLayout.contentLayout", shell.contentLayout);
 }
 
 void attachContentPage(const Context &ctx, DockShell &shell)

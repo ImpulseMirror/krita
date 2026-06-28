@@ -4,6 +4,9 @@ kis_add_tests(
     ComfyUIRemoteDockTest.cpp
     ComfyPortP51Test.cpp
     ComfyPortM8Test.cpp
+    ComfyInpaintRegressionTest.cpp
+    ComfyHistoryThumbnailRegressionTest.cpp
+    ComfyHistoryListLayoutRegressionTest.cpp
     LINK_LIBRARIES kritacomfyuiremote_static kritaui kritaimage kritatestsdk
 )
 

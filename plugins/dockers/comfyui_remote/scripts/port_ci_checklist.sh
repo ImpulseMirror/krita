@@ -34,7 +34,8 @@ for f in \
   plugins/dockers/comfyui_remote/tests/ComfyWorkflowEngineGoldenTest.cpp \
   plugins/dockers/comfyui_remote/tests/ComfyPortP51Test.cpp \
   plugins/dockers/comfyui_remote/tests/ComfyPortP52Test.cpp \
-  plugins/dockers/comfyui_remote/tests/ComfyPortM8Test.cpp; do
+  plugins/dockers/comfyui_remote/tests/ComfyPortM8Test.cpp \
+  plugins/dockers/comfyui_remote/tests/ComfyInpaintRegressionTest.cpp; do
   if [[ -f "$f" ]]; then ok "$f"; else bad "missing $f"; fi
 done
 
@@ -128,6 +129,55 @@ if grep -q 'isEditArch' plugins/dockers/comfyui_remote/utils/mask/ComfyUIUtilsMa
 else
   bad "P9 native edit arch parity hooks missing"
 fi
+
+if grep -q 'assembleSelectionMaskInPaddedBounds' plugins/dockers/comfyui_remote/utils/mask/ComfyUIUtilsMaskCreate.cpp \
+  && grep -q 'assembleSelectionMaskInPaddedBounds' plugins/dockers/comfyui_remote/utils/ComfyUIUtils.h \
+  && grep -q 'chooseSelectionMaskRead' plugins/dockers/comfyui_remote/utils/ComfyUIUtils.h; then
+  ok "inpaint: assembleSelectionMaskInPaddedBounds + chooseSelectionMaskRead (Android oval mask)"
+else
+  bad "inpaint: assembleSelectionMaskInPaddedBounds or chooseSelectionMaskRead missing"
+fi
+reg_test="plugins/dockers/comfyui_remote/tests/ComfyInpaintRegressionTest.cpp"
+for sym in \
+  testAssembleSelectionMaskAndroidLogcatScenario \
+  testFullWhitePaddedMaskIsRegression \
+  testCompositeRefinePartialMaskMergesServerPatch \
+  testInpaintFailureVerdictHelpers \
+  testChooseSelectionMaskPrefersBytesOverSolidConvert \
+  testChooseSelectionMaskFallsBackToConvertWhenBytesEmpty \
+  testOvalMaskAndroidLogcatAssemblyScenario; do
+  if grep -q "void ComfyInpaintRegressionTest::${sym}()" "$reg_test"; then
+    ok "inpaint regression: $sym"
+  else
+    bad "inpaint regression missing $sym in $reg_test"
+  fi
+done
+thumb_test="plugins/dockers/comfyui_remote/tests/ComfyHistoryThumbnailRegressionTest.cpp"
+for sym in \
+  testHistoryThumbnailSidecarHasTransparentCornersForOvalMask \
+  testHistoryThumbnailPixmapPreservesMaskAlpha \
+  testMaskShapeDescriptionDetectsOval \
+  testMaskShapeDescriptionDetectsSolidRectangle \
+  testHistoryThumbnailPixmapCropsVerticalPadding; do
+  if grep -q "void ComfyHistoryThumbnailRegressionTest::${sym}()" "$thumb_test"; then
+    ok "history thumb regression: $sym"
+  else
+    bad "history thumb regression missing $sym in $thumb_test"
+  fi
+done
+layout_test="plugins/dockers/comfyui_remote/tests/ComfyHistoryListLayoutRegressionTest.cpp"
+for sym in \
+  testHistoryThumbnailItemVisibleWithPixmapWidthHint \
+  testHistoryThumbnailItemNotFullViewportWidth \
+  testHistoryThumbnailItemHiddenWithOversizedWidthHint \
+  testSyncHistoryListItemWidthsRepairsOversizedThumbHints \
+  testAdjacentHistoryThumbsHaveHorizontalGap; do
+  if grep -q "void ComfyHistoryListLayoutRegressionTest::${sym}()" "$layout_test"; then
+    ok "history list layout regression: $sym"
+  else
+    bad "history list layout regression missing $sym in $layout_test"
+  fi
+done
 
 if rg -l 'namespace ComfyUIUtils \{\s*\n\s*namespace ComfyUIUtils' plugins/dockers/comfyui_remote/utils/ComfyUIUtils*.cpp plugins/dockers/comfyui_remote/utils/*/*.cpp >/dev/null 2>&1; then
   bad "nested ComfyUIUtils namespace in utils TUs (link error)"

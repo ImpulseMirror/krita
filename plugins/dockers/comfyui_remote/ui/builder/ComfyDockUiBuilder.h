@@ -43,7 +43,7 @@ void buildGraphWorkspace(const Context &ctx, DockShell &shell);
 void buildHistoryPanel(const Context &ctx, QVBoxLayout *scrollLayout);
 void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout);
 void finalizeContentScroll(DockShell &shell);
-void finalizeGenerateWorkspaceLayout(const Context &ctx);
+void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell);
 void attachContentPage(const Context &ctx, DockShell &shell);
 
 } // namespace ComfyDockUiBuilder

@@ -78,12 +78,15 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     shell.contentPage = new QWidget(shell.rootWidget);
     shell.contentLayout = new QVBoxLayout(shell.contentPage);
     shell.contentLayout->setContentsMargins(0, 0, 0, 0);
+    shell.contentLayout->setSpacing(0);
     shell.scroll = new QScrollArea();
     shell.scroll->setWidgetResizable(true);
     shell.scroll->setFrameShape(QFrame::NoFrame);
     shell.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     shell.scrollContent = new QWidget();
     shell.scrollLayout = new QVBoxLayout(shell.scrollContent);
+    shell.scrollLayout->setContentsMargins(0, 0, 0, 0);
+    shell.scrollLayout->setSpacing(0);
 
     QGroupBox *connGroup = new QGroupBox(ComfyTr::tr("Connection"));
     QVBoxLayout *connLayout = new QVBoxLayout(connGroup);
@@ -197,6 +200,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     shell.genGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
     shell.genLayout = new QVBoxLayout(shell.genGroup);
     shell.genLayout->setContentsMargins(0, 0, 0, 0);
+    shell.genLayout->setSpacing(0);
 
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     d->comboWorkspace = new ComfyWorkspaceSelectButton(shell.genGroup);

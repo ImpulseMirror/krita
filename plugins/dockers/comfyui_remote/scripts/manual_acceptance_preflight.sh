@@ -52,7 +52,7 @@ fi
 
 if [[ -d "$KRITA_BUILD/bin" ]]; then
   found=0
-  for t in ComfyPortP51Test ComfyPortP52Test ComfyWorkflowEngineGoldenTest ComfyUIRemoteDockTest; do
+  for t in ComfyPortP51Test ComfyPortP52Test ComfyWorkflowEngineGoldenTest ComfyUIRemoteDockTest ComfyInpaintRegressionTest ComfyHistoryThumbnailRegressionTest ComfyHistoryListLayoutRegressionTest; do
     if [[ -x "$KRITA_BUILD/bin/$t" ]]; then
       ok "test binary: $KRITA_BUILD/bin/$t"
       found=1

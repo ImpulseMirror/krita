@@ -25,8 +25,12 @@
 #include "ComfyPromptClient.h"
 #include "ComfyDockUiBuilder.h"
 #include "ComfyGenerateRunner.h"
+#include "ComfyUiLayoutDiagnostics.h"
 
 #include <QLoggingCategory>
+#include <QResizeEvent>
+#include <QShowEvent>
+#include <QTimer>
 #include <QToolTip>
 #include <QCursor>
 // FAITHFUL_PORT: dedicated Android-visible category so `adb logcat -s
@@ -215,7 +219,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     loadRegionsFromConfig();
     refreshRegionsList();
-    ComfyDockUiBuilder::finalizeGenerateWorkspaceLayout(uiCtx);
+    ComfyDockUiBuilder::finalizeGenerateWorkspaceLayout(uiCtx, uiShell);
 
     int ws = m_d->comboWorkspace->currentIndex();
     const bool isGraph = (ws == 4);
@@ -236,6 +240,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     updateWelcomeVisibility();
     applyInterfaceAppearanceSettings();
+    dumpUiLayoutDiagnostics("ctor.afterApplyInterfaceAppearanceSettings");
     updateGenerateOptions();
     applyQualitySamplerPresetFromSettings();
     refreshQueueResolutionRowVisibility();
@@ -244,6 +249,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // §13.81: deferred autostart probe for unset or legacy skipped server modes
     QTimer::singleShot(400, this, &ComfyUIRemoteDock::tryAutostartServerFallback);
+    QTimer::singleShot(0, this, [this]() { dumpUiLayoutDiagnostics("ctor.singleShot0"); });
+    QTimer::singleShot(800, this, [this]() { dumpUiLayoutDiagnostics("ctor.singleShot800"); });
 }
 ComfyUIRemoteDock::~ComfyUIRemoteDock()
 {
@@ -603,4 +610,33 @@ void ComfyUIRemoteDock::updateQueueStatus()
         setStatusMessage(ComfyTr::tr("Ready."));
     }
     m_d->generate.btnCancelQueue->setEnabled(running + queued > 0);
+}
+
+void ComfyUIRemoteDock::dumpUiLayoutDiagnostics(const char *reason)
+{
+    ComfyUiLayoutDiagnostics::dumpDockerLayoutForDock(m_d.data(), widget(), reason);
+}
+
+void ComfyUIRemoteDock::showEvent(QShowEvent *event)
+{
+    QDockWidget::showEvent(event);
+    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+        syncCompactGenerateLayoutRows(true);
+    if (!m_uiDiagLoggedShow) {
+        m_uiDiagLoggedShow = true;
+        dumpUiLayoutDiagnostics("showEvent.first");
+    }
+}
+
+void ComfyUIRemoteDock::resizeEvent(QResizeEvent *event)
+{
+    QDockWidget::resizeEvent(event);
+    const QSize sz = event->size();
+    const int delta = qAbs(sz.height() - m_uiDiagLastSize.height()) + qAbs(sz.width() - m_uiDiagLastSize.width());
+    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
+        syncCompactGenerateLayoutRows(true);
+    if (m_uiDiagLastSize.isValid() && delta < 24)
+        return;
+    m_uiDiagLastSize = sz;
+    dumpUiLayoutDiagnostics("resizeEvent");
 }

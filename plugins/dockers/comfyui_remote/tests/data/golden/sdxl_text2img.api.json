@@ -1,126 +1,126 @@
 {
-    "4": {
-        "class_type": "CheckpointLoaderSimple",
-        "inputs": {
-            "ckpt_name": "zavychromaxl_v80.safetensors"
-        }
-    },
-    "5": {
-        "class_type": "EmptyLatentImage",
-        "inputs": {
-            "batch_size": 1,
-            "height": 768,
-            "width": 1024
-        }
-    },
-    "500": {
-        "class_type": "CFGGuider",
-        "inputs": {
-            "cfg": 7,
-            "model": [
-                "4",
-                0
-            ],
-            "negative": [
-                "7",
-                0
-            ],
-            "positive": [
-                "6",
-                0
-            ]
-        }
-    },
-    "501": {
-        "class_type": "BasicScheduler",
-        "inputs": {
-            "denoise": 1,
-            "model": [
-                "4",
-                0
-            ],
-            "scheduler": "normal",
-            "steps": 20
-        }
-    },
-    "502": {
-        "class_type": "RandomNoise",
-        "inputs": {
-            "noise_seed": 1234
-        }
-    },
-    "503": {
-        "class_type": "KSamplerSelect",
-        "inputs": {
-            "sampler_name": "euler"
-        }
-    },
-    "504": {
-        "class_type": "SamplerCustomAdvanced",
-        "inputs": {
-            "guider": [
-                "500",
-                0
-            ],
-            "latent_image": [
-                "5",
-                0
-            ],
-            "noise": [
-                "502",
-                0
-            ],
-            "sampler": [
-                "503",
-                0
-            ],
-            "sigmas": [
-                "501",
-                0
-            ]
-        }
-    },
-    "6": {
-        "class_type": "CLIPTextEncode",
-        "inputs": {
-            "clip": [
-                "4",
-                1
-            ],
-            "text": "golden positive"
-        }
-    },
-    "7": {
-        "class_type": "CLIPTextEncode",
-        "inputs": {
-            "clip": [
-                "4",
-                1
-            ],
-            "text": "golden negative"
-        }
-    },
-    "8": {
-        "class_type": "VAEDecode",
-        "inputs": {
-            "samples": [
-                "504",
-                1
-            ],
-            "vae": [
-                "4",
-                2
-            ]
-        }
-    },
-    "9": {
-        "class_type": "SaveImage",
-        "inputs": {
-            "filename_prefix": "ComfyUI",
-            "images": [
-                "8",
-                0
-            ]
-        }
+  "1": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "denoise": 1.0,
+      "model": [
+        "5",
+        0
+      ],
+      "scheduler": "normal",
+      "steps": 20
     }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "11",
+        0
+      ]
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "9",
+        1
+      ],
+      "vae": [
+        "5",
+        2
+      ]
+    }
+  },
+  "2": {
+    "class_type": "CFGGuider",
+    "inputs": {
+      "cfg": 7.0,
+      "model": [
+        "5",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "positive": [
+        "4",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "5",
+        1
+      ],
+      "text": "golden negative"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "5",
+        1
+      ],
+      "text": "golden positive"
+    }
+  },
+  "5": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "zavychromaxl_v80.safetensors"
+    }
+  },
+  "6": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "batch_size": 1,
+      "height": 768,
+      "width": 1024
+    }
+  },
+  "7": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "8": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 1234
+    }
+  },
+  "9": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "guider": [
+        "2",
+        0
+      ],
+      "latent_image": [
+        "6",
+        0
+      ],
+      "noise": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "7",
+        0
+      ],
+      "sigmas": [
+        "1",
+        0
+      ]
+    }
+  }
 }

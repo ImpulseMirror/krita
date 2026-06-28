@@ -16,6 +16,8 @@
 #include "ComfyResources.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyUploadPipeline.h"
+#include "ComfyHistoryInternal.h"
+#include "ComfyUiLayoutDiagnostics.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
@@ -198,6 +200,12 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                 dock->m_d->progressBar->setValue(0);
                 return;
             }
+            {
+                QImage maskSidecar = dock->m_d->inpaintRt.inpaintNativeCompositingMask;
+                if (maskSidecar.isNull())
+                    maskSidecar = dock->m_d->inpaintRt.inpaintCompositingMaskCropped;
+                ComfyHistoryInternal::saveHistoryCompositingMaskSidecar(cachePath, maskSidecar);
+            }
             qCWarning(KIS_COMFYUI_REMOTE).nospace()
                 << "slotInpaintPoll: saved cache=" << cachePath << " path=" << composite.pathTaken
                 << " contextBounds=" << dock->m_d->inpaintRt.inpaintContextBounds
@@ -211,6 +219,21 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             entry.width = outputImage.width();
             entry.height = outputImage.height();
             entry.finishedAt = QDateTime::currentDateTime();
+            {
+                QImage maskSidecar = dock->m_d->inpaintRt.inpaintNativeCompositingMask;
+                if (maskSidecar.isNull())
+                    maskSidecar = dock->m_d->inpaintRt.inpaintCompositingMaskCropped;
+                ComfyHistoryInternal::saveHistoryDisplayThumbnail(cachePath, entry, outputImage, maskSidecar);
+                qCWarning(KIS_COMFYUI_REMOTE).noquote()
+                    << QStringLiteral("COMFY_UI_DIAG inpaintPoll.historySaved jobId=") << promptId
+                    << QStringLiteral("cache=") << cachePath
+                    << QStringLiteral("contextBounds=") << entry.contextBounds
+                    << QStringLiteral("targetBounds=") << entry.targetBounds
+                    << QStringLiteral("hasMask=") << entry.hasMask
+                    << QStringLiteral("maskNull=") << maskSidecar.isNull()
+                    << QStringLiteral("thumbExists=")
+                    << QFile::exists(ComfyHistoryInternal::historyThumbnailSidecarPath(cachePath));
+            }
             dock->m_d->history.historyEntries.append(entry);
             while (dock->m_d->history.historyEntries.size() > HistoryState::maxHistoryEntries) {
                 ComfyUIRemoteDock::Private::HistoryEntry old = dock->m_d->history.historyEntries.takeFirst();

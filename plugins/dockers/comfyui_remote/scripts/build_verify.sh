@@ -72,7 +72,8 @@ cmake --build "$BUILD_DIR" --target kritacomfyuiremote_static -j"$(nproc)"
 echo "--- ctest ---"
 (
   cd "$BUILD_DIR"
-  ctest -R 'ComfyPort|ComfyWorkflow|ComfyUIRemoteDock' --output-on-failure
+  export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
+  ctest -R 'ComfyPort|ComfyWorkflow|ComfyUIRemoteDock|ComfyInpaintRegression|ComfyHistoryThumbnailRegression|ComfyHistoryListLayoutRegression' --output-on-failure
 )
 
 echo

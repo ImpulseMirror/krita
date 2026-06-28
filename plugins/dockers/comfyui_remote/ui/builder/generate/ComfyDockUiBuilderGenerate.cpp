@@ -22,6 +22,7 @@ void buildGenerateWorkspace(const Context &ctx, DockShell &shell)
     d->generate.genContentContainer = new QWidget(shell.genGroup);
     QVBoxLayout *genContentLayout = new QVBoxLayout(d->generate.genContentContainer);
     genContentLayout->setContentsMargins(0, 0, 0, 0);
+    genContentLayout->setSpacing(0);
 
     Workspace ws{dock, d, &shell, genContentLayout};
     ComfyDockUiBuilderGenerateInternal::buildUpscaleWidgetsSection(ws);

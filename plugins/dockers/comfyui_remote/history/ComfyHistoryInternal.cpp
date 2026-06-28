@@ -4,6 +4,7 @@
  */
 
 #include "ComfyHistoryInternal.h"
+#include "ComfyUiLayoutDiagnostics.h"
 
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
@@ -16,6 +17,9 @@
 #include <QListWidgetItem>
 #include <QRegularExpression>
 #include <QFile>
+#include <QPainter>
+#include <QPixmap>
+#include <QSize>
 #include <QUuid>
 
 #include <kis_image.h>
@@ -28,13 +32,53 @@
 #include <kis_painter.h>
 #include <KisImageBarrierLock.h>
 #include <KisViewManager.h>
+#include <kis_node_manager.h>
 #include <KoCompositeOpRegistry.h>
 #include <KoColorSpaceConstants.h>
 #include <kis_node_manager.h>
+#include <KisViewManager.h>
 
 #include <QLoggingCategory>
 
 Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
+
+namespace {
+
+QRect opaqueAlphaBounds(const QImage &img, int alphaMin = 16)
+{
+    if (img.isNull())
+        return QRect();
+    const QImage argb = img.format() == QImage::Format_ARGB32
+                            ? img
+                            : img.convertToFormat(QImage::Format_ARGB32);
+    QRect bounds;
+    for (int y = 0; y < argb.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(argb.constScanLine(y));
+        for (int x = 0; x < argb.width(); ++x) {
+            if (qAlpha(line[x]) > alphaMin) {
+                if (bounds.isNull())
+                    bounds = QRect(x, y, 1, 1);
+                else
+                    bounds |= QRect(x, y, 1, 1);
+            }
+        }
+    }
+    return bounds;
+}
+
+QPixmap cropPixmapToOpaqueContent(const QPixmap &pix, int margin = 1)
+{
+    if (pix.isNull())
+        return pix;
+    QRect bounds = opaqueAlphaBounds(pix.toImage());
+    if (bounds.isNull())
+        return pix;
+    if (margin > 0)
+        bounds = bounds.adjusted(-margin, -margin, margin, margin).intersected(pix.rect());
+    return pix.copy(bounds);
+}
+
+} // namespace
 
 namespace ComfyHistoryInternal {
 
@@ -713,6 +757,7 @@ bool commitPreviewLayerForApply(KisViewManager *viewManager,
         placeImportedLayerForBehavior(viewManager, image, previewLayer, activeBefore, beh);
     }
     image->waitForDone();
+    activateAppliedResultLayer(viewManager, image, previewLayer, activeBefore, beh);
     return true;
 }
 
@@ -795,6 +840,329 @@ QListWidgetItem *findHistoryListItem(QListWidget *list, const QString &jobId, in
             return item;
     }
     return nullptr;
+}
+
+QString historyCompositingMaskSidecarPath(const QString &resultImagePath)
+{
+    if (resultImagePath.isEmpty())
+        return QString();
+    return resultImagePath + QStringLiteral(".mask.png");
+}
+
+QString historyThumbnailSidecarPath(const QString &resultImagePath)
+{
+    if (resultImagePath.isEmpty())
+        return QString();
+    return resultImagePath + QStringLiteral(".thumb.png");
+}
+
+bool saveHistoryCompositingMaskSidecar(const QString &resultImagePath, const QImage &maskGray)
+{
+    if (resultImagePath.isEmpty() || maskGray.isNull())
+        return false;
+    QImage mask = maskGray.format() == QImage::Format_Grayscale8
+                      ? maskGray
+                      : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    const QString sidecar = historyCompositingMaskSidecarPath(resultImagePath);
+    if (QFile::exists(sidecar))
+        QFile::remove(sidecar);
+    const bool ok = mask.save(sidecar);
+    ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+        "maskSidecar.save",
+        resultImagePath,
+        QRect(),
+        QRect(),
+        true,
+        mask.size(),
+        mask.size(),
+        QStringLiteral("path=") + sidecar + QStringLiteral(" ok=") + QString::number(ok) + QStringLiteral(" ")
+            + ComfyUiLayoutDiagnostics::maskShapeDescription(mask));
+    return ok;
+}
+
+static QImage cropHistoryImageToTarget(const ComfyUIRemoteDock::Private::HistoryEntry &entry, const QImage &source)
+{
+    if (source.isNull() || entry.targetBounds.isEmpty())
+        return source;
+    if (!entry.contextBounds.isEmpty() && source.size() == entry.contextBounds.size()) {
+        const QRect local = entry.targetBounds.translated(-entry.contextBounds.topLeft());
+        const QRect clip = local.intersected(QRect(QPoint(0, 0), source.size()));
+        if (!clip.isEmpty())
+            return source.copy(clip);
+    }
+    if (source.size() == entry.targetBounds.size())
+        return source;
+    return source;
+}
+
+static QImage loadHistoryCompositingMaskForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &entry,
+                                                 const QString &resultPath,
+                                                 const QSize &targetSize)
+{
+    const QString sidecar = historyCompositingMaskSidecarPath(resultPath);
+    if (!QFile::exists(sidecar))
+        return QImage();
+    QImage mask;
+    if (!mask.load(sidecar) || mask.isNull())
+        return QImage();
+    mask = mask.convertToFormat(QImage::Format_Grayscale8);
+    if (!entry.contextBounds.isEmpty() && mask.size() == entry.contextBounds.size()
+        && !entry.targetBounds.isEmpty()) {
+        const QRect local = entry.targetBounds.translated(-entry.contextBounds.topLeft());
+        const QRect clip = local.intersected(QRect(QPoint(0, 0), mask.size()));
+        if (!clip.isEmpty())
+            mask = mask.copy(clip);
+    }
+    if (targetSize.isValid() && mask.size() != targetSize)
+        mask = mask.scaled(targetSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    return mask;
+}
+
+static void applyGrayscaleMaskAsAlpha(QImage *image, const QImage &maskGray)
+{
+    if (!image || image->isNull() || maskGray.isNull())
+        return;
+    if (image->format() != QImage::Format_ARGB32)
+        *image = image->convertToFormat(QImage::Format_ARGB32);
+    QImage mask = maskGray.format() == QImage::Format_Grayscale8
+                      ? maskGray
+                      : maskGray.convertToFormat(QImage::Format_Grayscale8);
+    if (mask.size() != image->size())
+        mask = mask.scaled(image->size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    for (int y = 0; y < image->height(); ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(image->scanLine(y));
+        for (int x = 0; x < image->width(); ++x) {
+            const int maskAlpha = qGray(mask.pixel(x, y));
+            const QRgb px = line[x];
+            const int alpha = (qAlpha(px) * maskAlpha) / 255;
+            line[x] = qRgba(qRed(px), qGreen(px), qBlue(px), alpha);
+        }
+    }
+}
+
+static QImage buildHistoryDisplayThumbnail(const ComfyUIRemoteDock::Private::HistoryEntry &entry,
+                                           const QString &resultImagePath,
+                                           const QImage &resultImage,
+                                           const QImage &compositingMaskGray)
+{
+    if (resultImage.isNull())
+        return QImage();
+    QImage img = cropHistoryImageToTarget(entry, resultImage);
+    ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+        "build.cropped",
+        resultImagePath,
+        entry.contextBounds,
+        entry.targetBounds,
+        entry.hasMask,
+        resultImage.size(),
+        compositingMaskGray.size(),
+        QStringLiteral("cropped=%1x%2").arg(img.width()).arg(img.height()));
+    if (img.format() != QImage::Format_ARGB32)
+        img = img.convertToFormat(QImage::Format_ARGB32);
+
+    QImage mask = compositingMaskGray;
+    if (mask.isNull())
+        mask = loadHistoryCompositingMaskForEntry(entry, resultImagePath, img.size());
+    if (mask.isNull()) {
+        ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+            "build.no_mask",
+            resultImagePath,
+            entry.contextBounds,
+            entry.targetBounds,
+            entry.hasMask,
+            img.size(),
+            QSize(),
+            QStringLiteral("maskSidecarExists=")
+                + QString::number(QFile::exists(historyCompositingMaskSidecarPath(resultImagePath))));
+        return img;
+    }
+
+    if (!entry.contextBounds.isEmpty() && mask.size() == entry.contextBounds.size()
+        && !entry.targetBounds.isEmpty()) {
+        const QRect local = entry.targetBounds.translated(-entry.contextBounds.topLeft());
+        const QRect clip = local.intersected(QRect(QPoint(0, 0), mask.size()));
+        if (!clip.isEmpty())
+            mask = mask.copy(clip);
+    }
+    if (mask.size() != img.size())
+        mask = mask.scaled(img.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    applyGrayscaleMaskAsAlpha(&img, mask);
+    ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+        "build.masked",
+        resultImagePath,
+        entry.contextBounds,
+        entry.targetBounds,
+        entry.hasMask,
+        img.size(),
+        mask.size(),
+        QStringLiteral("ok ") + ComfyUiLayoutDiagnostics::maskShapeDescription(mask) + QStringLiteral(" ")
+            + ComfyUiLayoutDiagnostics::imageAlphaCornerStats(img));
+    return img;
+}
+
+bool saveHistoryDisplayThumbnail(const QString &resultImagePath,
+                               const ComfyUIRemoteDock::Private::HistoryEntry &entry,
+                               const QImage &resultImage,
+                               const QImage &compositingMaskGray)
+{
+    if (resultImagePath.isEmpty())
+        return false;
+    const QImage thumb = buildHistoryDisplayThumbnail(entry, resultImagePath, resultImage, compositingMaskGray);
+    if (thumb.isNull()) {
+        ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+            "save.fail",
+            resultImagePath,
+            entry.contextBounds,
+            entry.targetBounds,
+            entry.hasMask,
+            resultImage.size(),
+            compositingMaskGray.size(),
+            QStringLiteral("build returned null"));
+        return false;
+    }
+    const QString sidecar = historyThumbnailSidecarPath(resultImagePath);
+    if (QFile::exists(sidecar))
+        QFile::remove(sidecar);
+    const bool ok = thumb.save(sidecar);
+    ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+        "save.done",
+        resultImagePath,
+        entry.contextBounds,
+        entry.targetBounds,
+        entry.hasMask,
+        thumb.size(),
+        compositingMaskGray.size(),
+        QStringLiteral("sidecar=") + sidecar + QStringLiteral(" ok=") + QString::number(ok));
+    return ok;
+}
+
+int historyListRowWidth(const QListWidget *list)
+{
+    if (!list)
+        return 96;
+    const int viewportW = list->viewport()->width();
+    const int iconW = list->iconSize().width();
+    return qMax(iconW, viewportW > 0 ? viewportW : iconW);
+}
+
+QSize historyHeaderItemSizeHint(const QListWidget *list, int headerHeight)
+{
+    return QSize(historyListRowWidth(list), qMax(1, headerHeight));
+}
+
+int historyThumbnailHorizontalCellPadding()
+{
+  // FAITHFUL_PORT: generation.HistoryWidget — QListWidget default inter-item spacing is 4px.
+  // Baked into cell width so header→thumb vertical gap stays tight (list spacing stays 0).
+    return 4;
+}
+
+QSize historyThumbnailItemSizeHint(const QListWidget *list, const QSize &pixmapSize)
+{
+    Q_UNUSED(list);
+    const int pad = historyThumbnailHorizontalCellPadding();
+    const int rowW = qMax(16, pixmapSize.width() + pad);
+    const int rowH = qMax(16, pixmapSize.height() + 2);
+    return QSize(rowW, rowH);
+}
+
+void syncHistoryListItemWidths(QListWidget *list)
+{
+    if (!list)
+        return;
+    const int headerW = historyListRowWidth(list);
+    if (headerW <= 0)
+        return;
+    bool changed = false;
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem *item = list->item(i);
+        if (!item)
+            continue;
+        QSize hint = item->sizeHint();
+        if (!hint.isValid())
+            continue;
+        if (historyEntryIsHeaderItem(item)) {
+            if (hint.width() == headerW)
+                continue;
+            item->setSizeHint(QSize(headerW, hint.height()));
+            changed = true;
+            continue;
+        }
+        const QList<QSize> avail = item->icon().availableSizes();
+        const int thumbW = avail.isEmpty() ? list->iconSize().width() : avail.first().width();
+        const int cellW = thumbW + historyThumbnailHorizontalCellPadding();
+        if (hint.width() > cellW) {
+            item->setSizeHint(QSize(cellW, hint.height()));
+            changed = true;
+        }
+    }
+    if (changed)
+        list->doItemsLayout();
+}
+
+QPixmap historyThumbnailPixmap(const ComfyUIRemoteDock::Private::HistoryEntry &entry,
+                               const QString &path,
+                               const QSize &iconSize,
+                               QHash<QString, QImage> *cache)
+{
+    const QString thumbSidecar = historyThumbnailSidecarPath(path);
+    QImage img;
+    const bool hasThumbSidecar = QFile::exists(thumbSidecar);
+    if (hasThumbSidecar)
+        img = cachedHistoryPreviewImage(thumbSidecar, cache);
+    const char *source = hasThumbSidecar && !img.isNull() ? "thumbSidecar" : "build";
+    if (img.isNull())
+        img = buildHistoryDisplayThumbnail(entry, path, cachedHistoryPreviewImage(path, cache), QImage());
+    if (img.isNull()) {
+        ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+            "pixmap.fail",
+            path,
+            entry.contextBounds,
+            entry.targetBounds,
+            entry.hasMask,
+            QSize(),
+            QSize(),
+            QStringLiteral("source=") + QLatin1String(source));
+        return QPixmap();
+    }
+    ComfyUiLayoutDiagnostics::logHistoryThumbnailStage(
+        "pixmap.ok",
+        path,
+        entry.contextBounds,
+        entry.targetBounds,
+        entry.hasMask,
+        img.size(),
+        QSize(),
+        QStringLiteral("source=") + QLatin1String(source) + QStringLiteral(" ")
+            + ComfyUiLayoutDiagnostics::imageAlphaCornerStats(img));
+
+    QPixmap scaled = QPixmap::fromImage(img).scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return cropPixmapToOpaqueContent(scaled);
+}
+
+void activateAppliedResultLayer(KisViewManager *viewManager,
+                                KisImageSP image,
+                                KisLayerSP imported,
+                                KisLayerSP activeBefore,
+                                const QString &behavior)
+{
+    if (!viewManager || !viewManager->nodeManager())
+        return;
+    KisNodeSP toSelect;
+    if (behavior == QLatin1String("replace")) {
+        if (activeBefore && layerStillInDocument(image, activeBefore))
+            toSelect = activeBefore;
+        else if (imported && layerStillInDocument(image, imported))
+            toSelect = imported;
+    } else if (imported && layerStillInDocument(image, imported)) {
+        toSelect = imported;
+    }
+    if (toSelect)
+        viewManager->nodeManager()->slotNonUiActivatedNode(toSelect);
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_UI_DIAG apply.selectLayer behavior=") << behavior
+        << QStringLiteral("selected=") << (toSelect ? toSelect->name() : QStringLiteral("<none>"))
+        << QStringLiteral("imported=") << (imported ? imported->name() : QStringLiteral("<none>"));
 }
 
 } // namespace ComfyHistoryInternal

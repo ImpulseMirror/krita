@@ -120,6 +120,10 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
                      &ComfyUIRemoteDock::slotRemoveRegion);
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::requestAddRegion, dock,
                      &ComfyUIRemoteDock::slotAddRegion);
+    QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::layoutHeightsChanged, dock, [dock, d]() {
+        if (d->comboWorkspace && d->comboWorkspace->currentIndex() == 0)
+            dock->syncCompactGenerateLayoutRows(true);
+    });
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::translatePromptRequested, dock,
                      [dock, d](bool negative) {
                          if (!d->nam || !d->editServerUrl)

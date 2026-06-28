@@ -11,9 +11,10 @@
 
 class QPlainTextEdit;
 
-/// §13.54: Dotted strip under prompt editors; drag updates height, release persists line count (1–10).
+/// FAITHFUL_PORT: dot grip overlaid on bottom of prompt editor; drag resizes height.
 class ComfyPromptResizeHandle : public QWidget
 {
+    Q_OBJECT
 public:
     using PersistLinesFn = std::function<void(int lines)>;
     explicit ComfyPromptResizeHandle(QPlainTextEdit *editor,
@@ -26,8 +27,14 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
+Q_SIGNALS:
+    void heightChanged();
 
 private:
+    void reposition();
+
     QPlainTextEdit *m_editor = nullptr;
     PersistLinesFn m_persistLines;
     int m_minHeightPx = 40;

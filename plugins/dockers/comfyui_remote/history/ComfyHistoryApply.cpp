@@ -290,8 +290,10 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,
         if (activeBefore && imported && imported != activeBefore) {
             image->mergeDown(imported, nullptr);
         }
+        activateAppliedResultLayer(m_d->viewManager.data(), image, imported, activeBefore, beh);
     } else {
         placeImportedLayerForBehavior(m_d->viewManager.data(), image, imported, activeBefore, beh);
+        activateAppliedResultLayer(m_d->viewManager.data(), image, imported, activeBefore, beh);
     }
     if (!committedLayerName.isEmpty() && imported)
         imported->setName(committedLayerName);
