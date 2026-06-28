@@ -123,6 +123,15 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     d->generate.comboPreset = new QComboBox();
     dock->rebuildPresetComboItems();
     QObject::connect(d->generate.comboPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, &ComfyUIRemoteDock::slotPresetChanged);
+    d->upscale.comboUpscaleModel = new QComboBox();
+    d->upscale.comboUpscaleModel->setVisible(false);
+    dock->refreshUpscaleModelCombo();
+    QObject::connect(d->upscale.comboUpscaleModel, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, [dock, d](int) {
+        if (d->upscale.comboUpscaleModel)
+            d->upscaleRt.upscalerModel = d->upscale.comboUpscaleModel->currentData().toString();
+        if (d->canvas && d->canvas->image())
+            dock->scheduleDocumentUiJsonSave();
+    });
     d->generate.btnSaveAsPreset = new QPushButton(ComfyTr::tr("Save as preset"));
     d->generate.btnDeletePreset = new QPushButton(ComfyTr::tr("Delete preset"));
     QObject::connect(d->generate.btnSaveAsPreset, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotSaveAsPreset);
@@ -184,12 +193,9 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     btnSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
     QObject::connect(btnSettings, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotConfigureHelp);
     connLayout->addWidget(btnSettings);
-    shell.scrollLayout->addWidget(connGroup);
-    // FAITHFUL_PORT: Connection group is empty (server URL / checkpoint combo live in
-    // Settings dialog); hide the whole frame so the main docker matches upstream
-    // krita-ai-diffusion's compact layout (workspace + style picker at top, no
-    // preset/Settings buttons in the docker itself).
-    connGroup->setVisible(false);
+    connGroup->setParent(shell.rootWidget);
+    connGroup->hide();
+    connGroup->setFixedHeight(0);
 
     // FAITHFUL_PORT: flatten the Generate groupbox into the scroll column so the
     // visible UI matches upstream — no "Generate" title bar / frame around the
@@ -260,6 +266,23 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         if (d->inpaint.checkInpaintUseModel) d->inpaint.checkInpaintUseModel->setVisible(false);
         if (d->inpaint.checkInpaintUsePromptFocus) d->inpaint.checkInpaintUsePromptFocus->setVisible(false);
         if (d->upscale.btnUpscale) d->upscale.btnUpscale->setVisible(isUpscale);
+        if (d->upscale.upscaleActionRowWidget) d->upscale.upscaleActionRowWidget->setVisible(isUpscale);
+        if (d->generate.comboPreset) d->generate.comboPreset->setVisible(isGenerate || isLive || isAnimation || isGraph);
+        if (d->upscale.comboUpscaleModel) d->upscale.comboUpscaleModel->setVisible(isUpscale);
+        if (isUpscale && d->upscale.upscaleActionRowWidget && d->generate.btnQueuePopup) {
+            if (auto *row = qobject_cast<QHBoxLayout *>(d->upscale.upscaleActionRowWidget->layout()))
+                row->addWidget(d->generate.btnQueuePopup);
+            if (d->upscale.btnUpscale && d->generate.btnQueuePopup) {
+                d->generate.btnQueuePopup->setFixedHeight(qMax(28, d->upscale.btnUpscale->sizeHint().height() - 2));
+                d->generate.btnQueuePopup->setMinimumWidth(d->generate.btnQueuePopup->sizeHint().width());
+            }
+            dock->updateQueueStatus();
+        } else if (d->generate.generateActionRowWidget && d->generate.btnQueuePopup) {
+            if (auto *row = qobject_cast<QHBoxLayout *>(d->generate.generateActionRowWidget->layout()))
+                row->addWidget(d->generate.btnQueuePopup);
+            if (d->generate.btnGenerate && d->generate.btnQueuePopup)
+                d->generate.btnQueuePopup->setFixedHeight(qMax(28, d->generate.btnGenerate->sizeHint().height() - 2));
+        }
         if (d->generate.btnGenerateAnimation) d->generate.btnGenerateAnimation->setVisible(isAnimation);
         if (d->animFramesRowWidget) d->animFramesRowWidget->setVisible(isAnimation);
         if (d->live.checkLiveMode) d->live.checkLiveMode->setVisible(isLive);
@@ -293,6 +316,8 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         if (d->history.histGroupBox) d->history.histGroupBox->setVisible(isGenerate || isGraph);
         if (d->generate.queueButtonRowWidget)
             d->generate.queueButtonRowWidget->setVisible(isGenerate || isAnimation || isGraph);
+        if (d->upscale.upscaleActionRowWidget)
+            d->upscale.upscaleActionRowWidget->setVisible(isUpscale);
         dock->refreshQueuePopupSupportsBatch();
         dock->updateQueueStatus();
         dock->applyInterfaceAppearanceSettings(); // §3.5: prompt_line_count_live when Live workspace
@@ -309,6 +334,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         topRow->setContentsMargins(0, 0, 0, 0);
         topRow->addWidget(d->comboWorkspace);
         topRow->addWidget(d->generate.comboPreset, 1);
+        topRow->addWidget(d->upscale.comboUpscaleModel, 1);
         QToolButton *btnTopSettings = new QToolButton(shell.genGroup);
         btnTopSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
         btnTopSettings->setToolTip(ComfyTr::tr("Settings…"));
@@ -316,7 +342,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         QObject::connect(btnTopSettings, &QToolButton::clicked,
                 dock, &ComfyUIRemoteDock::slotConfigureHelp);
         topRow->addWidget(btnTopSettings);
-        shell.genLayout->addLayout(topRow);
+        shell.genLayout->insertLayout(0, topRow);
     }
 }
 

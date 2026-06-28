@@ -46,6 +46,7 @@ bool historyParamsEqualIgnoreSeed(const ComfyUIRemoteDock::Private::HistoryEntry
 QString historyEntryHeaderLabel(const ComfyUIRemoteDock::Private::HistoryEntry &e);
 QString previewLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e);
 QString generatedLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e);
+QString upscaleResultLayerName(int width, int height, qint64 seed);
 QPoint historyMaskedPreviewOffset(const ComfyUIRemoteDock::Private::HistoryEntry &e, const QSize &imageSize);
 bool loadImageFileIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QString &path,
                                  const QPoint &offset = QPoint());
@@ -108,6 +109,8 @@ QSize historyThumbnailItemSizeHint(const QListWidget *list, const QSize &pixmapS
 void syncHistoryListItemWidths(QListWidget *list);
 void activateAppliedResultLayer(KisViewManager *viewManager, KisImageSP image, KisLayerSP imported,
                                 KisLayerSP activeBefore, const QString &behavior);
+/// Select node once document shape exists (avoids KisNodeManager shape assert on deferred add).
+void activateNodeWhenShapeReady(KisViewManager *viewManager, KisImageSP image, KisNodeSP node);
 
 } // namespace ComfyHistoryInternal
 

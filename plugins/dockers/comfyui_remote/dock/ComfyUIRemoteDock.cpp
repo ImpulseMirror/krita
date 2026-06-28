@@ -224,12 +224,25 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     int ws = m_d->comboWorkspace->currentIndex();
     const bool isGraph = (ws == 4);
     const bool isGenerate = (ws == 0);
+    const bool isUpscale = (ws == 1);
     if (m_d->generate.genContentContainer) m_d->generate.genContentContainer->setVisible(!isGraph);
     if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
     reparentCustomWorkflowEditor(isGraph);
     if (m_d->history.histGroupBox) m_d->history.histGroupBox->setVisible(isGenerate || isGraph);
     if (m_d->generate.queueButtonRowWidget)
-        m_d->generate.queueButtonRowWidget->setVisible(ws == 0 || ws == 3 || isGraph);
+        m_d->generate.queueButtonRowWidget->setVisible(isGenerate || ws == 3 || isGraph);
+    if (m_d->upscale.upscaleActionRowWidget)
+        m_d->upscale.upscaleActionRowWidget->setVisible(isUpscale);
+    if (m_d->generate.comboPreset)
+        m_d->generate.comboPreset->setVisible(isGenerate || ws == 2 || ws == 3 || isGraph);
+    if (m_d->upscale.comboUpscaleModel)
+        m_d->upscale.comboUpscaleModel->setVisible(isUpscale);
+    if (isUpscale && m_d->upscale.upscaleActionRowWidget && m_d->generate.btnQueuePopup) {
+        if (auto *row = qobject_cast<QHBoxLayout *>(m_d->upscale.upscaleActionRowWidget->layout()))
+            row->addWidget(m_d->generate.btnQueuePopup);
+    }
+    if (isUpscale)
+        updateUpscaleTargetSize();
     refreshQueuePopupSupportsBatch();
     if (m_d->generate.btnQueuePopup) {
         const bool animWs = (ws == 3);
@@ -582,19 +595,28 @@ void ComfyUIRemoteDock::startPolling()
 }
 void ComfyUIRemoteDock::updateQueueStatus()
 {
-    int running = m_d->currentPromptId.isEmpty() ? 0 : 1;
-    int queued = m_d->jobQueue.size();
-    m_d->generate.labelQueueCount->setText(ComfyTr::tr("Queue: %1", running + queued));
+    int running = 0;
+    if (!m_d->currentPromptId.isEmpty())
+        ++running;
+    if (!m_d->upscaleRt.upscalePromptId.isEmpty())
+        ++running;
+    if (!m_d->inpaintRt.inpaintPromptId.isEmpty())
+        ++running;
+    if (!m_d->liveRt.livePromptId.isEmpty())
+        ++running;
+    const int queued = m_d->jobQueue.size();
+    const int total = running + queued;
+    m_d->generate.labelQueueCount->setText(ComfyTr::tr("Queue: %1", total));
     if (m_d->generate.btnQueuePopup) {
-        const int total = running + queued;
         const bool animWorkspace = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3;
+        QString tip;
         if (total > 0) {
-            const QString tip = queued > 0
+            tip = queued > 0
                 ? ComfyTr::tr("Generating image. %1 jobs queued. Click to adjust queue or cancel.", queued)
                 : ComfyTr::tr("Generating image. Click to adjust queue or cancel.");
             m_d->generate.btnQueuePopup->setDisplayState(ComfyQueueButton::DisplayState::Active, total, tip);
         } else {
-            const QString tip = animWorkspace
+            tip = animWorkspace
                 ? ComfyTr::tr("Idle. Click to adjust seed or cancel jobs (Animation has no batch enqueue options).")
                 : ComfyTr::tr("Idle. Click to adjust batch, seed, enqueue mode, or cancel jobs.");
             m_d->generate.btnQueuePopup->setDisplayState(ComfyQueueButton::DisplayState::Inactive, 0, tip);

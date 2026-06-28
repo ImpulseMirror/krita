@@ -31,13 +31,13 @@ const char inpaintingWorkflowTemplate[] = R"({
 
 const char upscaleWorkflowTemplate[] = R"({
  "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
- "2": {"class_type": "ImageScale", "inputs": {"height": 1024, "image": ["1", 0], "upscale_method": "lanczos", "width": 1024}},
+ "2": {"class_type": "ImageScale", "inputs": {"crop": "disabled", "height": 1024, "image": ["1", 0], "upscale_method": "lanczos", "width": 1024}},
  "3": {"class_type": "SaveImage", "inputs": {"filename_prefix": "ComfyUI_upscale", "images": ["2", 0]}}
 })";
 
 const char upscaleRefineWorkflowTemplate[] = R"({
  "1": {"class_type": "LoadImage", "inputs": {"image": "IMAGE_PLACEHOLDER"}},
- "2": {"class_type": "ImageScale", "inputs": {"height": 1024, "image": ["1", 0], "upscale_method": "lanczos", "width": 1024}},
+ "2": {"class_type": "ImageScale", "inputs": {"crop": "disabled", "height": 1024, "image": ["1", 0], "upscale_method": "lanczos", "width": 1024}},
  "3": {"class_type": "VAEEncode", "inputs": {"pixels": ["2", 0], "vae": ["4", 2]}},
  "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "CKPT_PLACEHOLDER"}},
  "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 1], "text": "PROMPT_PLACEHOLDER"}},

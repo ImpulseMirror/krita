@@ -157,6 +157,7 @@ void buildPromptSection(Workspace &ws)
         dock->insertPromptTagCompletion(d->generate.editNegative, text);
     });
     dock->refreshPromptTagCompleter();
+    QObject::connect(d->generate.editPrompt, &QPlainTextEdit::textChanged, dock, &ComfyUIRemoteDock::updateUpscaleUsePromptLabel);
 
     d->generate.stepsParametersWidget = new QWidget(dock);
     QHBoxLayout *stepsCfgRow = new QHBoxLayout(d->generate.stepsParametersWidget);

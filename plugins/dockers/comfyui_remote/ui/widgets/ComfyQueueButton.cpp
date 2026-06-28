@@ -25,7 +25,7 @@ void ComfyQueueButton::setDisplayState(DisplayState state, int displayCount, con
 {
     m_state = state;
     m_displayCount = qMax(0, displayCount);
-    setText(QString::number(m_displayCount) + QLatin1Char(' '));
+    setText(QString::number(m_displayCount));
     switch (state) {
     case DisplayState::Upload:
         setIcon(ComfyTheme::icon(QStringLiteral("queue-upload")));
@@ -48,7 +48,7 @@ void ComfyQueueButton::setDisplayState(DisplayState state, int displayCount, con
 QSize ComfyQueueButton::sizeHint() const
 {
     const QSize original = QToolButton::sizeHint();
-    const int textW = fontMetrics().horizontalAdvance(QStringLiteral(" 99 ")) + 20;
+    const int textW = fontMetrics().horizontalAdvance(QStringLiteral("99")) + 8;
     const int w = static_cast<int>(original.height() * 0.75) + textW;
     return QSize(w, original.height());
 }

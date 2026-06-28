@@ -93,31 +93,9 @@ void ComfyUIRemoteDock::updateUpscaleTargetSize()
         return;
     }
     QSize size = m_d->viewManager->image()->size();
-    int w = qRound(size.width() * m_d->upscaleRt.upscaleFactor);
-    int h = qRound(size.height() * m_d->upscaleRt.upscaleFactor);
-    const int overlapPx = m_d->upscaleRt.tileOverlapMode == 1 ? m_d->upscaleRt.tileOverlap : -1;
-    int stylePreferredResolution = 0;
-    QString styleArch;
-    QString ckptHint = m_d->generate.comboCheckpoint ? m_d->generate.comboCheckpoint->currentText().trimmed() : QString();
-    if (m_d->generate.comboPreset && m_d->generate.comboPreset->currentIndex() > 0) {
-        const QString styleId = encodeStyleIdFromPresetCombo(m_d->generate.comboPreset);
-        if (const ComfyStyleEntry *st = ComfyStyleCollection::instance().findByStyleId(styleId)) {
-            styleArch = st->architecture;
-            stylePreferredResolution = st->preferredResolution;
-            if (!st->checkpoints.isEmpty())
-                ckptHint = st->checkpoints.first();
-        }
-    }
-    const ComfyResources::Arch arch = ComfyWorkflowEngine::resolveArch(ckptHint, styleArch);
-    const int strengthPct = m_d->upscale.sliderUpscaleRefineStrength ? m_d->upscale.sliderUpscaleRefineStrength->value() : 30;
-    const double denoise = qBound(0.05, strengthPct / 100.0, 1.0);
-    const ComfyUIUtils::UpscaleTiledLayoutSpec tileLayout =
-        ComfyUIUtils::computeUpscaleTiledLayoutSpec(w, h, arch, stylePreferredResolution, denoise, overlapPx);
-    const int tiles = tileLayout.totalTiles;
-    if (tiles > 1)
-        m_d->upscale.labelUpscaleTargetSize->setText(ComfyTr::tr("Target size: %1 × %2 · ~%3 tiles (estimate)", w, h, tiles));
-    else
-        m_d->upscale.labelUpscaleTargetSize->setText(ComfyTr::tr("Target size: %1 × %2", w, h));
+    const int w = qRound(size.width() * m_d->upscaleRt.upscaleFactor);
+    const int h = qRound(size.height() * m_d->upscaleRt.upscaleFactor);
+    m_d->upscale.labelUpscaleTargetSize->setText(ComfyTr::tr("Target size: %1 × %2", w, h));
 }
 void ComfyUIRemoteDock::slotDocumentSyncPoll()
 {
@@ -215,7 +193,7 @@ void ComfyUIRemoteDock::mergeDocumentModelIntoUiJson(QJsonObject *ui, KisImageSP
         return;
 
     QJsonObject upscale;
-    upscale.insert(QStringLiteral("upscaler"), QStringLiteral("default"));
+    upscale.insert(QStringLiteral("upscaler"), selectedUpscalerModelName());
     upscale.insert(QStringLiteral("factor"), m_d->upscaleRt.upscaleFactor);
     const bool useDiffusion = m_d->upscale.checkUpscaleRefine && m_d->upscale.checkUpscaleRefine->isChecked();
     upscale.insert(QStringLiteral("use_diffusion"), useDiffusion);
@@ -438,6 +416,15 @@ void ComfyUIRemoteDock::applyModelFieldsFromUiJson(const QJsonObject &ui)
     if (ui.contains(QStringLiteral("upscale"))) {
         const QJsonObject us = ui.value(QStringLiteral("upscale")).toObject();
         syncUpscaleRefinementModelFromPresetCombo();
+        if (us.contains(QStringLiteral("upscaler")) && m_d->upscale.comboUpscaleModel) {
+            const QString upscaler = us.value(QStringLiteral("upscaler")).toString();
+            m_d->upscaleRt.upscalerModel = upscaler;
+            const int idx = m_d->upscale.comboUpscaleModel->findData(upscaler);
+            if (idx >= 0) {
+                QSignalBlocker b(m_d->upscale.comboUpscaleModel);
+                m_d->upscale.comboUpscaleModel->setCurrentIndex(idx);
+            }
+        }
         auto readStrengthPct = [](const QJsonValue &v, int defVal) {
             if (v.isDouble()) {
                 const double d = v.toDouble();
@@ -461,8 +448,7 @@ void ComfyUIRemoteDock::applyModelFieldsFromUiJson(const QJsonObject &ui)
         if (us.contains(QStringLiteral("use_diffusion")) && m_d->upscale.checkUpscaleRefine) {
             QSignalBlocker b(m_d->upscale.checkUpscaleRefine);
             m_d->upscale.checkUpscaleRefine->setChecked(us.value(QStringLiteral("use_diffusion")).toBool());
-            if (m_d->upscale.upscaleRefineDetails)
-                m_d->upscale.upscaleRefineDetails->setVisible(m_d->upscale.checkUpscaleRefine->isChecked());
+            syncUpscaleRefineControlsEnabled(m_d->upscale.checkUpscaleRefine->isChecked());
         }
         if (us.contains(QStringLiteral("strength")) && m_d->upscale.sliderUpscaleRefineStrength) {
             const int pct = readStrengthPct(us.value(QStringLiteral("strength")), 30);

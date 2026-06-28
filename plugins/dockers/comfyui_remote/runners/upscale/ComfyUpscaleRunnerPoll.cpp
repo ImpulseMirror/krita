@@ -17,6 +17,7 @@
 #include "ComfyUploadPipeline.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyHistoryInternal.h"
 #include "ComfyUIUtils.h"
 #include "ComfyWorkflowEngine.h"
 
@@ -24,7 +25,11 @@
 #include <QHttpPart>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLoggingCategory>
 #include <QNetworkReply>
+#include <QImage>
+
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <QNetworkRequest>
 #include <QRandomGenerator>
 #include <QTemporaryFile>
@@ -32,7 +37,6 @@
 #include <QUuid>
 
 #include <kis_image.h>
-#include <kis_image_manager.h>
 
 
 using namespace ComfyUpscaleRunnerInternal;
@@ -94,9 +98,23 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             }
             tmp.write(data);
             tmp.close();
-            if (dock->m_d->viewManager->imageManager()) {
-                dock->m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(tmp.fileName()), "KisPaintLayer");
-                if (dock->m_d->canvas) dock->m_d->canvas->updateCanvas();
+            const QImage resultImg = QImage::fromData(data);
+            const int resultW = dock->m_d->upscaleRt.upscaleResultW > 0 ? dock->m_d->upscaleRt.upscaleResultW
+                                                                        : resultImg.width();
+            const int resultH = dock->m_d->upscaleRt.upscaleResultH > 0 ? dock->m_d->upscaleRt.upscaleResultH
+                                                                        : resultImg.height();
+            const QString layerName = ComfyHistoryInternal::upscaleResultLayerName(
+                resultW, resultH, dock->m_d->upscaleRt.upscaleSeed);
+            const QString applyBehavior = ComfyHistoryInternal::applyBehaviorFromSettings(dock->m_d.data());
+            qCWarning(KIS_COMFYUI_REMOTE).noquote()
+                << QStringLiteral("UPSCALE_DIAG poll complete importing layer size=") << resultImg.size()
+                << QStringLiteral("name=") << layerName << QStringLiteral("behavior=") << applyBehavior;
+            if (!dock->applyResultFileWithBehavior(tmp.fileName(), applyBehavior, layerName)) {
+                dock->setStatusMessage(ComfyTr::tr("Could not import upscale result."), true);
+                dock->m_d->upscaleRt.upscalePromptId.clear();
+                dock->m_d->upscale.btnUpscale->setEnabled(true);
+                dock->m_d->progressBar->setValue(0);
+                return;
             }
             dock->m_d->labelStatus->setText(dock->m_d->upscaleRt.upscaleLastSubmitUsedRefine
                 ? ComfyTr::tr("Upscale and refine done. Result added as new layer.")
@@ -104,6 +122,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             dock->m_d->progressBar->setValue(100);
             dock->m_d->upscaleRt.upscalePromptId.clear();
             dock->m_d->upscale.btnUpscale->setEnabled(true);
+            dock->updateQueueStatus();
         });
     });
 }

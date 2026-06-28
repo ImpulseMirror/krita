@@ -35,8 +35,8 @@
 #include <kis_node_manager.h>
 #include <KoCompositeOpRegistry.h>
 #include <KoColorSpaceConstants.h>
-#include <kis_node_manager.h>
-#include <KisViewManager.h>
+#include <KisDocument.h>
+#include <QTimer>
 
 #include <QLoggingCategory>
 
@@ -332,6 +332,11 @@ QString generatedLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntr
     return QStringLiteral("[Generated] %1 (%2)").arg(historyEntryDisplayName(e, 200)).arg(e.seed);
 }
 
+QString upscaleResultLayerName(int width, int height, qint64 seed)
+{
+    return QStringLiteral("[Upscale] %1x%2 (%3)").arg(width).arg(height).arg(seed);
+}
+
 QPoint historyMaskedPreviewOffset(const ComfyUIRemoteDock::Private::HistoryEntry &e, const QSize &imageSize)
 {
     if (!e.hasMask)
@@ -427,14 +432,7 @@ bool addPreviewPaintLayerFromFile(KisViewManager *viewManager,
     if (!root)
         return false;
     KisNodeSP above = topDirectRootChild(root);
-    if (viewManager->nodeManager()) {
-        KisNodeList nodes;
-        nodes.append(pl);
-        viewManager->nodeManager()->addNodesDirect(nodes, root, above);
-        viewManager->nodeManager()->slotNonUiActivatedNode(pl);
-    } else {
-        image->addNode(pl, root, above);
-    }
+    image->addNode(pl, root, above);
     image->waitForDone();
     *outLayer = pl;
     return true;
@@ -563,15 +561,6 @@ void moveLayerInParent(KisViewManager *viewManager,
         above = KisNodeSP();
     if (above.data() == layer.data())
         above = KisNodeSP();
-
-    if (viewManager && viewManager->nodeManager()) {
-        KisNodeList nodes;
-        nodes.append(layer);
-        viewManager->nodeManager()->moveNodesDirect(nodes, parent, above);
-        if (waitForCompletion)
-            image->waitForDone();
-        return;
-    }
 
     KisNodeSP layerNode = layer;
     if (layerNode->parent())
@@ -1140,6 +1129,38 @@ QPixmap historyThumbnailPixmap(const ComfyUIRemoteDock::Private::HistoryEntry &e
     return cropPixmapToOpaqueContent(scaled);
 }
 
+bool nodeHasDocumentShape(KisViewManager *viewManager, KisNodeSP node)
+{
+    if (!viewManager || !node)
+        return false;
+    KisDocument *doc = viewManager->document();
+    return doc && doc->shapeForNode(node);
+}
+
+void activateNodeWhenReady(KisViewManager *viewManager, KisImageSP image, KisNodeSP node, int attempt)
+{
+    if (!viewManager || !viewManager->nodeManager() || !node)
+        return;
+    if (!layerStillInDocument(image, qobject_cast<KisLayer *>(node.data())))
+        return;
+    if (nodeHasDocumentShape(viewManager, node)) {
+        if (viewManager->nodeManager()->activeNode() != node)
+            viewManager->nodeManager()->slotNonUiActivatedNode(node);
+        return;
+    }
+    if (attempt >= 40)
+        return;
+    const int delayMs = attempt == 0 ? 0 : 50;
+    QTimer::singleShot(delayMs, viewManager, [viewManager, image, node, attempt]() {
+        activateNodeWhenReady(viewManager, image, node, attempt + 1);
+    });
+}
+
+void activateNodeWhenShapeReady(KisViewManager *viewManager, KisImageSP image, KisNodeSP node)
+{
+    activateNodeWhenReady(viewManager, image, node, 0);
+}
+
 void activateAppliedResultLayer(KisViewManager *viewManager,
                                 KisImageSP image,
                                 KisLayerSP imported,
@@ -1158,7 +1179,7 @@ void activateAppliedResultLayer(KisViewManager *viewManager,
         toSelect = imported;
     }
     if (toSelect)
-        viewManager->nodeManager()->slotNonUiActivatedNode(toSelect);
+        activateNodeWhenReady(viewManager, image, toSelect, 0);
     qCWarning(KIS_COMFYUI_REMOTE).noquote()
         << QStringLiteral("COMFY_UI_DIAG apply.selectLayer behavior=") << behavior
         << QStringLiteral("selected=") << (toSelect ? toSelect->name() : QStringLiteral("<none>"))

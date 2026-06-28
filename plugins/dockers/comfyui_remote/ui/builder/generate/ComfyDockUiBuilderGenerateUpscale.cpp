@@ -78,12 +78,14 @@ void buildUpscaleWidgetsSection(Workspace &ws)
     DockShell &shell = *ws.shell;
     QVBoxLayout *genContentLayout = ws.genContentLayout;
 
-    // §13.179: Upscale FactorWidget — slider (1.0–4.0), spinbox "Scale: X.XXx", "Target size: W x H"
     d->upscale.upscaleFactorRow = new QWidget(shell.genGroup);
-    QHBoxLayout *upscaleFactorLayout = new QHBoxLayout(d->upscale.upscaleFactorRow);
+    QVBoxLayout *upscaleFactorOuter = new QVBoxLayout(d->upscale.upscaleFactorRow);
+    upscaleFactorOuter->setContentsMargins(0, 0, 0, 0);
+    upscaleFactorOuter->setSpacing(2);
+    QHBoxLayout *upscaleFactorLayout = new QHBoxLayout();
     upscaleFactorLayout->setContentsMargins(0, 0, 0, 0);
     d->upscale.sliderUpscaleFactor = new QSlider(Qt::Horizontal, d->upscale.upscaleFactorRow);
-    d->upscale.sliderUpscaleFactor->setRange(10, 40);  // 1.0–4.0 as int*10
+    d->upscale.sliderUpscaleFactor->setRange(10, 40);
     d->upscale.sliderUpscaleFactor->setValue(20);
     d->upscale.sliderUpscaleFactor->setToolTip(ComfyTr::tr("Upscale factor"));
     d->upscale.spinUpscaleFactor = new QDoubleSpinBox(d->upscale.upscaleFactorRow);
@@ -91,13 +93,16 @@ void buildUpscaleWidgetsSection(Workspace &ws)
     d->upscale.spinUpscaleFactor->setValue(2.0);
     d->upscale.spinUpscaleFactor->setDecimals(2);
     d->upscale.spinUpscaleFactor->setSingleStep(0.1);
-    d->upscale.spinUpscaleFactor->setSuffix(ComfyTr::trc("scale factor suffix", "×"));
+    d->upscale.spinUpscaleFactor->setPrefix(ComfyTr::tr("Scale") + QStringLiteral(": "));
+    d->upscale.spinUpscaleFactor->setSuffix(QStringLiteral("x"));
     d->upscale.spinUpscaleFactor->setToolTip(ComfyTr::tr("Scale: X.XX×"));
-    d->upscale.labelUpscaleTargetSize = new QLabel(ComfyTr::tr("Target size: — × —"), d->upscale.upscaleFactorRow);
-    d->upscale.labelUpscaleTargetSize->setToolTip(ComfyTr::tr("Target size: W x H (from document extent × scale)"));
     upscaleFactorLayout->addWidget(d->upscale.sliderUpscaleFactor, 1);
     upscaleFactorLayout->addWidget(d->upscale.spinUpscaleFactor);
-    upscaleFactorLayout->addWidget(d->upscale.labelUpscaleTargetSize);
+    upscaleFactorOuter->addLayout(upscaleFactorLayout);
+    d->upscale.labelUpscaleTargetSize = new QLabel(ComfyTr::tr("Target size: — × —"), d->upscale.upscaleFactorRow);
+    d->upscale.labelUpscaleTargetSize->setToolTip(ComfyTr::tr("Target size: W x H (from document extent × scale)"));
+    d->upscale.labelUpscaleTargetSize->setAlignment(Qt::AlignRight);
+    upscaleFactorOuter->addWidget(d->upscale.labelUpscaleTargetSize);
     QObject::connect(d->upscale.sliderUpscaleFactor, &QSlider::valueChanged, dock, [dock, d](int v) {
         d->upscaleRt.upscaleFactor = v / 10.0;
         if (d->upscale.spinUpscaleFactor && qAbs(d->upscale.spinUpscaleFactor->value() - d->upscaleRt.upscaleFactor) > 0.005)
@@ -113,24 +118,36 @@ void buildUpscaleWidgetsSection(Workspace &ws)
     genContentLayout->addWidget(d->upscale.upscaleFactorRow);
     d->upscale.upscaleFactorRow->setVisible(d->comboWorkspace->currentIndex() == 1);
 
-    // §5.5 Upscale: Refine upscaled image (tile overlap shown when refine is enabled, per spec)
     d->upscale.upscaleRefineBlock = new QWidget(shell.genGroup);
     QVBoxLayout *refineBlockLay = new QVBoxLayout(d->upscale.upscaleRefineBlock);
     refineBlockLay->setContentsMargins(0, 0, 0, 0);
+    refineBlockLay->setSpacing(4);
     d->upscale.checkUpscaleRefine = new QCheckBox(ComfyTr::tr("Refine upscaled image"), d->upscale.upscaleRefineBlock);
     refineBlockLay->addWidget(d->upscale.checkUpscaleRefine);
     d->upscale.upscaleRefineDetails = new QWidget(d->upscale.upscaleRefineBlock);
     QVBoxLayout *refineLay = new QVBoxLayout(d->upscale.upscaleRefineDetails);
     refineLay->setContentsMargins(0, 0, 0, 0);
-    refineLay->addWidget(new QLabel(ComfyTr::tr("Refinement model:"), d->upscale.upscaleRefineDetails));
-    d->upscale.comboUpscaleRefinementModel = new QComboBox(d->upscale.upscaleRefineDetails);
-    refineLay->addWidget(d->upscale.comboUpscaleRefinementModel);
+    refineLay->setSpacing(4);
+    {
+        QHBoxLayout *styleRow = new QHBoxLayout();
+        styleRow->setContentsMargins(0, 0, 0, 0);
+        d->upscale.comboUpscaleRefinementModel = new QComboBox(d->upscale.upscaleRefineDetails);
+        d->upscale.btnUpscaleRefineSettings = new QToolButton(d->upscale.upscaleRefineDetails);
+        d->upscale.btnUpscaleRefineSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
+        d->upscale.btnUpscaleRefineSettings->setToolTip(ComfyTr::tr("Style settings…"));
+        d->upscale.btnUpscaleRefineSettings->setAutoRaise(true);
+        QObject::connect(d->upscale.btnUpscaleRefineSettings, &QToolButton::clicked,
+                         dock, &ComfyUIRemoteDock::slotConfigureHelp);
+        styleRow->addWidget(d->upscale.comboUpscaleRefinementModel, 1);
+        styleRow->addWidget(d->upscale.btnUpscaleRefineSettings);
+        refineLay->addLayout(styleRow);
+    }
     {
         QHBoxLayout *strLay = new QHBoxLayout();
-        strLay->addWidget(new QLabel(ComfyTr::tr("Strength:"), d->upscale.upscaleRefineDetails));
+        strLay->addWidget(new QLabel(ComfyTr::tr("Strength"), d->upscale.upscaleRefineDetails), 1);
         d->upscale.sliderUpscaleRefineStrength = new QSlider(Qt::Horizontal, d->upscale.upscaleRefineDetails);
         d->upscale.sliderUpscaleRefineStrength->setRange(1, 100);
-        strLay->addWidget(d->upscale.sliderUpscaleRefineStrength, 1);
+        strLay->addWidget(d->upscale.sliderUpscaleRefineStrength, 3);
         d->upscale.labelUpscaleRefineStrength = new QLabel(d->upscale.upscaleRefineDetails);
         d->upscale.labelUpscaleRefineStrength->setMinimumWidth(40);
         strLay->addWidget(d->upscale.labelUpscaleRefineStrength);
@@ -138,20 +155,19 @@ void buildUpscaleWidgetsSection(Workspace &ws)
     }
     {
         QHBoxLayout *gLay = new QHBoxLayout();
-        gLay->addWidget(new QLabel(ComfyTr::tr("Image guidance:"), d->upscale.upscaleRefineDetails));
+        gLay->addWidget(new QLabel(ComfyTr::tr("Image guidance"), d->upscale.upscaleRefineDetails), 1);
         d->upscale.sliderUpscaleRefineGuidance = new QSlider(Qt::Horizontal, d->upscale.upscaleRefineDetails);
         d->upscale.sliderUpscaleRefineGuidance->setRange(1, 100);
-        gLay->addWidget(d->upscale.sliderUpscaleRefineGuidance, 1);
+        gLay->addWidget(d->upscale.sliderUpscaleRefineGuidance, 3);
         d->upscale.labelUpscaleRefineGuidance = new QLabel(d->upscale.upscaleRefineDetails);
         d->upscale.labelUpscaleRefineGuidance->setMinimumWidth(40);
         gLay->addWidget(d->upscale.labelUpscaleRefineGuidance);
         refineLay->addLayout(gLay);
     }
-    // §13.147: Tile Overlap — Automatic or X px (§5.5 — inside refine block)
     d->upscale.upscaleTileOverlapRow = new QWidget(d->upscale.upscaleRefineDetails);
     QHBoxLayout *tileOverlapLayout = new QHBoxLayout(d->upscale.upscaleTileOverlapRow);
     tileOverlapLayout->setContentsMargins(0, 0, 0, 0);
-    tileOverlapLayout->addWidget(new QLabel(ComfyTr::tr("Tile overlap:"), d->upscale.upscaleTileOverlapRow));
+    tileOverlapLayout->addWidget(new QLabel(ComfyTr::tr("Tile Overlap"), d->upscale.upscaleTileOverlapRow), 2);
     d->upscale.comboTileOverlapMode = new QComboBox(d->upscale.upscaleTileOverlapRow);
     d->upscale.comboTileOverlapMode->addItem(ComfyTr::tr("Automatic"), 0);
     d->upscale.comboTileOverlapMode->addItem(ComfyTr::tr("Custom"), 1);
@@ -165,14 +181,16 @@ void buildUpscaleWidgetsSection(Workspace &ws)
     d->upscale.spinTileOverlap->setToolTip(ComfyTr::tr("Tile overlap in pixels when Custom is selected."));
     tileOverlapLayout->addWidget(d->upscale.comboTileOverlapMode);
     tileOverlapLayout->addWidget(d->upscale.spinTileOverlap);
-    tileOverlapLayout->addStretch();
     refineLay->addWidget(d->upscale.upscaleTileOverlapRow);
-    d->upscale.checkUpscaleUsePrompt = new ComfySwitchWidget(d->upscale.upscaleRefineDetails);
     {
         QHBoxLayout *upscalePromptRow = new QHBoxLayout();
         upscalePromptRow->setContentsMargins(0, 0, 0, 0);
+        upscalePromptRow->addWidget(new QLabel(ComfyTr::tr("Use Prompt"), d->upscale.upscaleRefineDetails));
+        d->upscale.labelUpscaleUsePromptText = new QLabel(d->upscale.upscaleRefineDetails);
+        d->upscale.labelUpscaleUsePromptText->setMinimumWidth(40);
+        upscalePromptRow->addWidget(d->upscale.labelUpscaleUsePromptText, 1);
+        d->upscale.checkUpscaleUsePrompt = new ComfySwitchWidget(d->upscale.upscaleRefineDetails);
         upscalePromptRow->addWidget(d->upscale.checkUpscaleUsePrompt);
-        upscalePromptRow->addWidget(new QLabel(ComfyTr::tr("Use Prompt"), d->upscale.upscaleRefineDetails), 1);
         refineLay->addLayout(upscalePromptRow);
     }
     d->upscale.checkUpscaleUsePrompt->setToolTip(ComfyTr::tr("When refining, include the positive prompt in the diffusion pass (when supported)."));
@@ -197,6 +215,7 @@ void buildUpscaleWidgetsSection(Workspace &ws)
     };
     updateStrengthLabel();
     updateGuidanceLabel();
+    dock->updateUpscaleUsePromptLabel();
     QObject::connect(d->upscale.sliderUpscaleRefineStrength, &QSlider::valueChanged, dock, [dock, d, updateStrengthLabel](int) {
         updateStrengthLabel();
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefineStrength", d->upscale.sliderUpscaleRefineStrength->value());
@@ -206,14 +225,14 @@ void buildUpscaleWidgetsSection(Workspace &ws)
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefineGuidance", d->upscale.sliderUpscaleRefineGuidance->value());
     });
     QObject::connect(d->upscale.checkUpscaleRefine, &QCheckBox::toggled, dock, [dock, d](bool on) {
-        if (d->upscale.upscaleRefineDetails)
-            d->upscale.upscaleRefineDetails->setVisible(on);
+        dock->syncUpscaleRefineControlsEnabled(on);
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefineEnabled", on);
     });
-    QObject::connect(d->upscale.checkUpscaleUsePrompt, &QAbstractButton::toggled, dock, [](bool on) {
+    QObject::connect(d->upscale.checkUpscaleUsePrompt, &QAbstractButton::toggled, dock, [dock](bool on) {
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleUsePrompt", on);
+        dock->updateUpscaleUsePromptLabel();
     });
-    d->upscale.upscaleRefineDetails->setVisible(d->upscale.checkUpscaleRefine->isChecked());
+    dock->syncUpscaleRefineControlsEnabled(d->upscale.checkUpscaleRefine->isChecked());
     QObject::connect(d->upscale.comboTileOverlapMode, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, [dock, d](int idx) {
         d->upscaleRt.tileOverlapMode = idx;
         if (d->upscale.spinTileOverlap) d->upscale.spinTileOverlap->setVisible(idx == 1);
@@ -230,8 +249,19 @@ void buildUpscaleWidgetsSection(Workspace &ws)
         KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("UpscaleRefinementModelIndex", d->upscale.comboUpscaleRefinementModel->currentIndex());
     });
 
-    genContentLayout->addWidget(d->inpaint.labelPrompt = new QLabel(ComfyTr::tr("Prompt:")));
-    // Tag autocomplete model/completers (must exist before ComfyPromptPlainTextEdit; §13.196 Tab + popup)
+    d->upscale.upscaleActionRowWidget = new QWidget(d->generate.genContentContainer);
+    d->upscale.upscaleActionRowWidget->setVisible(false);
+    QHBoxLayout *upscaleActionRow = new QHBoxLayout(d->upscale.upscaleActionRowWidget);
+    upscaleActionRow->setContentsMargins(0, 0, 0, 0);
+    upscaleActionRow->setSpacing(4);
+    if (!d->upscale.btnUpscale) {
+        d->upscale.btnUpscale = new QPushButton(ComfyTr::tr("Upscale"));
+        d->upscale.btnUpscale->setToolTip(ComfyTr::tr(
+            "Upscale the canvas at the scale factor above. With \"Refine upscaled image\" enabled, runs a diffusion pass after scaling."));
+        QObject::connect(d->upscale.btnUpscale, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotUpscale);
+    }
+    upscaleActionRow->addWidget(d->upscale.btnUpscale, 1);
+    genContentLayout->addWidget(d->upscale.upscaleActionRowWidget);
 }
 
 } // namespace ComfyDockUiBuilderGenerateInternal

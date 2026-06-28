@@ -113,9 +113,16 @@ int essentialGenContentHeight(ComfyUIRemoteDock::Private *d, int contentWidth)
         h += wh;
         ++visibleItems;
     };
-    add(d->generate.regionPromptWidget);
-    add(d->inpaint.strengthRowWidget);
-    add(d->generate.generateActionRowWidget);
+    const int ws = d->comboWorkspace ? d->comboWorkspace->currentIndex() : 0;
+    if (ws == 1) {
+        add(d->upscale.upscaleFactorRow);
+        add(d->upscale.upscaleRefineBlock);
+        add(d->upscale.upscaleActionRowWidget);
+    } else {
+        add(d->generate.regionPromptWidget);
+        add(d->inpaint.strengthRowWidget);
+        add(d->generate.generateActionRowWidget);
+    }
 
     if (visibleItems > 1)
         h += box->spacing() * (visibleItems - 1);
@@ -183,7 +190,14 @@ int measureCompactGenerateScrollHeight(void *dockPrivate, QScrollArea *scroll)
     const int genContentH = essentialGenContentHeight(d, contentWidth);
     const int frame = scroll->frameWidth() * 2;
     const int viewportPad = 2;
-    const int measured = genGroupH + frame + viewportPad;
+    const int ws = d->comboWorkspace ? d->comboWorkspace->currentIndex() : 0;
+    int measured = genGroupH + frame + viewportPad;
+    if (ws == 1 && d->generate.genGroupBox) {
+        d->generate.genGroupBox->adjustSize();
+        const int groupHint = d->generate.genGroupBox->sizeHint().height();
+        if (groupHint > 0)
+            measured = groupHint + frame + viewportPad;
+    }
 
     qCWarning(KIS_COMFYUI_REMOTE).noquote()
         << QStringLiteral("COMFY_UI_DIAG measureScroll contentW=") << contentWidth

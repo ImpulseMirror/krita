@@ -82,11 +82,7 @@ void buildModeWorkspaceSection(Workspace &ws)
     d->upscale.btnUpscale->setToolTip(ComfyTr::tr(
         "Upscale the canvas at the scale factor above (ComfyUI ImageScale). With \"Refine upscaled image\" enabled, runs a diffusion pass after scaling."));
     QObject::connect(d->upscale.btnUpscale, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotUpscale);
-    genContentLayout->addWidget(d->upscale.btnUpscale);
-    // FAITHFUL_PORT: only visible inside the Upscale workspace; without dock the
-    // button leaked into the Generate compact view because the workspace lambda
-    // doesn't fire on the initial setCurrentIndex().
-    d->upscale.btnUpscale->setVisible(false);
+    // btnUpscale is placed on upscaleActionRowWidget in buildUpscaleWidgetsSection (runs earlier).
 
     // §5.6 Live / §5.7 Animation: Full Animation / Single Frame radio (batch_mode); visible when workspace is Live or Animation
     d->batchModeRow = new QWidget(shell.genGroup);

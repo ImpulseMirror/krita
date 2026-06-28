@@ -280,6 +280,7 @@ struct UpscaleSimpleParams {
     int targetWidth = 1024;
     int targetHeight = 1024;
     QString upscaleMethod = QStringLiteral("lanczos");
+    QString upscaleModelName;
 };
 
 QJsonObject buildUpscaleSimple(const UpscaleSimpleParams &params);

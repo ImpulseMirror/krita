@@ -119,6 +119,11 @@ public:
     void savePreviewLayerIdToDocument(const QString &layerId);
     // §13.179: Update "Target size: W x H" from document extent × upscale factor
     void updateUpscaleTargetSize();
+    void refreshUpscaleModelCombo(const QStringList &serverModels = QStringList());
+    void updateUpscaleUsePromptLabel();
+    QString selectedUpscalerModelName() const;
+    /// FAITHFUL_PORT: upstream DocumentModel.upscale_image — scaleImage before enqueue.
+    void scaleDocumentForUpscale(int targetW, int targetH);
     // §5.6, §5.7: Set Animation button label/tooltip from batch_mode (Single Frame → "Generate Frame", Full Animation → "Generate Animation")
     void updateAnimationButtonLabel();
     // §13.74: AnimationWorkspace — ui.json `animation` { batch_mode, sampling_quality, target_layer }
@@ -165,6 +170,7 @@ public:
     void rebuildPresetComboItems();
     // §5.5: Upscale refinement model list mirrors main style preset combo
     void syncUpscaleRefinementModelFromPresetCombo();
+    void syncUpscaleRefineControlsEnabled(bool enabled);
     int firstCustomPresetIndex() const;
     int legacyKConfigPresetCount() const;
     void applyComfyStyleEntry(const struct ComfyStyleEntry &style);

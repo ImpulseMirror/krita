@@ -59,7 +59,10 @@ void restoreCompactLayoutRow(QWidget *widget)
 
 void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
 {
-    auto syncLayout = [compactGenerate](QLayout *layout, const auto &isEssential) {
+    const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;
+    const bool upscaleWs = (ws == 1);
+
+    auto syncLayout = [compactGenerate, upscaleWs](QLayout *layout, const auto &isEssential) {
         if (!layout)
             return;
         for (int i = 0; i < layout->count(); ++i) {
@@ -69,7 +72,7 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
             QWidget *widget = item->widget();
             if (!widget)
                 continue;
-            if (compactGenerate) {
+            if (upscaleWs || compactGenerate) {
                 if (isEssential(widget))
                     restoreCompactLayoutRow(widget);
                 else
@@ -81,11 +84,27 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
     };
 
     if (m_d->generate.genContentContainer) {
-        syncLayout(m_d->generate.genContentContainer->layout(), [this](QWidget *w) {
-            return w == m_d->generate.regionPromptWidget || w == m_d->inpaint.strengthRowWidget
-                   || w == m_d->generate.generateActionRowWidget;
+        syncLayout(m_d->generate.genContentContainer->layout(), [this, upscaleWs, compactGenerate](QWidget *w) {
+            if (upscaleWs) {
+                return w == m_d->upscale.upscaleFactorRow || w == m_d->upscale.upscaleRefineBlock
+                       || w == m_d->upscale.upscaleActionRowWidget || w == m_d->progressBar;
+            }
+            if (compactGenerate) {
+                return w == m_d->generate.regionPromptWidget || w == m_d->inpaint.strengthRowWidget
+                       || w == m_d->generate.generateActionRowWidget;
+            }
+            return false;
         });
-        if (compactGenerate) {
+        if (upscaleWs) {
+            if (m_d->upscale.upscaleFactorRow)
+                m_d->upscale.upscaleFactorRow->show();
+            if (m_d->upscale.upscaleRefineBlock)
+                m_d->upscale.upscaleRefineBlock->show();
+            if (m_d->upscale.upscaleActionRowWidget)
+                m_d->upscale.upscaleActionRowWidget->show();
+            if (m_d->progressBar)
+                m_d->progressBar->show();
+        } else if (compactGenerate) {
             if (m_d->generate.regionPromptWidget)
                 m_d->generate.regionPromptWidget->show();
             if (m_d->inpaint.strengthRowWidget)
@@ -111,7 +130,7 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
             });
             scroll->widget()->updateGeometry();
             scroll->widget()->adjustSize();
-            if (compactGenerate) {
+            if (compactGenerate || upscaleWs) {
                 scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
                 scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
                 const int scrollH = ComfyUiLayoutDiagnostics::measureCompactGenerateScrollHeight(m_d.data(), scroll);
@@ -179,6 +198,7 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     if (m_d->history.historyButtonsRowWidget)
         m_d->history.historyButtonsRowWidget->setVisible(false);
     const bool onGenerate = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0;
+    const bool onUpscale = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 1;
     if (m_d->labelStatus && onGenerate)
         m_d->labelStatus->setVisible(false);
     if (m_d->generate.promptResizeHandle)
@@ -223,7 +243,7 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     if (m_d->inpaint.focusRowWidget) m_d->inpaint.focusRowWidget->setVisible(false);
     // animFramesRowWidget visibility is owned by the workspace lambda — only the
     // Animation workspace shows it, every other workspace hides it.
-    syncCompactGenerateLayoutRows(onGenerate);
+    syncCompactGenerateLayoutRows(onGenerate || onUpscale);
     dumpUiLayoutDiagnostics("applyInterfaceAppearanceSettings");
 }
 void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()

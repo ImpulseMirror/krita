@@ -7,8 +7,11 @@ kis_add_tests(
     ComfyInpaintRegressionTest.cpp
     ComfyHistoryThumbnailRegressionTest.cpp
     ComfyHistoryListLayoutRegressionTest.cpp
+    ComfyUpscaleApplyRegressionTest.cpp
     LINK_LIBRARIES kritacomfyuiremote_static kritaui kritaimage kritatestsdk
 )
+target_compile_definitions(ComfyUpscaleApplyRegressionTest PRIVATE
+    "COMFYUI_TEST_PLUGIN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/..\"")
 
 kis_add_test(
     ComfyPortP52Test.cpp

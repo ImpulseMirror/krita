@@ -263,24 +263,24 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,
         if (!root)
             return false;
         KisNodeSP above = topDirectRootChild(root);
-        if (m_d->viewManager->nodeManager()) {
-            KisNodeList nodes;
-            nodes.append(pl);
-            m_d->viewManager->nodeManager()->addNodesDirect(nodes, root, above);
-            m_d->viewManager->nodeManager()->slotNonUiActivatedNode(pl);
-        } else {
-            image->addNode(pl, root, above);
-        }
+        image->addNode(pl, root, above);
         image->waitForDone();
         imported = pl;
         qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: created offset layer bounds=" << resultBounds;
     } else {
-        ensureActiveLayerValidForImport(m_d->viewManager.data(), image);
-        const qint32 n = m_d->viewManager->imageManager()->importImage(QUrl::fromLocalFile(localPath), QStringLiteral("KisPaintLayer"));
-        qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: importImage returned" << n;
-        if (n <= 0)
+        const QString initialName =
+            committedLayerName.isEmpty() ? QStringLiteral("[Generated] result") : committedLayerName;
+        KisPaintLayerSP pl(new KisPaintLayer(image, initialName, OPACITY_OPAQUE_U8));
+        if (!loadImageFileIntoPaintLayer(pl.data(), image, localPath, QPoint()))
             return false;
-        imported = m_d->viewManager->activeLayer();
+        KisNodeSP root = image->rootLayer();
+        if (!root)
+            return false;
+        KisNodeSP above = topDirectRootChild(root);
+        image->addNode(pl, root, above);
+        image->waitForDone();
+        imported = pl;
+        qCWarning(KIS_COMFYUI_REMOTE) << "applyResultFileWithBehavior: created full-canvas layer";
     }
     QString beh = applyBehavior;
     if (beh.isEmpty())

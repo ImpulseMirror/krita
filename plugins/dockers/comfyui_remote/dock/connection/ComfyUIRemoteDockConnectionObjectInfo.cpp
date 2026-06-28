@@ -188,6 +188,9 @@ void ComfyUIRemoteDock::syncFromObjectInfoRoot(const QJsonObject &objectInfoRoot
     ComfyFileLibrary::instance().init();
     ComfyFileLibrary::instance().updateRemoteLoras(m_d->comfyServerLoraFilenames);
     m_d->objectInfoSpec58NodesPresent = ComfyUIUtils::specSection58NodesPresentInObjectInfo(objectInfoRoot);
+    refreshUpscaleModelCombo(
+        ComfyUIUtils::loaderComboNamesFromObjectInfo(objectInfoRoot, QStringLiteral("UpscaleModelLoader"),
+                                                    QStringLiteral("model_name")));
     const QString sig = m_d->objectInfoSpec58NodesPresent.join(QLatin1Char('\x1e'));
     if (sig != m_d->objectInfoSpec58LastLoggedSignature) {
         m_d->objectInfoSpec58LastLoggedSignature = sig;

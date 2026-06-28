@@ -25,6 +25,7 @@
 #include <QHttpPart>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLoggingCategory>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
@@ -34,6 +35,8 @@
 
 #include <kis_image.h>
 #include <kis_image_manager.h>
+
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 
 using namespace ComfyUpscaleRunnerInternal;
@@ -75,6 +78,13 @@ void onUpscale(ComfyUIRemoteDock *dock)
     int h = canvasImg.height();
     int w2 = qRound(w * dock->m_d->upscaleRt.upscaleFactor);
     int h2 = qRound(h * dock->m_d->upscaleRt.upscaleFactor);
+    const bool wantRefine = dock->m_d->upscale.checkUpscaleRefine && dock->m_d->upscale.checkUpscaleRefine->isChecked();
+    const QString upscalerModel = dock->selectedUpscalerModelName();
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("UPSCALE_DIAG onUpscale canvas=") << w << h << QStringLiteral("target=") << w2 << h2
+        << QStringLiteral("factor=") << dock->m_d->upscaleRt.upscaleFactor << QStringLiteral("refine=") << wantRefine
+        << QStringLiteral("upscaler=") << upscalerModel;
+    dock->scaleDocumentForUpscale(w2, h2);
     QTemporaryFile *tmpImage = new QTemporaryFile(dock);
     tmpImage->setFileTemplate(tmpImage->fileTemplate() + ".png");
     tmpImage->open();
@@ -134,6 +144,17 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
                 ComfyUIUtils::loadSettingsJson().value(QStringLiteral("diffusion_scale_mode")).toString()));
         const int overlapPx = dock->m_d->upscaleRt.tileOverlapMode == 1 ? dock->m_d->upscaleRt.tileOverlap : -1;
 
+        qint64 seed = dock->m_d->generate.checkFixedSeed && dock->m_d->generate.checkFixedSeed->isChecked()
+            ? static_cast<qint64>(dock->m_d->generate.spinSeed ? dock->m_d->generate.spinSeed->value() : 0)
+            : static_cast<qint64>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
+        if (!dock->m_d->generate.checkFixedSeed || !dock->m_d->generate.checkFixedSeed->isChecked()) {
+            if (dock->m_d->generate.spinSeed)
+                dock->m_d->generate.spinSeed->setValue(static_cast<int>(qBound<qint64>(0, seed, 2147483647)));
+        }
+        dock->m_d->upscaleRt.upscaleSeed = seed;
+        dock->m_d->upscaleRt.upscaleResultW = w2;
+        dock->m_d->upscaleRt.upscaleResultH = h2;
+
         QJsonObject workflow;
         bool useTiledRefine = false;
         if (wantRefine) {
@@ -177,13 +198,6 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
             const ComfyUIUtils::UpscaleTiledLayoutSpec tileLayout = ComfyUIUtils::computeUpscaleTiledLayoutSpec(
                 w2, h2, archForTiles, stylePreferredResolution, denoise, overlapPx);
             const int tileEstimate = tileLayout.totalTiles;
-            qint64 seed = dock->m_d->generate.checkFixedSeed && dock->m_d->generate.checkFixedSeed->isChecked()
-                ? static_cast<qint64>(dock->m_d->generate.spinSeed ? dock->m_d->generate.spinSeed->value() : 0)
-                : static_cast<qint64>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31)));
-            if (!dock->m_d->generate.checkFixedSeed || !dock->m_d->generate.checkFixedSeed->isChecked()) {
-                if (dock->m_d->generate.spinSeed)
-                    dock->m_d->generate.spinSeed->setValue(static_cast<int>(qBound<qint64>(0, seed, 2147483647)));
-            }
             const bool usePrompt = dock->m_d->upscale.checkUpscaleUsePrompt && dock->m_d->upscale.checkUpscaleUsePrompt->isChecked() && dock->m_d->generate.editPrompt;
             QString pos;
             QString neg;
@@ -222,6 +236,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
                 tp.minTileSize = tileLayout.minTileSize;
                 tp.promptTranslationLanguage = ComfyUIUtils::activePromptTranslationLanguage();
                 tp.upscaleFactor = canvasW > 0 ? static_cast<double>(w2) / static_cast<double>(canvasW) : 1.0;
+                tp.upscaleModelName = dock->selectedUpscalerModelName();
                 tp.editReference = ComfyResources::supportsEditInstructions(archForTiles);
 
                 dock->m_d->upscaleRt.upscaleStashedTiledParams = tp;
@@ -298,7 +313,11 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
             sp.targetWidth = w2;
             sp.targetHeight = h2;
             sp.upscaleMethod = scaleMethod;
+            sp.upscaleModelName = dock->selectedUpscalerModelName();
             workflow = ComfyWorkflowEngine::buildUpscaleSimple(sp);
+            qCWarning(KIS_COMFYUI_REMOTE).noquote()
+                << QStringLiteral("UPSCALE_DIAG simple workflow model=") << sp.upscaleModelName
+                << QStringLiteral("target=") << w2 << h2;
             if (workflow.isEmpty()) {
                 dock->setStatusMessage(ComfyTr::tr("Upscale workflow error."), true);
                 dock->m_d->upscale.btnUpscale->setEnabled(true);

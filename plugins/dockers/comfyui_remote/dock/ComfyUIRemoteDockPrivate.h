@@ -344,6 +344,7 @@ struct InpaintRuntime
 
 struct UpscaleUi
 {
+    QComboBox *comboUpscaleModel = nullptr;
     QPushButton *btnUpscale = nullptr;
     QSlider *sliderUpscaleFactor = nullptr;
     QDoubleSpinBox *spinUpscaleFactor = nullptr;
@@ -356,11 +357,14 @@ struct UpscaleUi
     QCheckBox *checkUpscaleRefine = nullptr;
     QWidget *upscaleRefineDetails = nullptr;
     QComboBox *comboUpscaleRefinementModel = nullptr;
+    QToolButton *btnUpscaleRefineSettings = nullptr;
     QSlider *sliderUpscaleRefineStrength = nullptr;
     QLabel *labelUpscaleRefineStrength = nullptr;
     QSlider *sliderUpscaleRefineGuidance = nullptr;
     QLabel *labelUpscaleRefineGuidance = nullptr;
     class ComfySwitchWidget *checkUpscaleUsePrompt = nullptr;
+    QLabel *labelUpscaleUsePromptText = nullptr;
+    QWidget *upscaleActionRowWidget = nullptr;
 };
 
 struct UpscaleRuntime
@@ -381,12 +385,16 @@ struct UpscaleRuntime
     bool upscalePendingIsTiled = false;
     bool upscalePendingWantRefine = false;
     double upscaleFactor = 2.0;
+    QString upscalerModel;
     int tileOverlapMode = 0;  // §13.147: 0 = auto (overlap -1), 1 = custom (use tile_overlap px)
     int tileOverlap = 32;
     QString upscaleUploadedImageName;
     QString upscalePromptId;
     int upscalePollCount = 0;
     bool upscaleLastSubmitUsedRefine = false;
+    qint64 upscaleSeed = 0;
+    int upscaleResultW = 0;
+    int upscaleResultH = 0;
     static const int upscaleMaxPollCount = 300;
     QTimer *upscalePollTimer = nullptr;
 };

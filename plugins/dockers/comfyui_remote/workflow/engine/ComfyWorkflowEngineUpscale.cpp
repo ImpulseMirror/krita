@@ -20,6 +20,15 @@
 
 namespace ComfyWorkflowEngine {
 
+static QJsonObject imageScaleInputs(const QJsonArray &imageLink, int width, int height, const QString &method)
+{
+    return QJsonObject{{QStringLiteral("image"), imageLink},
+                       {QStringLiteral("width"), width},
+                       {QStringLiteral("height"), height},
+                       {QStringLiteral("upscale_method"), method},
+                       {QStringLiteral("crop"), QStringLiteral("disabled")}};
+}
+
 static QJsonObject parseUpscaleWorkflowTemplate()
 {
     QJsonParseError err;
@@ -40,28 +49,59 @@ static QJsonObject parseUpscaleRefineWorkflowTemplate()
 
 QJsonObject buildUpscaleSimple(const UpscaleSimpleParams &params)
 {
-    QJsonObject workflow = parseUpscaleWorkflowTemplate();
-    if (workflow.isEmpty())
-        return workflow;
+    if (params.imageName.isEmpty())
+        return QJsonObject();
 
-    {
-        QJsonObject n1 = workflow.value(QStringLiteral("1")).toObject();
-        QJsonObject i1 = n1.value(QStringLiteral("inputs")).toObject();
-        i1.insert(QStringLiteral("image"), params.imageName);
-        n1.insert(QStringLiteral("inputs"), i1);
-        workflow.insert(QStringLiteral("1"), n1);
+    const QString method =
+        params.upscaleMethod.trimmed().isEmpty() ? QStringLiteral("lanczos") : params.upscaleMethod.trimmed();
+    const int targetW = qMax(64, params.targetWidth);
+    const int targetH = qMax(64, params.targetHeight);
+
+    if (params.upscaleModelName.trimmed().isEmpty()) {
+        QJsonObject workflow = parseUpscaleWorkflowTemplate();
+        if (workflow.isEmpty())
+            return workflow;
+
+        {
+            QJsonObject n1 = workflow.value(QStringLiteral("1")).toObject();
+            QJsonObject i1 = n1.value(QStringLiteral("inputs")).toObject();
+            i1.insert(QStringLiteral("image"), params.imageName);
+            n1.insert(QStringLiteral("inputs"), i1);
+            workflow.insert(QStringLiteral("1"), n1);
+        }
+        {
+            QJsonObject n2 = workflow.value(QStringLiteral("2")).toObject();
+            QJsonObject i2 = n2.value(QStringLiteral("inputs")).toObject();
+            i2.insert(QStringLiteral("width"), targetW);
+            i2.insert(QStringLiteral("height"), targetH);
+            i2.insert(QStringLiteral("upscale_method"), method);
+            i2.insert(QStringLiteral("crop"), QStringLiteral("disabled"));
+            n2.insert(QStringLiteral("inputs"), i2);
+            workflow.insert(QStringLiteral("2"), n2);
+        }
+        return workflow;
     }
-    {
-        QJsonObject n2 = workflow.value(QStringLiteral("2")).toObject();
-        QJsonObject i2 = n2.value(QStringLiteral("inputs")).toObject();
-        i2.insert(QStringLiteral("width"), qMax(64, params.targetWidth));
-        i2.insert(QStringLiteral("height"), qMax(64, params.targetHeight));
-        const QString method =
-            params.upscaleMethod.trimmed().isEmpty() ? QStringLiteral("lanczos") : params.upscaleMethod.trimmed();
-        i2.insert(QStringLiteral("upscale_method"), method);
-        n2.insert(QStringLiteral("inputs"), i2);
-        workflow.insert(QStringLiteral("2"), n2);
-    }
+
+    QJsonObject workflow;
+    int nextId = 1;
+    auto addNode = [&](const QString &classType, const QJsonObject &inputs) -> QString {
+        const QString id = QString::number(nextId++);
+        workflow.insert(id,
+                        QJsonObject{{QStringLiteral("class_type"), classType}, {QStringLiteral("inputs"), inputs}});
+        return id;
+    };
+
+    QString workingImage = addNode(QStringLiteral("LoadImage"), {{QStringLiteral("image"), params.imageName}});
+    const QString loader =
+        addNode(QStringLiteral("UpscaleModelLoader"), {{QStringLiteral("model_name"), params.upscaleModelName.trimmed()}});
+    workingImage = addNode(QStringLiteral("ImageUpscaleWithModel"),
+                           {{QStringLiteral("upscale_model"), QJsonArray{loader, 0}},
+                            {QStringLiteral("image"), QJsonArray{workingImage, 0}}});
+    workingImage = addNode(QStringLiteral("ImageScale"),
+                           imageScaleInputs(QJsonArray{workingImage, 0}, targetW, targetH, method));
+    addNode(QStringLiteral("SaveImage"),
+            {{QStringLiteral("filename_prefix"), QStringLiteral("ComfyUI_upscale")},
+             {QStringLiteral("images"), QJsonArray{workingImage, 0}}});
     return workflow;
 }
 
@@ -95,6 +135,7 @@ QJsonObject buildUpscaleRefine(const UpscaleRefineParams &params)
         i2.insert(QStringLiteral("width"), qMax(64, params.scaleWidth));
         i2.insert(QStringLiteral("height"), qMax(64, params.scaleHeight));
         i2.insert(QStringLiteral("upscale_method"), method);
+        i2.insert(QStringLiteral("crop"), QStringLiteral("disabled"));
         n2.insert(QStringLiteral("inputs"), i2);
         workflow.insert(QStringLiteral("2"), n2);
     }
@@ -173,10 +214,10 @@ QJsonObject buildUpscaleTiled(const UpscaleTiledParams &params)
     }
     if (params.scaledWidth != params.targetWidth || params.scaledHeight != params.targetHeight) {
         workingImage = addNode(QStringLiteral("ImageScale"),
-                               {{QStringLiteral("image"), QJsonArray{workingImage, 0}},
-                                {QStringLiteral("width"), qMax(64, params.scaledWidth)},
-                                {QStringLiteral("height"), qMax(64, params.scaledHeight)},
-                                {QStringLiteral("upscale_method"), QStringLiteral("lanczos")}});
+                               imageScaleInputs(QJsonArray{workingImage, 0},
+                                                qMax(64, params.scaledWidth),
+                                                qMax(64, params.scaledHeight),
+                                                QStringLiteral("lanczos")));
     }
 
     const QString layoutId = addNode(QStringLiteral("ETN_TileLayout"),
@@ -317,10 +358,10 @@ QJsonObject buildUpscaleTiled(const UpscaleTiledParams &params)
     QString outImage = mergedImage;
     if (params.targetWidth != params.scaledWidth || params.targetHeight != params.scaledHeight) {
         outImage = addNode(QStringLiteral("ImageScale"),
-                           {{QStringLiteral("image"), QJsonArray{outImage, 0}},
-                            {QStringLiteral("width"), qMax(64, params.targetWidth)},
-                            {QStringLiteral("height"), qMax(64, params.targetHeight)},
-                            {QStringLiteral("upscale_method"), QStringLiteral("lanczos")}});
+                           imageScaleInputs(QJsonArray{outImage, 0},
+                                            qMax(64, params.targetWidth),
+                                            qMax(64, params.targetHeight),
+                                            QStringLiteral("lanczos")));
     }
     addNode(QStringLiteral("SaveImage"),
             {{QStringLiteral("images"), QJsonArray{outImage, 0}},

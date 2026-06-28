@@ -237,6 +237,7 @@ void submitWorkflow(ComfyUIRemoteDock *dock, const QJsonObject &workflow, bool w
                                                  : (wantRefine ? ComfyTr::tr("Upscaling and refining…")
                                                                : ComfyTr::tr("Upscaling…")));
         dock->m_d->upscaleRt.upscalePollTimer->start(1000);
+        dock->updateQueueStatus();
     });
 
 }

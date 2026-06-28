@@ -222,14 +222,9 @@ void ComfyUIRemoteDock::showHistoryPreviewForItem(QListWidgetItem *item)
             return;
         }
         KisNodeSP above = topDirectRootChild(root);
-        if (m_d->viewManager->nodeManager()) {
-            KisNodeList nodes;
-            nodes.append(pl);
-            m_d->viewManager->nodeManager()->addNodesDirect(nodes, root, above);
-            m_d->viewManager->nodeManager()->slotNonUiActivatedNode(pl);
-        } else {
-            image->addNode(pl, root, above);
-        }
+        image->addNode(pl, root, above);
+        image->waitForDone();
+        ComfyHistoryInternal::activateNodeWhenShapeReady(m_d->viewManager.data(), image, pl);
         imported = pl;
         nudgePreviewLayerProjection(imported);
         qCWarning(KIS_COMFYUI_REMOTE).nospace()
@@ -274,13 +269,8 @@ void ComfyUIRemoteDock::updateLiveResultPreview(const QImage &composition, const
         if (!root)
             return;
         KisNodeSP above = topDirectRootChild(root);
-        if (m_d->viewManager->nodeManager()) {
-            KisNodeList nodes;
-            nodes.append(pl);
-            m_d->viewManager->nodeManager()->addNodesDirect(nodes, root, above);
-        } else {
-            image->addNode(pl, root, above);
-        }
+        image->addNode(pl, root, above);
+        image->waitForDone();
         imported = pl;
         nudgePreviewLayerProjection(imported);
     }
