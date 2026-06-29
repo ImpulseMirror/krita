@@ -23,13 +23,31 @@
 
 namespace ComfyUploadPipeline {
 
-QStringList collectMissingLoraUploadPaths(const QStringList &serverLoraFilenames)
+QStringList collectMissingLoraUploadPaths(const QStringList &serverLoraFilenames,
+                                          const QStringList &extraLoraNames)
 {
     QStringList paths;
     ComfyFileLibrary::instance().init();
     for (const ComfyFileRecord *rec :
          ComfyFileLibrary::instance().localLorasMissingOnServer(serverLoraFilenames)) {
         if (rec && !rec->path.isEmpty())
+            paths.append(rec->path);
+    }
+
+    for (const QString &name : extraLoraNames) {
+        const QString trimmed = name.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        const QString base = QFileInfo(trimmed).fileName();
+        if (ComfyUIUtils::loraFilenameKnownOnServer(trimmed, serverLoraFilenames)
+            || ComfyUIUtils::loraFilenameKnownOnServer(base, serverLoraFilenames))
+            continue;
+        const ComfyFileRecord *rec = ComfyFileLibrary::instance().loras().find(trimmed);
+        if (!rec)
+            rec = ComfyFileLibrary::instance().loras().find(base);
+        if (!rec || rec->path.isEmpty() || !(rec->source & ComfyFileSourceLocal))
+            continue;
+        if (!paths.contains(rec->path))
             paths.append(rec->path);
     }
     return paths;

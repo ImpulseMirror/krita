@@ -33,6 +33,7 @@ private Q_SLOTS:
     void testStyleCollectionFilteredBuiltinSubset();
     void testStyleCollectionSaveUserOverrideRoundtrip();
     void testBuiltinSamplerPresetLookupDpm2M();
+    void testResolveSamplerPresetHyperLora();
     void testMergeLibraryLoraTagsIntoPrompt();
     void testCheckpointLorasFromStyle();
     void testLocalLorasMissingOnServer();
@@ -162,6 +163,41 @@ void ComfyPortP51Test::testBuiltinSamplerPresetLookupDpm2M()
     QCOMPARE(minSteps, 4);
     QCOMPARE(cfg, 7.0);
     QVERIFY(!samplerPresetLookup(root, QStringLiteral("No Such Preset"), &sampler, &scheduler, &steps, &minSteps, &cfg));
+
+    QString lora;
+    QVERIFY(samplerPresetLookup(root,
+                                QStringLiteral("Realtime - Hyper"),
+                                &sampler,
+                                &scheduler,
+                                &steps,
+                                &minSteps,
+                                &cfg,
+                                &lora));
+    QCOMPARE(lora, QStringLiteral("hyper"));
+}
+
+void ComfyPortP51Test::testResolveSamplerPresetHyperLora()
+{
+    const QStringList serverLoras = { QStringLiteral("models/loras/Hyper-SD15-8steps-CFG-lora.safetensors") };
+    const SamplerPresetLoraResult found =
+        resolveSamplerPresetLora(QStringLiteral("Realtime - Hyper"),
+                               ComfyResources::Arch::Sd15,
+                               serverLoras);
+    QVERIFY(found.ok);
+    QVERIFY(found.loraFilename.contains(QStringLiteral("Hyper-SD15")));
+
+    const SamplerPresetLoraResult missing =
+        resolveSamplerPresetLora(QStringLiteral("Realtime - Hyper"),
+                                 ComfyResources::Arch::Sd15,
+                                 {});
+    QVERIFY(!missing.ok);
+    QVERIFY(missing.errorMessage.contains(QStringLiteral("hyper")));
+
+    const QStringList merged = mergedServerLoraFilenames(serverLoras);
+    QVERIFY(merged.size() >= 1);
+    QVERIFY(merged.contains(QStringLiteral("models/loras/Hyper-SD15-8steps-CFG-lora.safetensors")));
+    QCOMPARE(preferServerLoraEntry(QStringLiteral("Hyper-SD15-8steps-CFG-lora.safetensors"), merged),
+             QStringLiteral("models/loras/Hyper-SD15-8steps-CFG-lora.safetensors"));
 }
 
 void ComfyPortP51Test::testCheckpointLorasFromStyle()
@@ -595,23 +631,16 @@ void ComfyPortP51Test::testBuildRefineRegionColorMatchNode()
     rp.refine.arch = ComfyResources::Arch::Sd15;
     rp.colorMatch = true;
     const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
-    QString colorMatchId;
     for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
-        if (it.value().toObject().value(QStringLiteral("class_type")).toString()
-            == QLatin1String("INPAINT_ColorMatch")) {
-            colorMatchId = it.key();
-            const QJsonArray target =
-                it.value().toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("target")).toArray();
-            QVERIFY2(target.size() >= 2, "ColorMatch target missing");
-            QVERIFY2(target.at(0).toString() == QStringLiteral("9"), "ColorMatch target must stay on decode node 9");
-            QVERIFY2(target.at(0).toString() != colorMatchId, "ColorMatch must not target itself");
-        }
+        QVERIFY2(it.value().toObject().value(QStringLiteral("class_type")).toString()
+                     != QLatin1String("INPAINT_ColorMatch"),
+                 "refine_region must not use server INPAINT_ColorMatch (zeros SaveImage output)");
     }
-    QVERIFY2(!colorMatchId.isEmpty(), "ColorMatch node missing");
     const QJsonObject save = wf.value(QStringLiteral("10")).toObject();
     const QJsonArray saveImages =
         save.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
-    QCOMPARE(saveImages.at(0).toString(), colorMatchId);
+    QVERIFY2(saveImages.size() >= 2, "SaveImage images link missing");
+    QCOMPARE(saveImages.at(0).toString(), QStringLiteral("9"));
 }
 
 void ComfyPortP51Test::testBuildRefineRegionDifferentialDiffusionNoCycle()

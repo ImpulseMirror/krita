@@ -35,8 +35,10 @@ struct Palette {
 bool isDarkTheme();
 Palette palette();
 QString flatComboStyleSheet();
+QString toolbarComboStyleSheet();
 void applyFlatComboStyle(QComboBox *combo);
 void applyFlatComboStyle(QWidget *widget);
+void applyToolbarComboStyle(QComboBox *combo);
 
 /// Krita/Breeze fallback when bundled SVG is missing (moved from ComfyUIUtils).
 QString kritaIconNameForThemeStem(const QString &stem);

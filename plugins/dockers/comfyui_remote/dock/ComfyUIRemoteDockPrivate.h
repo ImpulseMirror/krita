@@ -10,6 +10,7 @@
 #include "ComfyControlLayer.h"
 #include "ComfyPrepareGenerateWorkflow.h"
 #include "ComfyPrepareLiveWorkflow.h"
+#include "ComfyLiveScheduler.h"
 #include "ComfyRegionProcess.h"
 #include "ComfyWorkflowEngine.h"
 #include "ComfyWorkspaceSelectButton.h"
@@ -53,6 +54,7 @@ class QWebSocket;
 #include <QStackedWidget>
 #include <QWidget>
 
+class QHBoxLayout;
 class ComfyUIIntervalSlider;
 class ComfyStyleLoraListWidget;
 #include <QRect>
@@ -246,6 +248,21 @@ struct LiveUi
     QCheckBox *checkLiveMode = nullptr;
     QWidget *liveSpinner = nullptr;  // §13.105: LiveSpinnerWidget for Live view progress
     QCheckBox *checkLiveRecord = nullptr;  // §13.45: when checked, save each live result to .live-frames/frame-N.webp
+    // FAITHFUL_PORT: ai_diffusion/ui/live.py LiveWidget toolbar + params + prompt rows
+    QToolButton *btnLivePlay = nullptr;
+    QToolButton *btnLiveRecord = nullptr;
+    QToolButton *btnLiveApply = nullptr;
+    QToolButton *btnLiveApplyLayer = nullptr;
+    QToolButton *btnLiveEditToggle = nullptr;
+    QToolButton *btnLiveRandomSeed = nullptr;
+    QWidget *liveParamsRowWidget = nullptr;
+    QWidget *livePromptRowWidget = nullptr;
+    QWidget *livePromptHostWidget = nullptr;
+    QWidget *livePromptButtonsWidget = nullptr;
+    /// FAITHFUL_PORT: ai_diffusion/ui/live.py LivePreviewArea — bottom docker preview, not canvas layer.
+    QWidget *livePreviewGroupBox = nullptr;
+    QWidget *livePreviewRowWidget = nullptr;
+    QLabel *livePreviewArea = nullptr;
 };
 
 struct LiveRuntime
@@ -257,6 +274,9 @@ struct LiveRuntime
     QString liveUploadedImageName;
     QString liveUploadedMaskName;
     ComfyPrepareLiveWorkflow::Result livePrepared;
+    bool livePipelineBusy = false;
+    bool liveApplyInProgress = false;
+    ComfyLiveRunnerInternal::LiveSchedulerState liveScheduler;
     bool liveAwaitingControlUploads = false;
     int liveControlUploadIndex = 0;
     QStringList liveControlUploadedNames;
@@ -275,6 +295,11 @@ struct LiveRuntime
     QTimer *livePollTimer = nullptr;
     QString lastLiveResultImagePath;
     QString lastLiveResultCompositionPath;
+    QString liveSamplerLoraBlockMessage;
+    /// LIVE_DIAG: carried from workflow build through poll for verdict logging.
+    QString liveDiagLatentPath;
+    QString liveDiagArchKey;
+    double liveDiagDenoise = -1.0;
 };
 
 struct InpaintUi
@@ -453,6 +478,7 @@ struct ComfyUIRemoteDock::Private
     // (Settings-dialog Styles tab locals lifted to members above.)
     QProgressBar *progressBar = nullptr;
     ComfyWorkspaceSelectButton *comboWorkspace = nullptr;
+    QHBoxLayout *workspaceTopRowLayout = nullptr;  // workspace + live toolbar + style + settings
     int lastWorkspaceIndex = -1;  // §13.149: track for Live strength persist on leave
     QPushButton *btnTest = nullptr;
     /// §13.81: one-shot auto-connect when a server URL is saved in settings

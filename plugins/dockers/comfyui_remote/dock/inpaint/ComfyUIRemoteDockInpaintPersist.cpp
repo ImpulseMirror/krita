@@ -39,8 +39,10 @@ void ComfyUIRemoteDock::onGenerateStrengthChanged(int strengthPercent)
         m_d->inpaint.sliderStrength->setValue(v);
     }
     KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-    cfg.writeEntry("Strength", v);
-    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2) {
+    const bool onLiveWorkspace = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2;
+    if (!onLiveWorkspace)
+        cfg.writeEntry("GenerateStrength", v);
+    if (onLiveWorkspace) {
         KisImageSP img = m_d->canvas ? m_d->canvas->image().toStrongRef() : KisImageSP();
         if (img) {
             const QString liveKey = ComfyUIUtils::liveWorkspaceAnnotationKey();

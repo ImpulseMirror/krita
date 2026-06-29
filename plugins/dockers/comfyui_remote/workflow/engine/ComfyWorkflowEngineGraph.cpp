@@ -35,6 +35,15 @@ bool isImg2imgRefineWorkflow(const QJsonObject &workflow)
     return loadClass == QLatin1String("LoadImage") && encodeClass == QLatin1String("VAEEncode");
 }
 
+bool isInpaintingTemplateWorkflow(const QJsonObject &workflow)
+{
+    const QString loadClass =
+        workflow.value(QStringLiteral("1")).toObject().value(QStringLiteral("class_type")).toString();
+    const QString maskClass =
+        workflow.value(QStringLiteral("2")).toObject().value(QStringLiteral("class_type")).toString();
+    return loadClass == QLatin1String("LoadImage") && maskClass == QLatin1String("LoadImage");
+}
+
 WorkflowGraphContext discoverWorkflowGraphContext(const QJsonObject &workflow)
 {
     WorkflowGraphContext ctx;
@@ -46,6 +55,19 @@ WorkflowGraphContext discoverWorkflowGraphContext(const QJsonObject &workflow)
         ctx.clipSourceNodeId = QStringLiteral("3");
         ctx.canvasImageNodeId = QStringLiteral("1");
         ctx.latentImageNodeId = QStringLiteral("2");
+    } else if (isInpaintingTemplateWorkflow(workflow)) {
+        ctx.samplerNodeId = detail::findNodeIdByClassType(workflow, QStringLiteral("SamplerCustomAdvanced"));
+        if (ctx.samplerNodeId.isEmpty())
+            ctx.samplerNodeId = detail::findNodeIdByClassType(workflow, QStringLiteral("KSampler"));
+        if (ctx.samplerNodeId.isEmpty())
+            ctx.samplerNodeId = QStringLiteral("8");
+        ctx.modelNodeId = detail::findCheckpointNodeId(workflow);
+        if (ctx.modelNodeId.isEmpty())
+            ctx.modelNodeId = QStringLiteral("4");
+        ctx.positiveNodeId = QStringLiteral("5");
+        ctx.negativeNodeId = QStringLiteral("6");
+        ctx.clipSourceNodeId = ctx.modelNodeId;
+        ctx.canvasImageNodeId = QStringLiteral("1");
     } else {
         const QJsonArray refineLatent = workflow.value(QStringLiteral("6"))
                                         .toObject()

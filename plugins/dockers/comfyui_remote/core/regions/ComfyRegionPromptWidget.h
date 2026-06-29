@@ -28,7 +28,10 @@ public:
     void setViewManager(KisViewManager *viewManager);
     void setPromptHeaderMode(int mode);
     void setShowNegativePrompt(bool show);
+    void setNegativePromptWarningVisible(bool visible);
     void setPromptTranslationCode(const QString &code);
+    QPlainTextEdit *positivePromptEditor() const { return m_editPrompt; }
+    QPlainTextEdit *negativePromptEditor() const { return m_editNegative; }
     void setRootPromptEditors(QPlainTextEdit *positive, QPlainTextEdit *negative);
     void embedRegionControlPanel(QWidget *panel);
     void bind(QList<ComfyUIRemoteDock::Private::RegionEntry> *regions, int *activeIndex);
@@ -37,8 +40,11 @@ public:
     void focusPromptEditor();
     void commitRootPromptEditors();
     void refreshRootPromptFromDock();
-    /// Compact docker: clamp prompt heights, margins, resize-handle visibility (FAITHFUL_PORT).
-    void applyCompactLayout(int positiveLines, int negativeLines, bool showNegative, bool showResizeHandle);
+    /// Compact docker: @p positiveLines from settings; negative is always 1 line (FAITHFUL_PORT).
+    void applyCompactLayout(int positiveLines,
+                            bool showNegative,
+                            bool showResizeHandle,
+                            bool liveLineCounts = false);
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
 protected:
@@ -71,7 +77,7 @@ private:
     void updateLinkButton();
     void updateNoRegionStrip();
     void applyPromptLineHeights();
-    void applyPromptLineHeights(int positiveLines, int negativeLines);
+    void applyPromptLineHeights(int positiveLines);
     void showLinkMenu(QPushButton *anchor);
 
     KisViewManager *m_viewManager = nullptr;
@@ -93,10 +99,9 @@ private:
     QLabel *m_headerLabel = nullptr;
     QPushButton *m_btnLink = nullptr;
     QPushButton *m_btnRemove = nullptr;
+    class ComfyPromptStackWidget *m_promptStack = nullptr;
     QPlainTextEdit *m_editPrompt = nullptr;
     QPlainTextEdit *m_editNegative = nullptr;
-    QWidget *m_positivePromptColumn = nullptr;
-    QWidget *m_negativePromptColumn = nullptr;
     QComboBox *m_comboMask = nullptr;
     QLabel *m_emptyHint = nullptr;
 
@@ -105,8 +110,7 @@ private:
     QPushButton *m_btnNewRegion = nullptr;
     QPushButton *m_btnLinkRegionMenu = nullptr;
     QPushButton *m_btnTranslation = nullptr;
-    class ComfyPromptResizeHandle *m_posResizeHandle = nullptr;
-    class ComfyPromptResizeHandle *m_negResizeHandle = nullptr;
+    bool m_showResizeHandle = true;
 
     QUuid m_lastActiveLayerUuid;
     bool m_syncingEditor = false;

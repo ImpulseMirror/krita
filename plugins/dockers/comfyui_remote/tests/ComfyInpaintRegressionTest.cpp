@@ -17,6 +17,7 @@
 #include "ComfyInpaintRunnerInternal.h"
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
+#include "ComfyWorkflowEngine.h"
 
 using namespace ComfyUIUtils;
 using namespace ComfyInpaintRunnerInternal;
@@ -77,6 +78,83 @@ QRect eighthAreaSelectionAtSeed(const QSize &canvas, quint32 placementSeed)
     return QRect(x, y, side, side);
 }
 
+QString findNodeIdByClassType(const QJsonObject &workflow, const QString &classType)
+{
+    for (auto it = workflow.constBegin(); it != workflow.constEnd(); ++it) {
+        if (it.value().toObject().value(QStringLiteral("class_type")).toString() == classType)
+            return it.key();
+    }
+    return QString();
+}
+
+bool workflowContainsClassType(const QJsonObject &workflow, const QString &classType)
+{
+    return !findNodeIdByClassType(workflow, classType).isEmpty();
+}
+
+/// Walk SaveImage ← image inputs; fail if INPAINT_ColorMatch appears in chain.
+bool refineRegionSaveChainAvoidsColorMatch(const QJsonObject &workflow)
+{
+    const QString saveId = findNodeIdByClassType(workflow, QStringLiteral("SaveImage"));
+    if (saveId.isEmpty())
+        return false;
+
+    QString nodeId =
+        workflow.value(saveId).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray().at(0).toString();
+    for (int hop = 0; hop < 8 && !nodeId.isEmpty(); ++hop) {
+        const QJsonObject node = workflow.value(nodeId).toObject();
+        const QString cls = node.value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("INPAINT_ColorMatch"))
+            return false;
+        if (cls == QLatin1String("VAEDecode"))
+            return true;
+
+        const QJsonObject inputs = node.value(QStringLiteral("inputs")).toObject();
+        if (inputs.contains(QStringLiteral("image"))) {
+            const QJsonArray link = inputs.value(QStringLiteral("image")).toArray();
+            if (link.isEmpty())
+                break;
+            nodeId = link.at(0).toString();
+            continue;
+        }
+        if (inputs.contains(QStringLiteral("target"))) {
+            nodeId = inputs.value(QStringLiteral("target")).toArray().at(0).toString();
+            continue;
+        }
+        break;
+    }
+    return false;
+}
+
+ComfyWorkflowEngine::RefineRegionParams makeAndroidRefineRegionFixture()
+{
+    ComfyWorkflowEngine::RefineRegionParams rrp;
+    rrp.refine.imageName = QStringLiteral("krita_live.png");
+    rrp.maskImageName = QStringLiteral("krita_live_mask.png");
+    rrp.refine.checkpoint = QStringLiteral("novaAnimeXL_ilV140.safetensors");
+    rrp.refine.arch = ComfyResources::Arch::Sdxl;
+    rrp.refine.positivePrompt = QStringLiteral("best quality, highres, eye patch");
+    rrp.refine.negativePrompt = QStringLiteral("bad quality, low resolution, blurry");
+    rrp.refine.seed = 1434105552;
+    rrp.refine.steps = 20;
+    rrp.refine.cfg = 8.0;
+    rrp.refine.denoise = 0.75;
+    rrp.refine.sampler = QStringLiteral("euler");
+    rrp.refine.scheduler = QStringLiteral("normal");
+    rrp.growMaskBy = 10;
+    rrp.featherMaskBy = 20;
+    rrp.blendMaskBy = 20;
+    rrp.extentWidth = 800;
+    rrp.extentHeight = 800;
+    rrp.contextExtentWidth = 800;
+    rrp.contextExtentHeight = 800;
+    rrp.colorMatch = true;
+    rrp.nsfwFilterSensitivity = 0.0;
+    ComfyUIUtils::applyStrengthResolvedSamplingToRefine(
+        &rrp.refine, nullptr, QJsonObject(), rrp.refine.sampler, rrp.refine.steps, rrp.refine.cfg, 0.75);
+    return rrp;
+}
+
 /// Simulates Android convertToQImage reading padded bounds — entire crop opaque white.
 QImage simulateAndroidPaddedBoundsReadBug(const QRect &paddedBounds)
 {
@@ -102,6 +180,10 @@ private Q_SLOTS:
     void testChooseSelectionMaskPrefersBytesOverSolidConvert();
     void testChooseSelectionMaskFallsBackToConvertWhenBytesEmpty();
     void testOvalMaskAndroidLogcatAssemblyScenario();
+    void testBuildRefineRegionSkipsServerColorMatch();
+    void testBuildRefineRegionSaveImageReachesVaeDecode();
+    void testBuildInpaintFillStillUsesServerColorMatch();
+    void testCompositeRefineBlackServerPaintsMaskRegionBlack();
 };
 
 void ComfyInpaintRegressionTest::testAssembleSelectionMaskEighthArea()
@@ -312,6 +394,98 @@ void ComfyInpaintRegressionTest::testOvalMaskAndroidLogcatAssemblyScenario()
                             .arg(buggyFill)));
     QVERIFY2(fixedFill > 0.05 && fixedFill < 0.95,
              qPrintable(QStringLiteral("oval assembly fill=%1").arg(fixedFill)));
+}
+
+void ComfyInpaintRegressionTest::testBuildRefineRegionSkipsServerColorMatch()
+{
+    const ComfyWorkflowEngine::RefineRegionParams rrp = makeAndroidRefineRegionFixture();
+    QVERIFY(rrp.colorMatch);
+
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rrp);
+    QVERIFY(!wf.isEmpty());
+    QVERIFY2(!workflowContainsClassType(wf, QStringLiteral("INPAINT_ColorMatch")),
+             "refine_region must not insert INPAINT_ColorMatch (server SaveImage went all-black)");
+
+    QString latentPath;
+    const QString summary = summarizeWorkflowGraph(wf, &latentPath);
+    QCOMPARE(latentPath, QStringLiteral("inpaint_conditioning"));
+    QVERIFY(summary.contains(QStringLiteral("hasInpaintCond=1")));
+}
+
+void ComfyInpaintRegressionTest::testBuildRefineRegionSaveImageReachesVaeDecode()
+{
+    ComfyWorkflowEngine::RefineRegionParams rrp = makeAndroidRefineRegionFixture();
+    QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rrp);
+    ComfyWorkflowEngine::applyCheckpointStyleOptions(&wf, QString(), 0, ComfyResources::Arch::Sdxl);
+    ComfyUIUtils::applyPerformancePreferencesToWorkflow(wf);
+
+    QVERIFY2(refineRegionSaveChainAvoidsColorMatch(wf),
+             "SaveImage output chain must reach VAEDecode without INPAINT_ColorMatch");
+
+    const QJsonObject save = wf.value(QStringLiteral("10")).toObject();
+    const QJsonArray saveImages =
+        save.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
+    QVERIFY2(saveImages.size() >= 2, "SaveImage images link missing");
+    const QString saveSourceId = saveImages.at(0).toString();
+    QVERIFY2(wf.contains(saveSourceId), "SaveImage source node must exist");
+    const QString saveSourceClass = wf.value(saveSourceId).toObject().value(QStringLiteral("class_type")).toString();
+    QVERIFY2(saveSourceClass == QLatin1String("VAEDecode")
+                   || saveSourceClass == QLatin1String("ETN_NSFWFilter"),
+               qPrintable(QStringLiteral("SaveImage must read VAEDecode or NSFW filter, got ") + saveSourceClass));
+}
+
+void ComfyInpaintRegressionTest::testBuildInpaintFillStillUsesServerColorMatch()
+{
+    ComfyWorkflowEngine::InpaintBuildParams bp;
+    bp.imageName = QStringLiteral("canvas.png");
+    bp.maskImageName = QStringLiteral("mask.png");
+    bp.arch = ComfyResources::Arch::Sdxl;
+    bp.useInpaintModel = true;
+    bp.controlNetInpaintFile.clear();
+    bp.colorMatch = true;
+    bp.initialExtentWidth = 512;
+    bp.initialExtentHeight = 512;
+    bp.contextExtentWidth = 512;
+    bp.contextExtentHeight = 512;
+    const QJsonObject wf = ComfyWorkflowEngine::buildInpaint(bp);
+    QVERIFY(workflowContainsClassType(wf, QStringLiteral("INPAINT_ColorMatch")));
+}
+
+void ComfyInpaintRegressionTest::testCompositeRefineBlackServerPaintsMaskRegionBlack()
+{
+    const QSize contextSize(800, 800);
+    const QRect maskLocal(290, 284, 220, 231);
+    const QRect contextBounds(187, 18, 800, 800);
+
+    QImage context = makeFilledRgbImage(contextSize, qRgb(214, 191, 179));
+    QImage server = makeFilledRgbImage(contextSize, qRgb(0, 0, 0));
+    QImage mask = makeSolidRectMask(contextSize, maskLocal);
+
+    InpaintCompositeParams params;
+    params.serverResult = server;
+    params.contextImage = context;
+    params.compositingMask = mask;
+    params.contextBounds = contextBounds;
+    params.targetBounds = contextBounds;
+    params.preprocessGrow = 10;
+    params.preprocessFeather = 20;
+    params.preprocessBlend = 20;
+    params.refineRegionWorkflow = true;
+    params.diffusionExtent = contextSize;
+
+    const InpaintCompositeResult result = compositeInpaintServerOntoContext(params);
+    QCOMPARE(result.pathTaken, QStringLiteral("full_context"));
+
+    const double rawNonBlack = imageNonBlackFraction(server);
+    const double compositeNonBlack = imageNonBlackFraction(result.output);
+    QCOMPARE(inpaintFailureVerdict(rawNonBlack, compositeNonBlack, QStringLiteral("inpaint_conditioning"),
+                                   QStringLiteral("sdxl"), 0.75, true),
+             QStringLiteral("server_black"));
+
+    const QRgb maskedCenter = result.output.pixel(maskLocal.center());
+    QVERIFY(qRed(maskedCenter) < 30 && qGreen(maskedCenter) < 30 && qBlue(maskedCenter) < 30);
+    const QRgb outsideCorner = result.output.pixel(10, 10);
+    QVERIFY(qRed(outsideCorner) > 100);
 }
 
 QTEST_MAIN(ComfyInpaintRegressionTest)

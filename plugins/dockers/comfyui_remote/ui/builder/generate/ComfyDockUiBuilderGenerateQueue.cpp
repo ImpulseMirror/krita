@@ -69,6 +69,24 @@ using ComfyDockShellInternal::StrengthSpinBox;
 using ComfyDockShellInternal::setComboCurrentItemData;
 
 
+namespace {
+
+constexpr int kGenerateProgressBarHeightPx = 2;
+
+QString progressBarBaseStyle()
+{
+    const ComfyTheme::Palette theme = ComfyTheme::palette();
+    return QStringLiteral(
+        "QProgressBar { border: none; margin: 0; padding: 0; min-height: %1px; max-height: %1px;"
+        " background: %2; }"
+        "QProgressBar::chunk { margin: 0; border-radius: 1px; background: %3; }")
+        .arg(kGenerateProgressBarHeightPx)
+        .arg(theme.line)
+        .arg(theme.active);
+}
+
+} // namespace
+
 namespace ComfyDockUiBuilderGenerateInternal {
 
 void buildQueueActionsSection(Workspace &ws)
@@ -264,12 +282,16 @@ void buildQueueActionsSection(Workspace &ws)
     d->generate.btnCancelQueue->setEnabled(false);
 
     d->progressBar = new QProgressBar();
+    d->progressBar->setObjectName(QStringLiteral("ComfyGenerateProgressBar"));
     d->progressBar->setMinimum(0);
     d->progressBar->setMaximum(100);
-    d->progressBar->setValue(0);
     d->progressBar->setTextVisible(false);
-    d->progressBar->setFixedHeight(6);
+    d->progressBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d->progressBar->setFixedHeight(kGenerateProgressBarHeightPx);
+    d->progressBar->setStyleSheet(progressBarBaseStyle());
     dock->setProgressBarKind(false);  // §13.18: default = generation
+    dock->resetProgressBarToIdle();
+    genContentLayout->addSpacing(4);
     genContentLayout->addWidget(d->progressBar);
 
     dock->setupRootControlLayersUi(d->generate.genContentContainer, genContentLayout);

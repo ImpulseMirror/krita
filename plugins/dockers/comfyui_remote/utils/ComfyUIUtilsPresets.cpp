@@ -48,6 +48,8 @@
 #include <kis_image.h>
 #include <kis_layer_utils.h>
 #include <kis_annotation.h>
+
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 #include <kis_node.h>
 #include <kis_group_layer.h>
 #include <kis_selection.h>
@@ -360,6 +362,201 @@ ResolvedSamplerInputs resolveSamplerForLive(const ComfyStyleEntry *styleEntry,
     r.steps = dockSteps;
     r.cfg = dockCfg;
     return r;
+}
+
+namespace {
+
+QString substituteNamedPlaceholders(QString text, const QHash<QString, QString> &vars)
+{
+    for (auto it = vars.constBegin(); it != vars.constEnd(); ++it)
+        text.replace(QStringLiteral("{%1}").arg(it.key()), it.value());
+    return text;
+}
+
+bool modelNameMatchesSearchPattern(const QString &sanitizedName, const QString &pattern)
+{
+    const QStringList parts = pattern.toLower().split(QLatin1Char('*'), Qt::SkipEmptyParts);
+    if (parts.isEmpty())
+        return false;
+    for (const QString &part : parts) {
+        if (!sanitizedName.contains(part))
+            return false;
+    }
+    return true;
+}
+
+bool loraNameListedOnServer(const QString &name, const QStringList &serverLoraFilenames)
+{
+    if (name.isEmpty())
+        return false;
+    const QString base = QFileInfo(name).fileName();
+    for (const QString &entry : serverLoraFilenames) {
+        if (entry.compare(name, Qt::CaseInsensitive) == 0)
+            return true;
+        if (entry.compare(base, Qt::CaseInsensitive) == 0)
+            return true;
+        if (QFileInfo(entry).fileName().compare(base, Qt::CaseInsensitive) == 0)
+            return true;
+        if (entry.endsWith(QLatin1Char('/') + base, Qt::CaseInsensitive))
+            return true;
+    }
+    return false;
+}
+
+const ComfyFileRecord *findFileLibraryLoraMatchingSearchPaths(const QStringList &searchPaths)
+{
+    if (searchPaths.isEmpty())
+        return nullptr;
+    ComfyFileLibrary::instance().init();
+    const QList<ComfyFileRecord> &files = ComfyFileLibrary::instance().loras().files();
+    for (const ComfyFileRecord &file : files) {
+        if (!(file.source & (ComfyFileSourceLocal | ComfyFileSourceRemote)))
+            continue;
+        if ((file.source & ComfyFileSourceLocal) && file.path.isEmpty())
+            continue;
+        if ((file.source & ComfyFileSourceLocal)
+            && !file.meta(QStringLiteral("enabled")).toBool(true))
+            continue;
+        const QString sanitizedId = QString(file.id).replace(QLatin1Char('\\'), QLatin1Char('/')).toLower();
+        const QString sanitizedPath = QString(file.path).replace(QLatin1Char('\\'), QLatin1Char('/')).toLower();
+        for (const QString &pattern : searchPaths) {
+            if (modelNameMatchesSearchPattern(sanitizedId, pattern)
+                || (!sanitizedPath.isEmpty() && modelNameMatchesSearchPattern(sanitizedPath, pattern))) {
+                return &file;
+            }
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+QString liveSamplerPresetName(const ComfyStyleEntry *styleEntry, const QJsonObject &settings)
+{
+    QString key;
+    if (styleEntry && !styleEntry->liveSamplerPresetName.isEmpty())
+        key = styleEntry->liveSamplerPresetName;
+    else
+        key = settings.value(QStringLiteral("live_sampler_preset")).toString().trimmed();
+    if (key.isEmpty())
+        key = QStringLiteral("Realtime - Hyper");
+    return key;
+}
+
+QString findModelOnServerBySearchPaths(const QStringList &serverModels, const QStringList &searchPaths)
+{
+    if (serverModels.isEmpty() || searchPaths.isEmpty())
+        return QString();
+
+    struct Match {
+        QString filename;
+        int priority = 0;
+    };
+    QList<Match> matches;
+    for (int i = 0; i < searchPaths.size(); ++i) {
+        const QString pattern = searchPaths.at(i);
+        for (const QString &filename : serverModels) {
+            const QString name = QString(filename).replace(QLatin1Char('\\'), QLatin1Char('/')).toLower();
+            if (!modelNameMatchesSearchPattern(name, pattern))
+                continue;
+            const int priority = name.contains(QStringLiteral("krita")) ? 0 : i * 100 + name.size();
+            matches.append({ filename, priority });
+        }
+    }
+    if (matches.isEmpty())
+        return QString();
+    std::sort(matches.begin(), matches.end(), [](const Match &a, const Match &b) {
+        return a.priority < b.priority;
+    });
+    return matches.first().filename;
+}
+
+SamplerPresetLoraResult resolveSamplerPresetLora(const QString &presetName,
+                                                 ComfyResources::Arch arch,
+                                                 const QStringList &serverLoraFilenames)
+{
+    SamplerPresetLoraResult result;
+    QString loraKey;
+    QString sam, sch;
+    int steps = 0;
+    int minSteps = 0;
+    double cfg = 0.0;
+    if (!samplerPresetLookup(builtinSamplerPresetsRoot(), presetName, &sam, &sch, &steps, &minSteps, &cfg, &loraKey)
+        || loraKey.isEmpty()) {
+        return result;
+    }
+
+    const QStringList mergedServer = mergedServerLoraFilenames(serverLoraFilenames);
+
+    auto finishResolved = [&](const QString &name) {
+        result.loraFilename = preferServerLoraEntry(name, mergedServer);
+        return result;
+    };
+
+    if (loraNameListedOnServer(loraKey, mergedServer))
+        return finishResolved(loraKey);
+
+    QStringList searchPaths = ComfyResources::samplerLoraSearchPaths(arch, loraKey);
+
+    const QString onServer = findModelOnServerBySearchPaths(mergedServer, searchPaths);
+    if (!onServer.isEmpty())
+        return finishResolved(onServer);
+
+    if (const ComfyFileRecord *library = findFileLibraryLoraMatchingSearchPaths(searchPaths))
+        return finishResolved(library->id);
+
+    result.ok = false;
+    if (searchPaths.isEmpty() && loraKey == QLatin1String("lightning")) {
+        result.errorMessage =
+            QStringLiteral("The chosen sampler preset '%1' requires LoRA '%2', which is not supported by %3. "
+                           "Please choose a different sampler.")
+                .arg(presetName, loraKey, ComfyResources::archToKey(arch));
+        return result;
+    }
+
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_LIVE sampler LoRA not resolved preset=") << presetName
+        << QStringLiteral("loraKey=") << loraKey << QStringLiteral("arch=") << ComfyResources::archToKey(arch)
+        << QStringLiteral("serverLoras=") << mergedServer.size()
+        << QStringLiteral("searchPaths=") << searchPaths.join(QLatin1Char(','));
+
+    const QHash<QString, QString> vars = {
+        { QStringLiteral("lora"), loraKey },
+        { QStringLiteral("name"), presetName },
+    };
+    if (searchPaths.isEmpty()) {
+        result.errorMessage = substituteNamedPlaceholders(
+            ComfyTr::tr("Could not find LoRA '{lora}' used by sampler preset '{name}'"), vars);
+    } else {
+        QHash<QString, QString> varsWithModels = vars;
+        varsWithModels.insert(QStringLiteral("models"), searchPaths.join(QStringLiteral(", ")));
+        result.errorMessage = substituteNamedPlaceholders(
+            ComfyTr::tr("Could not find LoRA '{lora}' ({models}) used by sampler preset '{name}'"),
+            varsWithModels);
+    }
+    return result;
+}
+
+QJsonArray appendSamplerPresetLora(const QJsonArray &styleLoras, const QString &loraFilename)
+{
+    if (loraFilename.isEmpty())
+        return styleLoras;
+    const QString base = QFileInfo(loraFilename).fileName();
+    for (const QJsonValue &v : styleLoras) {
+        if (!v.isObject())
+            continue;
+        const QString name = v.toObject().value(QStringLiteral("name")).toString();
+        if (name.compare(loraFilename, Qt::CaseInsensitive) == 0
+            || QFileInfo(name).fileName().compare(base, Qt::CaseInsensitive) == 0)
+            return styleLoras;
+    }
+    QJsonObject lora;
+    lora.insert(QStringLiteral("name"), loraFilename);
+    lora.insert(QStringLiteral("strength"), 1.0);
+    lora.insert(QStringLiteral("enabled"), true);
+    QJsonArray out = styleLoras;
+    out.append(lora);
+    return out;
 }
 
 } // namespace ComfyUIUtils

@@ -13,7 +13,11 @@ namespace ComfyLiveRunner {
 
 void onPollTimer(ComfyUIRemoteDock *dock);
 
-/// Live timer tick — prepare + upload + submit chain entry (was slotLiveTick).
+/// Start/stop 100ms live poll loop (upstream LiveScheduler poll_rate).
+void startLivePollLoop(ComfyUIRemoteDock *dock);
+void stopLivePollLoop(ComfyUIRemoteDock *dock);
+
+/// Live timer tick — poll for canvas changes and schedule generation.
 void onTick(ComfyUIRemoteDock *dock);
 
 void beginUploadPipeline(ComfyUIRemoteDock *dock);

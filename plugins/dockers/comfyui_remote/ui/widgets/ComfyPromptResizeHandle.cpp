@@ -101,10 +101,10 @@ void ComfyPromptResizeHandle::mouseReleaseEvent(QMouseEvent *e)
         m_dragging = false;
         releaseMouse();
         if (m_editor && m_persistLines) {
-            const QFontMetrics fm(m_editor->font());
+            const QFontMetrics fm(m_editor->document() ? m_editor->document()->defaultFont() : m_editor->font());
             const int h = m_editor->height();
             const int ls = qMax(1, fm.lineSpacing());
-            const int lines = qBound(1, static_cast<int>(qRound((h - fm.height() / 2) / double(ls))), 10);
+            const int lines = qBound(1, static_cast<int>(qRound((h - 10) / double(ls))), 10);
             m_persistLines(lines);
         }
         reposition();

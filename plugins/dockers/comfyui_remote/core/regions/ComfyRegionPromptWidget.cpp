@@ -4,10 +4,11 @@
  */
 
 #include "ComfyRegionPromptWidget.h"
+#include "ComfyPromptStackWidget.h"
+#include "ComfyPromptLayoutMetrics.h"
 #include "ComfyLocalization.h"
 #include "ComfyRegionLink.h"
 #include "ComfyControlLayer.h"
-#include "ComfyPromptResizeHandle.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
 #include "ComfyUiLayoutDiagnostics.h"
@@ -184,7 +185,7 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     auto *rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 
     m_inactiveAbove = new QVBoxLayout();
     m_inactiveAbove->setSpacing(2);
@@ -193,9 +194,11 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     m_activeFrame = new QFrame(this);
     m_activeFrame->setObjectName(QStringLiteral("ActiveRegionWidget"));
     m_activeFrame->setFrameStyle(QFrame::NoFrame);
+    m_activeFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     auto *activeLay = new QVBoxLayout(m_activeFrame);
     activeLay->setContentsMargins(0, 0, 0, 0);
     activeLay->setSpacing(0);
+    activeLay->setAlignment(Qt::AlignTop);
 
     auto *headerRow = new QHBoxLayout();
     m_headerIcon = new QLabel(m_activeFrame);
@@ -217,65 +220,16 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     headerRow->addWidget(m_btnRemove);
     activeLay->addLayout(headerRow);
 
-    m_editPrompt = new QPlainTextEdit(m_activeFrame);
-    m_editPrompt->setPlaceholderText(ComfyTr::tr("Prompt for this area"));
-    m_editPrompt->setFrameShape(QFrame::NoFrame);
-    m_editPrompt->document()->setDocumentMargin(2);
-    m_editPrompt->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_editPrompt->setStyleSheet(QStringLiteral("padding-bottom: 10px;"));
-    m_editPrompt->installEventFilter(this);
-    {
-        auto *col = new QWidget(m_activeFrame);
-        m_positivePromptColumn = col;
-        auto *colLay = new QVBoxLayout(col);
-        colLay->setContentsMargins(0, 0, 0, 0);
-        colLay->setSpacing(0);
-        colLay->addWidget(m_editPrompt);
-        m_posResizeHandle = new ComfyPromptResizeHandle(
-            m_editPrompt,
-            [](int lines) {
-                QJsonObject st = ComfyUIUtils::loadSettingsJson();
-                st.insert(QStringLiteral("prompt_line_count"), lines);
-                ComfyUIUtils::saveSettingsJson(st);
-            },
-            28,
-            m_editPrompt);
-        connect(m_posResizeHandle, &ComfyPromptResizeHandle::heightChanged, this, [this]() {
-            updateGeometry();
-            Q_EMIT layoutHeightsChanged();
-        });
-        activeLay->addWidget(col);
-    }
-
-    m_editNegative = new QPlainTextEdit(m_activeFrame);
-    m_editNegative->setPlaceholderText(ComfyTr::tr("Describe content you want to avoid."));
-    m_editNegative->setFrameShape(QFrame::NoFrame);
-    m_editNegative->document()->setDocumentMargin(2);
-    m_editNegative->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_editNegative->setStyleSheet(QStringLiteral("padding-bottom: 10px;"));
-    m_editNegative->installEventFilter(this);
-    {
-        auto *col = new QWidget(m_activeFrame);
-        m_negativePromptColumn = col;
-        auto *colLay = new QVBoxLayout(col);
-        colLay->setContentsMargins(0, 0, 0, 0);
-        colLay->setSpacing(0);
-        colLay->addWidget(m_editNegative);
-        m_negResizeHandle = new ComfyPromptResizeHandle(
-            m_editNegative,
-            [](int lines) {
-                QJsonObject st = ComfyUIUtils::loadSettingsJson();
-                st.insert(QStringLiteral("negative_prompt_line_count"), lines);
-                ComfyUIUtils::saveSettingsJson(st);
-            },
-            28,
-            m_editNegative);
-        connect(m_negResizeHandle, &ComfyPromptResizeHandle::heightChanged, this, [this]() {
-            updateGeometry();
-            Q_EMIT layoutHeightsChanged();
-        });
-        activeLay->addWidget(col);
-    }
+    m_promptStack = new ComfyPromptStackWidget(m_activeFrame);
+    m_editPrompt = m_promptStack->positiveEditor();
+    m_editNegative = m_promptStack->negativeEditor();
+    activeLay->addWidget(m_promptStack, 0, Qt::AlignTop);
+    connect(m_promptStack, &ComfyPromptStackWidget::layoutHeightsChanged, this, [this]() {
+        if (m_activeFrame)
+            m_activeFrame->updateGeometry();
+        updateGeometry();
+        Q_EMIT layoutHeightsChanged();
+    });
 
     m_comboMask = new QComboBox(m_activeFrame);
     m_comboMask->setToolTip(ComfyTr::tr("Mask source: selection or a paint layer"));
@@ -318,13 +272,21 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     connect(m_editPrompt, &QPlainTextEdit::textChanged, this, [this]() {
         if (m_syncingEditor || !m_regions || !m_activeIndex)
             return;
-        if (currentMode() == EditorMode::Root)
+        if (currentMode() == EditorMode::Root) {
+            pushRootPromptsToDock();
             return;
+        }
         if (currentMode() != EditorMode::Region)
             return;
         (*m_regions)[*m_activeIndex].prompt = m_editPrompt->toPlainText();
         Q_EMIT regionEdited();
         rebuildInactiveChips();
+    });
+    connect(m_editNegative, &QPlainTextEdit::textChanged, this, [this]() {
+        if (m_syncingEditor)
+            return;
+        if (currentMode() == EditorMode::Root)
+            pushRootPromptsToDock();
     });
     connect(m_comboMask, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         if (m_syncingEditor || currentMode() != EditorMode::Region || !m_regions || !m_activeIndex)
@@ -378,11 +340,6 @@ bool ComfyRegionPromptWidget::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
     }
-    if (event->type() == QEvent::FocusIn && (obj == m_editPrompt || obj == m_editNegative)) {
-        m_activeFrame->setStyleSheet(QStringLiteral("QFrame#ActiveRegionWidget { border: 1px solid palette(highlight); }"));
-    } else if (event->type() == QEvent::FocusOut && (obj == m_editPrompt || obj == m_editNegative)) {
-        m_activeFrame->setStyleSheet(QString());
-    }
     return QWidget::eventFilter(obj, event);
 }
 
@@ -412,6 +369,12 @@ void ComfyRegionPromptWidget::setPromptTranslationCode(const QString &code)
     if (m_btnTranslation)
         m_btnTranslation->setText(m_promptTranslationCode.left(2).toUpper());
     m_btnTranslation->setVisible(!code.isEmpty() && code != QLatin1String("disabled"));
+}
+
+void ComfyRegionPromptWidget::setNegativePromptWarningVisible(bool visible)
+{
+    if (m_promptStack)
+        m_promptStack->setNegativeWarningVisible(visible);
 }
 
 void ComfyRegionPromptWidget::setRootPromptEditors(QPlainTextEdit *positive, QPlainTextEdit *negative)
@@ -674,9 +637,8 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
     m_noRegionStrip->setVisible(mode == EditorMode::Unlinked);
     m_editPrompt->setVisible(mode == EditorMode::Root || mode == EditorMode::Region);
     const bool showNeg = mode == EditorMode::Root && m_showNegativePrompt;
-    m_editNegative->setVisible(showNeg);
-    if (m_negativePromptColumn)
-        m_negativePromptColumn->setVisible(showNeg);
+    if (m_promptStack)
+        m_promptStack->setShowNegative(showNeg);
     m_comboMask->setVisible(mode == EditorMode::Region);
     m_btnLink->setVisible(mode == EditorMode::Region);
     m_btnRemove->setVisible(mode == EditorMode::Region);
@@ -688,8 +650,6 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
 
     if (mode == EditorMode::Root) {
         m_headerLabel->setText(ComfyTr::tr("Text prompt common to all regions"));
-        m_editPrompt->setPlaceholderText(
-            ComfyTr::tr("Describe the content you want to see, or leave empty."));
         syncRootPromptsFromDock();
     } else if (mode == EditorMode::Region && m_regions && m_activeIndex) {
         const ComfyUIRemoteDock::Private::RegionEntry &r = m_regions->at(*m_activeIndex);
@@ -702,6 +662,7 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
         if (m_promptHeaderMode == 0)
             m_headerLabel->setText(
                 QStringLiteral("%1 - %2").arg(ComfyRegionLink::regionDisplayName(r, image), ComfyTr::tr("Regional text prompt")));
+        m_editPrompt->setPlaceholderText(ComfyTr::tr("Prompt for this area"));
         m_editPrompt->setPlainText(r.prompt);
         int maskIdx = m_comboMask->findData(r.maskSource);
         if (maskIdx < 0)
@@ -756,21 +717,68 @@ void ComfyRegionPromptWidget::updateNoRegionStrip()
 }
 
 void ComfyRegionPromptWidget::applyCompactLayout(int positiveLines,
-                                                 int negativeLines,
                                                  bool showNegative,
-                                                 bool showResizeHandle)
+                                                 bool showResizeHandle,
+                                                 bool liveLineCounts)
 {
     m_showNegativePrompt = showNegative;
-    if (m_posResizeHandle)
-        m_posResizeHandle->setVisible(showResizeHandle);
-    if (m_negResizeHandle)
-        m_negResizeHandle->setVisible(showNegative && showResizeHandle);
-    applyPromptLineHeights(positiveLines, negativeLines);
+    m_showResizeHandle = showResizeHandle;
+    if (m_promptStack)
+        m_promptStack->setLiveLineCounts(liveLineCounts);
     syncActiveEditorFromRegion();
+    const bool effectiveShowNeg = currentMode() == EditorMode::Root && m_showNegativePrompt;
+    if (m_promptStack)
+        m_promptStack->applyLayout(positiveLines, effectiveShowNeg, showResizeHandle);
+    updateGeometry();
+    adjustSize();
+
+    int compactH = 0;
+    if (m_promptStack)
+        compactH = m_promptStack->layoutSizeHint().height();
+    if (compactH <= 0 && m_editPrompt) {
+        compactH = ComfyPromptLayoutMetrics::stackFrameHeightForLines(
+            m_editPrompt->fontMetrics(), positiveLines, effectiveShowNeg);
+    }
+    if (m_activeFrame && m_activeFrame->isVisible()) {
+        if (auto *lay = qobject_cast<QVBoxLayout *>(m_activeFrame->layout())) {
+            const QMargins mg = lay->contentsMargins();
+            compactH += mg.top() + mg.bottom();
+            for (int i = 0; i < lay->count(); ++i) {
+                QLayoutItem *it = lay->itemAt(i);
+                if (!it || it->widget() == m_promptStack)
+                    continue;
+                if (QWidget *w = it->widget()) {
+                    if (w->isVisible())
+                        compactH += w->height();
+                } else if (QLayout *sub = it->layout()) {
+                    compactH += sub->sizeHint().height();
+                }
+            }
+        }
+    }
+    if (QLayout *root = layout()) {
+        const QMargins rm = root->contentsMargins();
+        compactH += rm.top() + rm.bottom();
+        for (int i = 0; i < root->count(); ++i) {
+            QLayoutItem *it = root->itemAt(i);
+            if (!it)
+                continue;
+            if (QLayout *sub = it->layout())
+                compactH += sub->sizeHint().height();
+        }
+    }
+    if (compactH <= 0)
+        compactH = qMax(minimumSizeHint().height(), sizeHint().height());
+    if (compactH > 0) {
+        setFixedHeight(compactH);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
     qCWarning(KIS_COMFYUI_REMOTE).noquote()
         << QStringLiteral("COMFY_UI_DIAG RegionPrompt.applyCompactLayout posLines=") << positiveLines
-        << QStringLiteral("negLines=") << negativeLines << QStringLiteral("showNeg=") << showNegative
+        << QStringLiteral("showNeg=") << effectiveShowNeg
         << QStringLiteral("resizeHandle=") << showResizeHandle
+        << QStringLiteral("stackH=") << (m_promptStack ? m_promptStack->layoutSizeHint().height() : -1)
+        << QStringLiteral("compactH=") << compactH
         << QStringLiteral("editPromptH=") << (m_editPrompt ? m_editPrompt->height() : -1)
         << QStringLiteral("editNegH=") << (m_editNegative ? m_editNegative->height() : -1)
         << QStringLiteral("widgetH=") << height();
@@ -779,38 +787,21 @@ void ComfyRegionPromptWidget::applyCompactLayout(int positiveLines,
 void ComfyRegionPromptWidget::applyPromptLineHeights()
 {
     QJsonObject st = ComfyUIUtils::loadSettingsJson();
-    const int lines = qBound(1, st.value(QStringLiteral("prompt_line_count")).toInt(2), 10);
-    int negLines = st.value(QStringLiteral("negative_prompt_line_count")).toInt(-1);
-    if (negLines < 1)
-        negLines = lines;
-    else
-        negLines = qBound(1, negLines, 10);
-    applyPromptLineHeights(lines, negLines);
+    const int lines = qBound(1, st.value(QStringLiteral("prompt_line_count")).toInt(3), 10);
+    applyPromptLineHeights(lines);
 }
 
-void ComfyRegionPromptWidget::applyPromptLineHeights(int positiveLines, int negativeLines)
+void ComfyRegionPromptWidget::applyPromptLineHeights(int positiveLines)
 {
-    if (!m_editPrompt || !m_editNegative)
-        return;
-    const QFontMetrics posFm(m_editPrompt->font());
-    const QFontMetrics negFm(m_editNegative->font());
-    const int posH = qBound(28, posFm.lineSpacing() * positiveLines + posFm.height() / 2, 800);
-    const int negH = qBound(28, negFm.lineSpacing() * negativeLines + negFm.height() / 2, 400);
-    m_editPrompt->setFixedHeight(posH);
-    m_editNegative->setFixedHeight(negH);
-    if (m_posResizeHandle)
-        m_posResizeHandle->setVisible(m_editPrompt->isVisible());
-    if (m_negResizeHandle)
-        m_negResizeHandle->setVisible(m_editNegative->isVisible());
+    const int lines =
+        ComfyPromptLayoutMetrics::positiveLinesForGenerateWorkspace(m_showNegativePrompt, positiveLines);
+    if (m_promptStack)
+        m_promptStack->applyLayout(lines, m_showNegativePrompt, m_showResizeHandle);
 }
 
 void ComfyRegionPromptWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    if (m_posResizeHandle)
-        m_posResizeHandle->raise();
-    if (m_negResizeHandle)
-        m_negResizeHandle->raise();
 }
 
 void ComfyRegionPromptWidget::showLinkMenu(QPushButton *anchor)

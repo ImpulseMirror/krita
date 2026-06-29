@@ -5,6 +5,7 @@
 
 #include "ComfyResources.h"
 
+#include <QHash>
 #include <QVector>
 
 namespace ComfyResources {
@@ -548,6 +549,32 @@ QString defaultIpAdapterFaceFileName(Arch arch)
     if (isSdxlLike(arch))
         return QStringLiteral("ip-adapter-faceid-plusv2_sdxl.bin");
     return QString();
+}
+
+QStringList samplerLoraSearchPaths(Arch arch, const QString &loraKey)
+{
+    const QString key = loraKey.trimmed().toLower();
+    if (key.isEmpty())
+        return {};
+
+    static const QHash<QString, QStringList> kSd15 = {
+        { QStringLiteral("lcm"), { QStringLiteral("lcm-lora-sdv1-5.safetensors"),
+                                   QStringLiteral("lcm/sd1.5/pytorch_lora_weights.safetensors") } },
+        { QStringLiteral("hyper"), { QStringLiteral("Hyper-SD15-8steps-CFG-lora") } },
+    };
+    static const QHash<QString, QStringList> kSdxl = {
+        { QStringLiteral("lcm"), { QStringLiteral("lcm-lora-sdxl.safetensors"),
+                                   QStringLiteral("lcm/sdxl/pytorch_lora_weights.safetensors") } },
+        { QStringLiteral("lightning"), { QStringLiteral("sdxl_lightning_8step_lora") } },
+        { QStringLiteral("hyper"), { QStringLiteral("Hyper-SDXL-8steps-CFG-lora") } },
+    };
+
+    if (arch == Arch::Sd15)
+        return kSd15.value(key);
+    // FAITHFUL_PORT: upstream ResourceKind.lora hyper/lcm/lightning keys are sd15/sdxl only — not illu.
+    if (arch == Arch::Sdxl)
+        return kSdxl.value(key);
+    return {};
 }
 
 } // namespace ComfyResources

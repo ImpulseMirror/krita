@@ -151,12 +151,13 @@ void applyStrengthResolvedSamplingToRefine(ComfyWorkflowEngine::RefineParams *re
                                            const QString &dockSampler,
                                            int dockSteps,
                                            double dockCfg,
-                                           double strength0to1)
+                                           double strength0to1,
+                                           bool isLive)
 {
     if (!refine)
         return;
     const ResolvedSamplingInputs sampling = resolveSamplingFromStyle(
-        styleEntry, settings, dockSampler, dockSteps, dockCfg, strength0to1, false);
+        styleEntry, settings, dockSampler, dockSteps, dockCfg, strength0to1, isLive);
     refine->steps = sampling.totalSteps;
     refine->denoise = sampling.denoiseStrength;
     refine->cfg = sampling.cfg;

@@ -121,6 +121,39 @@ void applyFlatComboStyle(QComboBox *combo)
         combo->setStyleSheet(flatComboStyleSheet());
 }
 
+QString toolbarComboStyleSheet()
+{
+    const Palette p = palette();
+    return QStringLiteral(
+               "QComboBox {"
+               "  border: 1px solid %1;"
+               "  border-radius: 3px;"
+               "  background-color: palette(button);"
+               "  padding: 2px 22px 2px 6px;"
+               "  min-height: 20px;"
+               "}"
+               "QComboBox:hover, QComboBox:focus {"
+               "  border-color: palette(highlight);"
+               "}"
+               "QComboBox::drop-down {"
+               "  subcontrol-origin: padding;"
+               "  subcontrol-position: center right;"
+               "  width: 18px;"
+               "  border: none;"
+               "  background: transparent;"
+               "}"
+               "QComboBox QAbstractItemView {"
+               "  selection-color: %2;"
+               "}")
+        .arg(p.line, p.highlight);
+}
+
+void applyToolbarComboStyle(QComboBox *combo)
+{
+    if (combo)
+        combo->setStyleSheet(toolbarComboStyleSheet());
+}
+
 void applyFlatComboStyle(QWidget *widget)
 {
     if (widget)

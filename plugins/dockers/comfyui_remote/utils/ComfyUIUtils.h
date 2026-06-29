@@ -329,6 +329,10 @@ QStringList parseCheckpointNamesFromObjectInfoRoot(const QJsonObject &objectInfo
 void extractLoraFilenamesFromObjectInfo(const QJsonObject &objectInfoRoot, QStringList *outSortedUnique);
 // True if library basename matches a server object_info entry (exact, basename, or subpath suffix).
 bool loraFilenameKnownOnServer(const QString &libraryBasename, const QStringList &serverEntries);
+/// object_info list + remote entries from ComfyFileLibrary (after updateRemoteLoras).
+QStringList mergedServerLoraFilenames(const QStringList &serverLoraFilenames);
+/// Pick exact server list entry for workflow lora_name (subdir paths, not basename only).
+QString preferServerLoraEntry(const QString &resolvedName, const QStringList &serverLoraFilenames);
 
 // §13.75 / §1209 CheckpointInfo: intersect CheckpointLoaderSimple names with ETN model_info metadata filters
 QStringList filterCheckpointNamesWithEtnModelInfo(const QStringList &checkpointLoaderNames, const QJsonDocument &modelInfoResponse);
@@ -358,6 +362,12 @@ struct ResolvedSamplerInputs {
     int minSteps = 1;
     double cfg = 8.0;
 };
+/// Result of resolving a sampler preset's optional LoRA (Python workflow._get_sampling_lora).
+struct SamplerPresetLoraResult {
+    bool ok = true;
+    QString loraFilename;
+    QString errorMessage;
+};
 /// Upstream `workflow.sampling_from_style` + `apply_strength` for refine / inpaint / live.
 struct ResolvedSamplingInputs {
     QString sampler;
@@ -381,13 +391,24 @@ void applyStrengthResolvedSamplingToRefine(ComfyWorkflowEngine::RefineParams *re
                                            const QString &dockSampler,
                                            int dockSteps,
                                            double dockCfg,
-                                           double strength0to1);
+                                           double strength0to1,
+                                           bool isLive = false);
 // §4.5: Live uses live_sampler_preset when set; otherwise dock sampler row.
 ResolvedSamplerInputs resolveSamplerForLive(const ComfyStyleEntry *styleEntry,
                                             const QJsonObject &settings,
                                             const QString &dockSamplerText,
                                             int dockSteps,
                                             double dockCfg);
+/// Live/quality sampler preset name from style + settings (Python style.live_sampler / style.sampler).
+QString liveSamplerPresetName(const ComfyStyleEntry *styleEntry, const QJsonObject &settings);
+/// Match server model list against search-path patterns (Python comfy_client._find_model).
+QString findModelOnServerBySearchPaths(const QStringList &serverModels, const QStringList &searchPaths);
+/// Resolve sampler-preset LoRA for workflow; errors when required file missing on server and locally.
+SamplerPresetLoraResult resolveSamplerPresetLora(const QString &presetName,
+                                                 ComfyResources::Arch arch,
+                                                 const QStringList &serverLoraFilenames);
+/// Append preset LoRA (weight 1.0) when not already in style loras.
+QJsonArray appendSamplerPresetLora(const QJsonArray &styleLoras, const QString &loraFilename);
 
 // §13.55: Control layer default strength/range presets (same structure as ai_diffusion/presets/control.json).
 struct ControlLayerPreset {
@@ -931,12 +952,21 @@ struct DocumentImageResult {
 /// Port `KritaDocument.get_image` — temporarily hides excludeNodes, refreshes projection, exports bounds.
 DocumentImageResult getDocumentImage(KisImageSP image, const QRect &boundsIn, const QList<KisNodeSP> &excludeNodes);
 
-/// `LiveWorkspace.set_result` — composite result onto canvas captured with `exclude_internal=False`.
+/// `LiveWorkspace.set_result` — capture context, optional DiagCross multiply overlay on
+/// static areas, then SourceOver the new server patch at `resultPlacementInDoc`.
 QImage compositeLiveResultPreview(KisImageSP image,
                                   const QRect &contextBoundsInDoc,
                                   const QRect &resultPlacementInDoc,
                                   const QImage &result,
-                                  bool drawGeneratingOverlay = true);
+                                  bool drawGeneratingOverlay = true,
+                                  const QList<KisNodeSP> &excludeNodes = QList<KisNodeSP>());
+/// Same compositing as compositeLiveResultPreview but uses an already-captured context image
+/// (live docker preview must not re-capture the document — that toggles layer visibility).
+QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,
+                                             const QRect &contextBoundsInDoc,
+                                             const QRect &resultPlacementInDoc,
+                                             const QImage &result,
+                                             bool drawGeneratingOverlay = true);
 
 /// Port `model._get_current_image` exclude list — root control layers (not isPartOfImage) + preview layer.
 QList<KisNodeSP> collectInpaintExcludeNodes(KisImageSP image,

@@ -339,20 +339,35 @@ Result prepareLive(const Input &input, const PrepareFlags &flags)
         }
     }
 
-    QRect captureBounds = docBounds;
-    if (out.hasMask) {
-        out.workflowKind = WorkflowKind::RefineRegion;
-        captureBounds = maskPaddedBounds;
-    }
-
     out.maskPaddedBounds = maskPaddedBounds;
     out.selectionOriginalBounds = selectionOriginalBounds;
     out.maskFullDoc = maskFullDoc;
-    out.contextBounds = captureBounds;
+
+    if (out.hasMask)
+        out.workflowKind = WorkflowKind::RefineRegion;
+
+    QRect contextBounds;
+    if (out.hasMask) {
+        if (out.fromRegionLayer)
+            contextBounds = maskPaddedBounds;
+        else
+            contextBounds = ComfyUIUtils::computeInpaintDiffusionBounds(docBounds.width(), docBounds.height(),
+                                                                          maskPaddedBounds, refineInitial);
+    } else {
+        contextBounds = docBounds;
+    }
+    out.contextBounds = contextBounds;
+
+    out.processedRegions =
+        ComfyRegionProcess::processRegions(input.activeRegions, image, input.viewManager, input.rootPositivePrompt);
+    out.effectivePositivePrompt = out.processedRegions.effectivePositive;
+    out.useProcessedPositive =
+        out.processedRegions.mode == ComfyRegionProcess::ProcessRegionsResult::Mode::SingleRegion;
 
     const bool needsCapture = out.hasMask || refineInitial;
     if (needsCapture) {
-        const auto docCapture = ComfyUIUtils::getDocumentImage(image, captureBounds, {});
+        const QRect captureRect = contextBounds.isEmpty() ? docBounds : contextBounds;
+        const auto docCapture = ComfyUIUtils::getDocumentImage(image, captureRect, {});
         if (!docCapture) {
             out.errorMessage = docCapture.errorMessage.isEmpty() ? ComfyTr::tr("Could not export canvas.")
                                                                  : docCapture.errorMessage;
@@ -361,16 +376,11 @@ Result prepareLive(const Input &input, const PrepareFlags &flags)
         out.contextImage = docCapture.image.convertToFormat(QImage::Format_ARGB32);
     }
 
-    out.processedRegions =
-        ComfyRegionProcess::processRegions(input.activeRegions, image, input.viewManager, input.rootPositivePrompt);
-    out.effectivePositivePrompt = out.processedRegions.effectivePositive;
-    out.useProcessedPositive =
-        out.processedRegions.mode == ComfyRegionProcess::ProcessRegionsResult::Mode::SingleRegion;
-
     if (out.hasMask) {
-        out.targetBoundsRelative = maskPaddedBounds.translated(-captureBounds.topLeft());
+        out.targetBoundsRelative = maskPaddedBounds.translated(-contextBounds.topLeft());
+        out.nativeTargetBoundsRelative = out.targetBoundsRelative;
         out.compositingMaskCropped =
-            ComfyUIUtils::cropImageToDocumentRect(maskFullDoc, captureBounds, docBounds);
+            ComfyUIUtils::cropImageToDocumentRect(maskFullDoc, contextBounds, docBounds);
         if (out.contextImage.isNull() || out.compositingMaskCropped.isNull()) {
             out.errorMessage = ComfyTr::tr("Could not crop inpaint context.");
             return out;
@@ -385,18 +395,41 @@ Result prepareLive(const Input &input, const PrepareFlags &flags)
     if (!out.nativeContextSize.isValid() && out.workflowKind == WorkflowKind::Generate)
         out.nativeContextSize = docBounds.size();
 
+    out.nativeContextImage = out.contextImage;
+    out.nativeCompositingMask = out.compositingMaskCropped;
     out.diffusionExtent = out.nativeContextSize;
-    if (out.workflowKind == WorkflowKind::RefineRegion && out.nativeContextSize.isValid()) {
+
+    const bool scaleDiffusionInput = out.hasMask && out.nativeContextSize.isValid();
+    if (scaleDiffusionInput) {
         const ComfyUIUtils::DiffusionPreparedExtent prep =
             ComfyUIUtils::prepareDiffusionInputExtent(out.nativeContextSize, out.arch);
         out.diffusionExtent = prep.initial;
         if (prep.initial.isValid() && prep.initial != out.nativeContextSize) {
+            const double sx = static_cast<double>(prep.initial.width()) / out.nativeContextSize.width();
+            const double sy = static_cast<double>(prep.initial.height()) / out.nativeContextSize.height();
             out.contextImage = out.contextImage.scaled(prep.initial, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-            if (!out.compositingMaskCropped.isNull()) {
-                out.compositingMaskCropped = out.compositingMaskCropped.scaled(
-                    prep.initial, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            out.compositingMaskCropped = out.compositingMaskCropped.scaled(
+                prep.initial, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            if (!out.targetBoundsRelative.isEmpty()) {
+                out.targetBoundsRelative = QRect(qRound(out.targetBoundsRelative.x() * sx),
+                                                 qRound(out.targetBoundsRelative.y() * sy),
+                                                 qRound(out.targetBoundsRelative.width() * sx),
+                                                 qRound(out.targetBoundsRelative.height() * sy));
             }
         }
+    }
+
+    if (out.contextImage.isNull() && !docBounds.isEmpty()) {
+        const QRect captureRect = contextBounds.isEmpty() ? docBounds : contextBounds;
+        const auto docCapture = ComfyUIUtils::getDocumentImage(image, captureRect, {});
+        if (!docCapture) {
+            out.errorMessage = docCapture.errorMessage.isEmpty() ? ComfyTr::tr("Could not export canvas.")
+                                                                 : docCapture.errorMessage;
+            return out;
+        }
+        out.contextImage = docCapture.image.convertToFormat(QImage::Format_ARGB32);
+        if (!out.contextBounds.isValid())
+            out.contextBounds = captureRect;
     }
 
     out.ok = true;

@@ -47,6 +47,9 @@ QString historyEntryHeaderLabel(const ComfyUIRemoteDock::Private::HistoryEntry &
 QString previewLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e);
 QString generatedLayerNameForEntry(const ComfyUIRemoteDock::Private::HistoryEntry &e);
 QString upscaleResultLayerName(int width, int height, qint64 seed);
+
+/// Live apply: trim_text(prompt, 200) + seed — no [Generated] prefix.
+QString liveResultLayerName(const QString &positivePrompt, qint64 seed);
 QPoint historyMaskedPreviewOffset(const ComfyUIRemoteDock::Private::HistoryEntry &e, const QSize &imageSize);
 bool loadImageFileIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QString &path,
                                  const QPoint &offset = QPoint());
@@ -55,6 +58,8 @@ bool loadQImageIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QImage 
 QImage cachedHistoryPreviewImage(const QString &path, QHash<QString, QImage> *cache);
 void trimHistoryPreviewImageCache(QHash<QString, QImage> *cache, int maxEntries = 48);
 void nudgePreviewLayerProjection(KisLayerSP layer);
+/// Rebuild projection after apply/merge so canvas shows new pixels without layer visibility toggle.
+void refreshCanvasProjectionAfterApply(KisImageSP image, KisLayerSP layer);
 KisNodeSP topDirectRootChild(KisNodeSP root);
 void raiseLayerToRootTop(KisViewManager *viewManager, KisImageSP image, KisLayerSP layer,
                          bool waitForCompletion = true);
@@ -82,6 +87,8 @@ void placeImportedLayerForBehavior(KisViewManager *viewManager, KisImageSP image
                                    KisLayerSP activeBefore, const QString &behavior);
 bool commitPreviewLayerForApply(KisViewManager *viewManager, KisImageSP image, KisLayerSP previewLayer,
                                 const QString &committedLayerName, const QString &applyBehavior);
+bool mergeImportedForReplace(KisViewManager *viewManager, KisImageSP image, KisLayerSP imported,
+                             KisLayerSP activeBefore);
 QString applyBehaviorFromSettings(const ComfyUIRemoteDock::Private *d);
 QString historyPathForListItem(const QListWidgetItem *item,
                                const QList<ComfyUIRemoteDock::Private::HistoryEntry> &entries,

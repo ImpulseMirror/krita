@@ -170,7 +170,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             &spinPromptLines,
             1,
             10));
-        spinPromptLines->setValue(ifaceSettings.value(QStringLiteral("prompt_line_count")).toInt(2));
+        spinPromptLines->setValue(ifaceSettings.value(QStringLiteral("prompt_line_count")).toInt(3));
 
         ComfySwitchWidget *switchShowNegative = nullptr;
         QLabel *labelShowNegativeState = nullptr;

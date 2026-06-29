@@ -99,6 +99,9 @@ private Q_SLOTS:
     void testBuildRefineRegionInpaintControlNet();
     void testApplyStrengthResolvedSamplingToRefine();
     void testBuildRefineRegionSplitSigmasAtStrength();
+    void testDiscoverInpaintingWorkflowGraphContext();
+    void testLiveFinalizePreservesRefineRegionGraph();
+    void testBuildRefineRegionSkipsServerColorMatchWithLiveFinalize();
     void testBuildInpaintUseReferenceAndColorMatch();
     void testBuildInpaintRefinementUpscalePass();
     void testCustomInpaintContextAndParams();
@@ -1180,6 +1183,94 @@ void ComfyUIRemoteDockTest::testBuildRefineRegionSplitSigmasAtStrength()
     }
     QVERIFY(splitStep > 0);
     QCOMPARE(splitStep, 3);
+}
+
+void ComfyUIRemoteDockTest::testDiscoverInpaintingWorkflowGraphContext()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sdxl;
+    const QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    QVERIFY(ComfyWorkflowEngine::isInpaintingTemplateWorkflow(wf));
+    QVERIFY(!ComfyWorkflowEngine::isImg2imgRefineWorkflow(wf));
+
+    const ComfyWorkflowEngine::WorkflowGraphContext ctx = ComfyWorkflowEngine::discoverWorkflowGraphContext(wf);
+    QVERIFY(wf.contains(ctx.samplerNodeId));
+    QCOMPARE(wf.value(ctx.samplerNodeId).toObject().value(QStringLiteral("class_type")).toString(),
+             QStringLiteral("SamplerCustomAdvanced"));
+    QCOMPARE(ctx.positiveNodeId, QStringLiteral("5"));
+    QCOMPARE(ctx.negativeNodeId, QStringLiteral("6"));
+    QVERIFY(ctx.samplerNodeId != QStringLiteral("3"));
+}
+
+void ComfyUIRemoteDockTest::testLiveFinalizePreservesRefineRegionGraph()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sdxl;
+    rp.refine.denoise = 0.62;
+    rp.refine.steps = 20;
+    QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    QVERIFY(ComfyWorkflowEngine::isInpaintingTemplateWorkflow(wf));
+
+    QString condId;
+    QString samplerId;
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        const QString cls = it.value().toObject().value(QStringLiteral("class_type")).toString();
+        if (cls == QLatin1String("INPAINT_VAEEncodeInpaintConditioning"))
+            condId = it.key();
+        if (cls == QLatin1String("SamplerCustomAdvanced"))
+            samplerId = it.key();
+    }
+    QVERIFY2(!condId.isEmpty(), "SDXL refine_region must use inpaint conditioning latent");
+    QVERIFY2(!samplerId.isEmpty(), "SamplerCustomAdvanced missing");
+
+    ComfyWorkflowEngine::applyCheckpointStyleOptions(&wf, QString(), 0, ComfyResources::Arch::Sdxl);
+    ComfyWorkflowEngine::applyIpAdapterLayers(&wf, {}, ComfyResources::Arch::Sdxl);
+    ComfyWorkflowEngine::applyControlNetLayers(&wf, {}, ComfyResources::Arch::Sdxl);
+
+    QVERIFY(wf.contains(condId));
+    const QJsonObject sampler = wf.value(samplerId).toObject();
+    const QJsonArray latent =
+        sampler.value(QStringLiteral("inputs")).toObject().value(QStringLiteral("latent_image")).toArray();
+    QVERIFY2(latent.size() >= 2, "sampler latent_image missing");
+    QCOMPARE(latent.at(0).toString(), condId);
+    QCOMPARE(latent.at(1).toInt(), 3);
+}
+
+void ComfyUIRemoteDockTest::testBuildRefineRegionSkipsServerColorMatchWithLiveFinalize()
+{
+    ComfyWorkflowEngine::RefineRegionParams rp;
+    rp.refine.imageName = QStringLiteral("img.png");
+    rp.maskImageName = QStringLiteral("mask.png");
+    rp.refine.arch = ComfyResources::Arch::Sdxl;
+    rp.refine.denoise = 0.75;
+    rp.refine.steps = 20;
+    rp.colorMatch = true;
+    rp.extentWidth = 800;
+    rp.extentHeight = 800;
+    rp.contextExtentWidth = 800;
+    rp.contextExtentHeight = 800;
+    rp.growMaskBy = 10;
+    rp.featherMaskBy = 20;
+    QJsonObject wf = ComfyWorkflowEngine::buildRefineRegion(rp);
+    QVERIFY(rp.colorMatch);
+
+    ComfyWorkflowEngine::applyCheckpointStyleOptions(&wf, QString(), 0, ComfyResources::Arch::Sdxl);
+    ComfyWorkflowEngine::applyIpAdapterLayers(&wf, {}, ComfyResources::Arch::Sdxl);
+    ComfyWorkflowEngine::applyControlNetLayers(&wf, {}, ComfyResources::Arch::Sdxl);
+    ComfyUIUtils::applyPerformancePreferencesToWorkflow(wf);
+
+    for (auto it = wf.constBegin(); it != wf.constEnd(); ++it) {
+        QVERIFY2(it.value().toObject().value(QStringLiteral("class_type")).toString()
+                     != QLatin1String("INPAINT_ColorMatch"),
+                 "live finalize path must keep refine_region off server ColorMatch");
+    }
+    const QJsonArray saveImages =
+        wf.value(QStringLiteral("10")).toObject().value(QStringLiteral("inputs")).toObject().value(QStringLiteral("images")).toArray();
+    QCOMPARE(saveImages.at(0).toString(), QStringLiteral("9"));
 }
 
 void ComfyUIRemoteDockTest::testBuildInpaintUseReferenceAndColorMatch()

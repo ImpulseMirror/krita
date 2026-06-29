@@ -55,7 +55,8 @@ struct ControlUploadOptions {
 };
 
 /// Local LoRA files missing on the connected server.
-QStringList collectMissingLoraUploadPaths(const QStringList &serverLoraFilenames);
+QStringList collectMissingLoraUploadPaths(const QStringList &serverLoraFilenames,
+                                          const QStringList &extraLoraNames = {});
 
 QImage prepareControlLayerImageForUpload(KisImageSP image,
                                          const ComfyControlLayerEntry &entry,

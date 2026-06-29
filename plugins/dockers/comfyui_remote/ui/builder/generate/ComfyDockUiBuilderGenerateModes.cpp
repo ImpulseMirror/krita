@@ -5,9 +5,10 @@
 
 #include "ComfyDockUiBuilderGenerateInternal.h"
 
-#include "ComfyUIRemoteDockShellInternal.h"
+#include "ComfyLiveRunner.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
 #include "ComfyWorkspaceSelectButton.h"
@@ -177,10 +178,15 @@ void buildModeWorkspaceSection(Workspace &ws)
     d->btnImportAnimation->setVisible(false);
 
     d->live.checkLiveMode = new QCheckBox(ComfyTr::tr("Live (periodic img2img from canvas)"));
-    d->live.checkLiveMode->setToolTip(ComfyTr::tr("Every 30 s: export canvas, run img2img, apply result as new layer. Stop by unchecking."));
+    d->live.checkLiveMode->setToolTip(ComfyTr::tr("Continuously watches the canvas and runs img2img when you paint or change prompts."));
     QObject::connect(d->live.checkLiveMode, &QCheckBox::toggled, dock, [dock, d](bool checked) {
-        if (checked) d->liveRt.liveTimer->start(30000);
-        else { d->liveRt.liveTimer->stop(); d->liveRt.livePollTimer->stop(); dock->stopLiveSpinner(); }
+        if (checked)
+            ComfyLiveRunner::startLivePollLoop(dock);
+        else {
+            ComfyLiveRunner::stopLivePollLoop(dock);
+            d->liveRt.livePollTimer->stop();
+            dock->stopLiveSpinner();
+        }
     });
     genContentLayout->addWidget(d->live.checkLiveMode);
     // FAITHFUL_PORT: Live-only checkbox; default-hide so it doesn't leak into the
@@ -200,10 +206,9 @@ void buildModeWorkspaceSection(Workspace &ws)
     genContentLayout->addWidget(d->live.checkLiveRecord);
     // FAITHFUL_PORT: Record is Live-only too; default-hide.
     d->live.checkLiveRecord->setVisible(false);
-    // §13.105: compact progress indicator for Live view (next to live checkbox)
+    // §13.105: progress indicator — parented beside live preview in buildLiveSection().
     d->live.liveSpinner = new LiveSpinnerWidget(dock);
     d->live.liveSpinner->hide();
-    genContentLayout->addWidget(d->live.liveSpinner);
 
 }
 

@@ -98,7 +98,158 @@ private Q_SLOTS:
     void testUpscaleResultLayerNameFormat();
     void testMoveLayerInParentRepositionsImportedLayer();
     void testRaiseLayerToRootTopMovesLayerToStackTop();
+    void testReplaceApplyUsesMergeImportedForReplace();
+    void testLiveResultLayerNameFormat();
+    void testPrepareLiveUsesDiffusionContextBounds();
+    void testLivePollUsesInpaintComposite();
+    void testLiveApplyUsesContextBoundsAndLayerName();
+    void testReplaceApplyNamesActiveLayerAfterMerge();
+    void testLivePollUpdatesCanvasPreviewLayer();
+    void testLivePollDockerPreviewUsesGeneratingOverlay();
+    void testLiveApplyRefreshesCanvasProjection();
+    void testLivePollDoesNotTouchCanvasLayers();
 };
+
+void ComfyUpscaleApplyRegressionTest::testReplaceApplyUsesMergeImportedForReplace()
+{
+    const QString applySource = readPluginSource("history/ComfyHistoryApply.cpp");
+    QVERIFY(!applySource.isEmpty());
+    const QString applyBody = functionBody(applySource, "bool ComfyUIRemoteDock::applyResultFileWithBehavior(");
+    QVERIFY2(!applyBody.isEmpty(), "applyResultFileWithBehavior body not found");
+    QVERIFY(applyBody.contains(QStringLiteral("KisImageBarrierLock")));
+    QVERIFY(applyBody.contains(QStringLiteral("mergeImportedForReplace")));
+    QVERIFY(!applyBody.contains(QStringLiteral("image->mergeDown(imported")));
+
+    const QString internalSource = readPluginSource("history/ComfyHistoryInternal.cpp");
+    QVERIFY(!internalSource.isEmpty());
+    const QString mergeBody = functionBody(internalSource, "bool mergeImportedForReplace(");
+    QVERIFY2(!mergeBody.isEmpty(), "mergeImportedForReplace body not found");
+    QVERIFY(mergeBody.contains(QStringLiteral("image->mergeDown(imported")));
+    QVERIFY(mergeBody.contains(QStringLiteral("image->waitForDone()")));
+
+    const QString tickSource = readPluginSource("runners/live/ComfyLiveRunnerTick.cpp");
+    QVERIFY(tickSource.contains(QStringLiteral("liveApplyInProgress")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLiveResultLayerNameFormat()
+{
+    QCOMPARE(ComfyHistoryInternal::liveResultLayerName(QStringLiteral("a cat on a mat"), 42),
+             QStringLiteral("a cat on a mat (42)"));
+    const QString longPrompt(250, QLatin1Char('x'));
+    const QString trimmed = ComfyHistoryInternal::liveResultLayerName(longPrompt, 7);
+    QVERIFY(trimmed.endsWith(QStringLiteral("(7)")));
+    QVERIFY(trimmed.size() <= 200 + 3 + 10);
+    QVERIFY(!trimmed.startsWith(QStringLiteral("[Generated]")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testPrepareLiveUsesDiffusionContextBounds()
+{
+    const QString source = readPluginSource("workflow/prepare/ComfyPrepareWorkflow.cpp");
+    QVERIFY(!source.isEmpty());
+    const QString body = functionBody(source, "Result prepareLive(");
+    QVERIFY2(!body.isEmpty(), "prepareLive body not found");
+    QVERIFY(body.contains(QStringLiteral("computeInpaintDiffusionBounds")));
+    QVERIFY(body.contains(QStringLiteral("nativeContextImage")));
+    QVERIFY(body.contains(QStringLiteral("nativeTargetBoundsRelative")));
+    QVERIFY(body.contains(QStringLiteral("maskPaddedBounds.translated(-contextBounds.topLeft())")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLivePollUsesInpaintComposite()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY(!pollSource.isEmpty());
+    QVERIFY(pollSource.contains(QStringLiteral("compositeLiveServerResult")));
+
+    const QString internalSource = readPluginSource("runners/live/ComfyLiveRunnerInternal.cpp");
+    QVERIFY(internalSource.contains(QStringLiteral("compositeInpaintServerOntoContext")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLiveApplyUsesContextBoundsAndLayerName()
+{
+    const QString source = readPluginSource("dock/shortcuts/ComfyUIRemoteDockShortcuts.cpp");
+    QVERIFY(!source.isEmpty());
+    const QString body = functionBody(source, "void ComfyUIRemoteDock::slotAiDiffusionApply()");
+    QVERIFY2(!body.isEmpty(), "slotAiDiffusionApply body not found");
+    QVERIFY(body.contains(QStringLiteral("liveResultLayerName")));
+    QVERIFY(body.contains(QStringLiteral("livePrepared.contextBounds")));
+    QVERIFY(!body.contains(QStringLiteral("maskPaddedBounds.isEmpty()")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testReplaceApplyNamesActiveLayerAfterMerge()
+{
+    const QString source = readPluginSource("history/ComfyHistoryApply.cpp");
+    QVERIFY(!source.isEmpty());
+    const QString body = functionBody(source, "bool ComfyUIRemoteDock::applyResultFileWithBehavior(");
+    QVERIFY2(!body.isEmpty(), "applyResultFileWithBehavior body not found");
+    QVERIFY(body.contains(QStringLiteral("nameTarget = activeBefore")));
+    QVERIFY(body.contains(QStringLiteral("refreshCanvasProjectionAfterApply(image, nameTarget)")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLivePollUpdatesCanvasPreviewLayer()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY(!pollSource.isEmpty());
+    QVERIFY(!pollSource.contains(QStringLiteral("updateLiveCanvasPreview")));
+
+    const QString liveSource = readPluginSource("dock/live/ComfyUIRemoteDockLive.cpp");
+    QVERIFY(liveSource.contains(QStringLiteral("removeStaleLiveCanvasPreviewLayer")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLivePollDockerPreviewUsesGeneratingOverlay()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY(pollSource.contains(QStringLiteral("compositeLiveResultPreviewFromContext")));
+    QVERIFY(pollSource.contains(QStringLiteral("applyImage")));
+    QVERIFY(pollSource.contains(QStringLiteral("maskPaddedBounds")));
+
+    const QString captureSource = readPluginSource("utils/document/ComfyUIUtilsDocumentCapture.cpp");
+    QVERIFY(captureSource.contains(QStringLiteral("compositeLiveResultPreviewFromContext")));
+    QVERIFY(captureSource.contains(QStringLiteral("DiagCrossPattern")));
+    QVERIFY(captureSource.contains(QStringLiteral("CompositionMode_Multiply")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLiveApplyRefreshesCanvasProjection()
+{
+    const QString applySource = readPluginSource("history/ComfyHistoryApply.cpp");
+    QVERIFY(applySource.contains(QStringLiteral("refreshCanvasProjectionAfterApply(image, nameTarget)")));
+
+    const QString internalSource = readPluginSource("history/ComfyHistoryInternal.cpp");
+    QVERIFY(internalSource.contains(QStringLiteral("void refreshCanvasProjectionAfterApply(")));
+    QVERIFY(internalSource.contains(QStringLiteral("image->refreshGraphAsync(refreshRoot)")));
+    QVERIFY(internalSource.contains(QStringLiteral("layer->setVisible(false)")));
+
+    const QString shortcutsSource = readPluginSource("dock/shortcuts/ComfyUIRemoteDockShortcuts.cpp");
+    const QString applyBody = functionBody(shortcutsSource, "void ComfyUIRemoteDock::slotAiDiffusionApply()");
+    QVERIFY2(!applyBody.isEmpty(), "slotAiDiffusionApply body not found");
+    QVERIFY(applyBody.contains(QStringLiteral("removeStaleLiveCanvasPreviewLayer")));
+    QVERIFY(applyBody.contains(QStringLiteral("refreshCanvasProjectionAfterApply(image, active)")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLivePollDoesNotTouchCanvasLayers()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY2(!pollSource.contains(QStringLiteral("updateLiveCanvasPreview")),
+             "live poll must not modify canvas layers");
+    QVERIFY2(!pollSource.contains(QStringLiteral("addNode")),
+             "live poll must not add document layers");
+    QVERIFY2(!pollSource.contains(QStringLiteral("getDocumentImage")),
+             "live poll must not re-capture the document (causes canvas flicker)");
+    QVERIFY2(!pollSource.contains(QStringLiteral("compositeLiveResultPreview(")),
+             "live poll must use offline context composite only");
+
+    const QString liveUiSource = readPluginSource("ui/builder/generate/ComfyDockUiBuilderGenerateLive.cpp");
+    QVERIFY(liveUiSource.contains(QStringLiteral("livePreviewRowWidget")));
+    QVERIFY(liveUiSource.contains(QStringLiteral("previewRowLay->addWidget(d->live.liveSpinner")));
+
+    const QString uploadSource = readPluginSource("runners/live/ComfyLiveRunnerUpload.cpp");
+    QVERIFY(uploadSource.contains(QStringLiteral("beginUploadPipeline")));
+    QVERIFY(uploadSource.contains(QStringLiteral("startLiveSpinner")));
+
+    const QString tickSource = readPluginSource("runners/live/ComfyLiveRunnerTick.cpp");
+    QVERIFY(tickSource.contains(QStringLiteral("removeStaleLiveCanvasPreviewLayer")));
+    QVERIFY2(!tickSource.contains(QStringLiteral("getDocumentImage")),
+             "live tick must not re-capture the document every 100ms");
+}
 
 void ComfyUpscaleApplyRegressionTest::testHistorySourcesAvoidDeferredNodeManagerDirectOps()
 {

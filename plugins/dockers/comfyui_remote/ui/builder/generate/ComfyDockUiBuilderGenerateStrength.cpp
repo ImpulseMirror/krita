@@ -96,7 +96,8 @@ void buildStrengthSection(Workspace &ws)
     strengthRow->addWidget(d->generate.spinStrength);
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
-        const int storedStrength = qBound(1, cfg.readEntry("Strength", 100), 100);
+        const int storedStrength =
+            qBound(1, cfg.readEntry("GenerateStrength", cfg.readEntry("Strength", 100)), 100);
         d->generate.spinStrength->setValue(storedStrength);
         if (d->inpaint.sliderStrength)
             d->inpaint.sliderStrength->setValue(storedStrength);

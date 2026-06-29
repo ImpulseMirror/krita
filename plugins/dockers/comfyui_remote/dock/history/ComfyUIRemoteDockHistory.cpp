@@ -138,6 +138,7 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
         m_d->history.listHistory->scrollToBottom();
     syncHistoryListItemWidths(m_d->history.listHistory);
     m_d->history.listHistory->updateOverlayButtons();
+    ComfyUiLayoutDiagnostics::logGenerateHistoryLayout(m_d.data(), "refreshHistoryList");
     dumpUiLayoutDiagnostics("refreshHistoryList");
 }
 

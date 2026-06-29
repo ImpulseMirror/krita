@@ -45,6 +45,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSize>
 #include <QSlider>
 #include <QSpinBox>
@@ -76,9 +77,11 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     ComfyUIRemoteDock *dock = ctx.dock;
     ComfyUIRemoteDock::Private *d = ctx.d;
     shell.contentPage = new QWidget(shell.rootWidget);
+    shell.contentPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     shell.contentLayout = new QVBoxLayout(shell.contentPage);
     shell.contentLayout->setContentsMargins(0, 0, 0, 0);
     shell.contentLayout->setSpacing(0);
+    shell.contentLayout->setAlignment(Qt::AlignTop);
     shell.scroll = new QScrollArea();
     shell.scroll->setWidgetResizable(true);
     shell.scroll->setFrameShape(QFrame::NoFrame);
@@ -87,6 +90,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     shell.scrollLayout = new QVBoxLayout(shell.scrollContent);
     shell.scrollLayout->setContentsMargins(0, 0, 0, 0);
     shell.scrollLayout->setSpacing(0);
+    shell.scrollLayout->setAlignment(Qt::AlignTop);
 
     QGroupBox *connGroup = new QGroupBox(ComfyTr::tr("Connection"));
     QVBoxLayout *connLayout = new QVBoxLayout(connGroup);
@@ -201,12 +205,14 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     // visible UI matches upstream — no "Generate" title bar / frame around the
     // prompt + strength + Generate button stack.
     shell.genGroup = new QGroupBox();
+    shell.genGroup->setObjectName(QStringLiteral("ComfyGenerateGroupBox"));
     d->generate.genGroupBox = shell.genGroup;
     shell.genGroup->setFlat(true);
     shell.genGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
     shell.genLayout = new QVBoxLayout(shell.genGroup);
     shell.genLayout->setContentsMargins(0, 0, 0, 0);
     shell.genLayout->setSpacing(0);
+    shell.genLayout->setAlignment(Qt::AlignTop);
 
     // §5.3 Workspace selector: Generate (sparkle/magic icon), Upscale, Live, Animation, Graph; order and labels per spec
     d->comboWorkspace = new ComfyWorkspaceSelectButton(shell.genGroup);
@@ -242,12 +248,36 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         // §13.169: CustomInpaint — save inpaint UI to document when leaving Generate
         if (prevWorkspace == 0 && idx != 0 && img)
             dock->saveInpaintWorkspaceToDocument();
-        if (idx == 2 && img && d->generate.spinStrength) {
-            KisAnnotationSP liveAnn = img->annotation(liveKey);
-            if (liveAnn && !liveAnn->annotation().isEmpty()) {
-                QJsonObject o = QJsonDocument::fromJson(liveAnn->annotation()).object();
-                double s = o.value(QStringLiteral("strength")).toDouble(0.75);
-                d->generate.spinStrength->setValue(qBound(1, qRound(s * 100.0), 100));
+        if (prevWorkspace != 2 && idx == 2 && d->generate.spinStrength) {
+            KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+            cfg.writeEntry("GenerateStrength", d->generate.spinStrength->value());
+        }
+        if (prevWorkspace == 2 && idx != 2 && d->generate.spinStrength) {
+            KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+            const int generateStrength =
+                qBound(1, cfg.readEntry("GenerateStrength", cfg.readEntry("Strength", 100)), 100);
+            QSignalBlocker bSpin(d->generate.spinStrength);
+            d->generate.spinStrength->setValue(generateStrength);
+            if (d->inpaint.sliderStrength) {
+                QSignalBlocker bSlider(d->inpaint.sliderStrength);
+                d->inpaint.sliderStrength->setValue(generateStrength);
+            }
+        }
+        if (idx == 2 && d->generate.spinStrength) {
+            int strengthPct = 30;
+            if (img) {
+                KisAnnotationSP liveAnn = img->annotation(liveKey);
+                if (liveAnn && !liveAnn->annotation().isEmpty()) {
+                    const QJsonObject o = QJsonDocument::fromJson(liveAnn->annotation()).object();
+                    strengthPct =
+                        qBound(1, qRound(o.value(QStringLiteral("strength")).toDouble(0.3) * 100.0), 100);
+                }
+            }
+            QSignalBlocker bSpin(d->generate.spinStrength);
+            d->generate.spinStrength->setValue(strengthPct);
+            if (d->inpaint.sliderStrength) {
+                QSignalBlocker bSlider(d->inpaint.sliderStrength);
+                d->inpaint.sliderStrength->setValue(strengthPct);
             }
         }
         d->lastWorkspaceIndex = idx;
@@ -285,14 +315,14 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         }
         if (d->generate.btnGenerateAnimation) d->generate.btnGenerateAnimation->setVisible(isAnimation);
         if (d->animFramesRowWidget) d->animFramesRowWidget->setVisible(isAnimation);
-        if (d->live.checkLiveMode) d->live.checkLiveMode->setVisible(isLive);
-        if (d->live.checkLiveRecord) d->live.checkLiveRecord->setVisible(isLive);
+        if (d->live.checkLiveMode) d->live.checkLiveMode->setVisible(false);
+        if (d->live.checkLiveRecord) d->live.checkLiveRecord->setVisible(false);
         if (!isLive) dock->stopLiveSpinner();
-        if (d->batchModeRow) d->batchModeRow->setVisible(isLive || isAnimation);
+        if (d->batchModeRow) d->batchModeRow->setVisible(isAnimation);
         if (isAnimation)
             dock->refreshAnimationTargetLayerCombo();
         dock->updateAnimationTargetLayerRowVisibility();
-        if (d->btnImportAnimation) d->btnImportAnimation->setVisible(isLive || isAnimation);
+        if (d->btnImportAnimation) d->btnImportAnimation->setVisible(isAnimation);
         if (d->generate.regionsGroupBox) d->generate.regionsGroupBox->setVisible(false);
         if (d->generate.controlPreviewGroupBox) d->generate.controlPreviewGroupBox->setVisible(isGenerate);
         if (!isGenerate)
@@ -313,11 +343,13 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         if (d->generate.genContentContainer) d->generate.genContentContainer->setVisible(!isGraph);
         if (d->graphPlaceholderWidget) d->graphPlaceholderWidget->setVisible(isGraph);
         dock->reparentCustomWorkflowEditor(isGraph);
-        if (d->history.histGroupBox) d->history.histGroupBox->setVisible(isGenerate || isGraph);
+        dock->syncHistoryPanelWorkspaceVisibility();
+        if (d->live.livePreviewGroupBox) d->live.livePreviewGroupBox->setVisible(isLive);
         if (d->generate.queueButtonRowWidget)
             d->generate.queueButtonRowWidget->setVisible(isGenerate || isAnimation || isGraph);
         if (d->upscale.upscaleActionRowWidget)
             d->upscale.upscaleActionRowWidget->setVisible(isUpscale);
+        dock->updateLiveWorkspaceUi();
         dock->refreshQueuePopupSupportsBatch();
         dock->updateQueueStatus();
         dock->applyInterfaceAppearanceSettings(); // §3.5: prompt_line_count_live when Live workspace
@@ -332,8 +364,12 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     {
         QHBoxLayout *topRow = new QHBoxLayout();
         topRow->setContentsMargins(0, 0, 0, 0);
+        d->workspaceTopRowLayout = topRow;
         topRow->addWidget(d->comboWorkspace);
         topRow->addWidget(d->generate.comboPreset, 1);
+        ComfyTheme::applyToolbarComboStyle(d->generate.comboPreset);
+        if (d->comboWorkspace && d->generate.comboPreset)
+            d->generate.comboPreset->setMinimumHeight(d->comboWorkspace->sizeHint().height());
         topRow->addWidget(d->upscale.comboUpscaleModel, 1);
         QToolButton *btnTopSettings = new QToolButton(shell.genGroup);
         btnTopSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));

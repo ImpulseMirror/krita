@@ -7,6 +7,10 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyUiLayoutDiagnostics.h"
+
+#include <QProgressBar>
+#include <QScrollArea>
 #include "ComfyStyleCollection.h"
 #include "ComfyStyleLoraListWidget.h"
 #include "ComfyWorkflowEngine.h"
@@ -31,6 +35,7 @@
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QTimer>
+#include <QSignalBlocker>
 #include <QToolTip>
 #include <QCursor>
 // FAITHFUL_PORT: dedicated Android-visible category so `adb logcat -s
@@ -172,7 +177,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     m_d->upscaleRt.upscalePollTimer->setSingleShot(true);
     connect(m_d->upscaleRt.upscalePollTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::slotUpscalePoll);
     m_d->liveRt.liveTimer = new QTimer(this);
-    m_d->liveRt.liveTimer->setSingleShot(true);
+    m_d->liveRt.liveTimer->setInterval(100);
     connect(m_d->liveRt.liveTimer, &QTimer::timeout, this, &ComfyUIRemoteDock::slotLiveTick);
     m_d->liveRt.livePollTimer = new QTimer(this);
     m_d->liveRt.livePollTimer->setSingleShot(true);
@@ -225,10 +230,18 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     const bool isGraph = (ws == 4);
     const bool isGenerate = (ws == 0);
     const bool isUpscale = (ws == 1);
+    if (ws == 2 && m_d->generate.spinStrength) {
+        QSignalBlocker bSpin(m_d->generate.spinStrength);
+        m_d->generate.spinStrength->setValue(30);
+        if (m_d->inpaint.sliderStrength) {
+            QSignalBlocker bSlider(m_d->inpaint.sliderStrength);
+            m_d->inpaint.sliderStrength->setValue(30);
+        }
+    }
     if (m_d->generate.genContentContainer) m_d->generate.genContentContainer->setVisible(!isGraph);
     if (m_d->graphPlaceholderWidget) m_d->graphPlaceholderWidget->setVisible(isGraph);
     reparentCustomWorkflowEditor(isGraph);
-    if (m_d->history.histGroupBox) m_d->history.histGroupBox->setVisible(isGenerate || isGraph);
+    syncHistoryPanelWorkspaceVisibility();
     if (m_d->generate.queueButtonRowWidget)
         m_d->generate.queueButtonRowWidget->setVisible(isGenerate || ws == 3 || isGraph);
     if (m_d->upscale.upscaleActionRowWidget)
@@ -252,6 +265,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     }
 
     updateWelcomeVisibility();
+    updateLiveWorkspaceUi();
     applyInterfaceAppearanceSettings();
     dumpUiLayoutDiagnostics("ctor.afterApplyInterfaceAppearanceSettings");
     updateGenerateOptions();
@@ -277,19 +291,31 @@ ComfyUIRemoteDock::~ComfyUIRemoteDock()
 }
 bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
 {
+    const auto isPromptEditor = [this](QObject *o) -> bool {
+        if (o == m_d->generate.editPrompt || o == m_d->generate.editNegative)
+            return true;
+        if (!m_d->generate.regionPromptWidget)
+            return false;
+        return o == m_d->generate.regionPromptWidget->positivePromptEditor()
+               || o == m_d->generate.regionPromptWidget->negativePromptEditor();
+    };
+    const auto isPositivePromptEditor = [this](QObject *o) -> bool {
+        if (o == m_d->generate.editPrompt)
+            return true;
+        return m_d->generate.regionPromptWidget
+               && o == m_d->generate.regionPromptWidget->positivePromptEditor();
+    };
     // §13.196: Ctrl+Backspace — accept ShortcutOverride so the editor receives a normal Key_Backspace (word delete)
     if (event->type() == QEvent::ShortcutOverride) {
         auto *ke = static_cast<QKeyEvent *>(event);
-        if ((obj == m_d->generate.editPrompt || obj == m_d->generate.editNegative) && ke->key() == Qt::Key_Backspace
-            && (ke->modifiers() & Qt::ControlModifier)) {
+        if (isPromptEditor(obj) && ke->key() == Qt::Key_Backspace && (ke->modifiers() & Qt::ControlModifier)) {
             ke->accept();
             return true;
         }
     }
     if (event->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
-        if ((obj == m_d->generate.editPrompt || obj == m_d->generate.editNegative) && (ke->modifiers() & Qt::ControlModifier)
-            && ke->key() == Qt::Key_Space) {
+        if (isPromptEditor(obj) && (ke->modifiers() & Qt::ControlModifier) && ke->key() == Qt::Key_Space) {
             showPromptTagCompletion(static_cast<QPlainTextEdit *>(obj));
             return true;
         }
@@ -302,7 +328,7 @@ bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
             return true;
         }
     }
-    if (obj == m_d->generate.editPrompt && event->type() == QEvent::KeyPress) {
+    if (isPositivePromptEditor(obj) && event->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && (ke->modifiers() & Qt::ShiftModifier)) {
             slotGenerate();
@@ -310,7 +336,7 @@ bool ComfyUIRemoteDock::eventFilter(QObject *obj, QEvent *event)
         }
     }
     // §8.5 / §13.35 / §13.201: Ctrl+Up / Ctrl+Down — attention weight in positive and negative prompt fields
-    if ((obj == m_d->generate.editPrompt || obj == m_d->generate.editNegative) && event->type() == QEvent::KeyPress) {
+    if (isPromptEditor(obj) && event->type() == QEvent::KeyPress) {
         QKeyEvent *ke = static_cast<QKeyEvent *>(event);
         if ((ke->key() == Qt::Key_Up || ke->key() == Qt::Key_Down) && (ke->modifiers() & Qt::ControlModifier)) {
             auto *edit = static_cast<QPlainTextEdit *>(obj);
@@ -470,9 +496,16 @@ void ComfyUIRemoteDock::setCanvas(KoCanvasBase *canvas)
                 if (liveObj.isEmpty()) {
                     liveObj = uiMeta.object.value(QStringLiteral("live")).toObject();
                 }
+                int strengthPct = 30;
                 if (!liveObj.isEmpty()) {
-                    const double s = liveObj.value(QStringLiteral("strength")).toDouble(0.75);
-                    m_d->generate.spinStrength->setValue(qBound(1, qRound(s * 100.0), 100));
+                    strengthPct =
+                        qBound(1, qRound(liveObj.value(QStringLiteral("strength")).toDouble(0.3) * 100.0), 100);
+                }
+                QSignalBlocker bSpin(m_d->generate.spinStrength);
+                m_d->generate.spinStrength->setValue(strengthPct);
+                if (m_d->inpaint.sliderStrength) {
+                    QSignalBlocker bSlider(m_d->inpaint.sliderStrength);
+                    m_d->inpaint.sliderStrength->setValue(strengthPct);
                 }
             }
             if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0) {
@@ -531,15 +564,57 @@ void ComfyUIRemoteDock::unsetCanvas()
 void ComfyUIRemoteDock::setProgressBarKind(bool isUpload)
 {
     if (!m_d->progressBar) return;
+    const ComfyTheme::Palette theme = ComfyTheme::palette();
+    const QString base = QStringLiteral(
+        "QProgressBar { border: none; margin: 0; padding: 0; min-height: 2px; max-height: 2px;"
+        " background: %1; }"
+        "QProgressBar::chunk { margin: 0; border-radius: 1px; }")
+                             .arg(theme.line);
     // §13.18: upload = theme.progress_alt (amber); generation = default highlight
     if (isUpload) {
-        m_d->progressBar->setStyleSheet(QStringLiteral(
-            "QProgressBar::chunk { background: #ca8a04; border-radius: 2px; }"
-        ));
+        m_d->progressBar->setStyleSheet(base + QStringLiteral(
+            "QProgressBar::chunk { background: %1; }").arg(theme.progressAlt));
     } else {
-        m_d->progressBar->setStyleSheet(QString());
+        m_d->progressBar->setStyleSheet(base + QStringLiteral(
+            "QProgressBar::chunk { background: %1; }").arg(theme.active));
     }
+    m_d->progressBar->setFixedHeight(2);
 }
+
+void ComfyUIRemoteDock::resetProgressBarToIdle()
+{
+    if (!m_d->progressBar)
+        return;
+    m_d->progressBar->setValue(m_d->progressBar->maximum());
+}
+
+#ifdef COMFYUI_ENABLE_TEST_HOOKS
+ComfyUIRemoteDock::LayoutTestAccess ComfyUIRemoteDock::layoutTestAccess() const
+{
+    LayoutTestAccess access;
+    access.progressBar = m_d->progressBar;
+    access.historyGroup = m_d->history.histGroupBox;
+    access.generateChrome = m_d->generate.genGroupBox;
+    access.contentPage = m_d->history.histGroupBox ? m_d->history.histGroupBox->parentWidget() : nullptr;
+    if (!access.contentPage && m_d->progressBar)
+        access.contentPage = m_d->progressBar->parentWidget();
+    if (access.contentPage) {
+        for (QObject *child : access.contentPage->children()) {
+            if (auto *scroll = qobject_cast<QScrollArea *>(child)) {
+                access.generateScroll = scroll;
+                break;
+            }
+        }
+    }
+    return access;
+}
+
+void *ComfyUIRemoteDock::testDockPrivate() const
+{
+    return m_d.data();
+}
+#endif
+
 void ComfyUIRemoteDock::setLiveProgress(int percent)
 {
     setLiveSpinnerProgress(m_d->live.liveSpinner, percent);
@@ -642,8 +717,18 @@ void ComfyUIRemoteDock::dumpUiLayoutDiagnostics(const char *reason)
 void ComfyUIRemoteDock::showEvent(QShowEvent *event)
 {
     QDockWidget::showEvent(event);
-    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
-        syncCompactGenerateLayoutRows(true);
+    if (m_d->comboWorkspace) {
+        const int ws = m_d->comboWorkspace->currentIndex();
+        syncCompactGenerateLayoutRows(ws == 0 || ws == 1 || ws == 2);
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_d || !m_d->comboWorkspace)
+                return;
+            const int ws = m_d->comboWorkspace->currentIndex();
+            syncCompactGenerateLayoutRows(ws == 0 || ws == 1 || ws == 2);
+            ComfyUiLayoutDiagnostics::logGenerateHistoryLayout(m_d.data(), "showEvent.deferred");
+            ComfyUiLayoutDiagnostics::logWorkspaceChromeLayout(m_d.data(), widget(), "showEvent.deferred");
+        });
+    }
     if (!m_uiDiagLoggedShow) {
         m_uiDiagLoggedShow = true;
         dumpUiLayoutDiagnostics("showEvent.first");
@@ -655,8 +740,10 @@ void ComfyUIRemoteDock::resizeEvent(QResizeEvent *event)
     QDockWidget::resizeEvent(event);
     const QSize sz = event->size();
     const int delta = qAbs(sz.height() - m_uiDiagLastSize.height()) + qAbs(sz.width() - m_uiDiagLastSize.width());
-    if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0)
-        syncCompactGenerateLayoutRows(true);
+    if (m_d->comboWorkspace) {
+        const int ws = m_d->comboWorkspace->currentIndex();
+        syncCompactGenerateLayoutRows(ws == 0 || ws == 1 || ws == 2);
+    }
     if (m_uiDiagLastSize.isValid() && delta < 24)
         return;
     m_uiDiagLastSize = sz;

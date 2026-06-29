@@ -94,24 +94,40 @@ void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell)
             shell.contentLayout->addWidget(d->history.histGroupBox, 1);
     }
 
+    if (d->generate.regionsGroupBox && shell.scrollLayout) {
+        shell.scrollLayout->removeWidget(d->generate.regionsGroupBox);
+        d->generate.regionsGroupBox->setParent(shell.rootWidget);
+        d->generate.regionsGroupBox->hide();
+        d->generate.regionsGroupBox->setFixedHeight(0);
+    }
+
+    // FAITHFUL_PORT: compact Generate chrome sits directly on contentPage; history takes
+    // remaining height below. The scroll wrapper only inflated sizeHint and hid history.
+    if (d->generate.genGroupBox && shell.contentLayout && shell.scroll) {
+        if (shell.scrollLayout)
+            shell.scrollLayout->removeWidget(d->generate.genGroupBox);
+        shell.contentLayout->removeWidget(shell.scroll);
+        d->generate.genGroupBox->setParent(shell.contentPage);
+        if (shell.contentLayout->indexOf(d->generate.genGroupBox) < 0)
+            shell.contentLayout->insertWidget(0, d->generate.genGroupBox, 0);
+        delete shell.scroll;
+        shell.scroll = nullptr;
+        shell.scrollContent = nullptr;
+        shell.scrollLayout = nullptr;
+    }
+
+    if (d->live.livePreviewGroupBox && d->generate.genContentContainer) {
+        ComfyUiLayoutDiagnostics::restoreLivePreviewPanelLayout(d, shell.contentPage);
+    }
+
     if (d->generate.regionsGroupBox)
         d->generate.regionsGroupBox->setVisible(false);
 
-    // Progress sits flush under controls, directly above history (FAITHFUL_PORT).
-    if (d->progressBar && shell.contentLayout) {
-        if (QWidget *oldParent = d->progressBar->parentWidget()) {
-            if (QLayout *oldLay = oldParent->layout())
-                oldLay->removeWidget(d->progressBar);
-        }
-        d->progressBar->setParent(shell.contentPage);
-        const int histIndex = d->history.histGroupBox
-                                  ? shell.contentLayout->indexOf(d->history.histGroupBox)
-                                  : -1;
-        if (histIndex >= 0)
-            shell.contentLayout->insertWidget(histIndex, d->progressBar, 0);
-        else
-            shell.contentLayout->addWidget(d->progressBar, 0);
-    }
+    if (shell.contentLayout)
+        shell.contentLayout->activate();
+    if (shell.contentPage)
+        shell.contentPage->updateGeometry();
+
     qCWarning(KIS_COMFYUI_REMOTE).noquote()
         << QStringLiteral("COMFY_UI_DIAG finalizeGenerateWorkspaceLayout histParent=")
         << (d->history.histGroupBox && d->history.histGroupBox->parentWidget()

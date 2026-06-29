@@ -7,6 +7,7 @@
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
+#include "ComfyRegionPromptWidget.h"
 
 #include "ComfyGenerateUi.h"
 
@@ -90,9 +91,17 @@ void ComfyUIRemoteDock::showPromptTagCompletion(QPlainTextEdit *editor)
     if (!editor)
         return;
     QCompleter *comp = nullptr;
-    if (editor == m_d->generate.editPrompt)
+    QPlainTextEdit *positive = m_d->generate.editPrompt;
+    QPlainTextEdit *negative = m_d->generate.editNegative;
+    if (m_d->generate.regionPromptWidget) {
+        if (QPlainTextEdit *rp = m_d->generate.regionPromptWidget->positivePromptEditor())
+            positive = rp;
+        if (QPlainTextEdit *rn = m_d->generate.regionPromptWidget->negativePromptEditor())
+            negative = rn;
+    }
+    if (editor == positive)
         comp = m_d->promptTagCompleter;
-    else if (editor == m_d->generate.editNegative)
+    else if (editor == negative)
         comp = m_d->negativePromptTagCompleter;
     if (!comp || !m_d->tagKeywordModel)
         return;

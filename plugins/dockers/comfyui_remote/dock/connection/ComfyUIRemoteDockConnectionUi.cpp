@@ -5,6 +5,7 @@
 
 #include "ComfyUIRemoteDock.h"
 #include "ComfyConnectionInternal.h"
+#include "ComfyLiveRunner.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyTheme.h"
@@ -93,8 +94,7 @@ void ComfyUIRemoteDock::slotDisconnect()
         m_d->inpaintRt.inpaintPollTimer->stop();
     if (m_d->upscaleRt.upscalePollTimer)
         m_d->upscaleRt.upscalePollTimer->stop();
-    if (m_d->liveRt.liveTimer)
-        m_d->liveRt.liveTimer->stop();
+    ComfyLiveRunner::stopLivePollLoop(this);
     if (m_d->liveRt.livePollTimer)
         m_d->liveRt.livePollTimer->stop();
     if (m_d->generateRt.controlPreviewPollTimer)

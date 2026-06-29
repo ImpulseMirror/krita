@@ -119,6 +119,9 @@ bool ComfyUIRemoteDock::applyResultToNamedRegionLayers(const QString &resultPath
             }
         }
     }
+    if (any) {
+        refreshCanvasProjectionAfterApply(image, KisLayerSP());
+    }
     return any;
 }
 
@@ -252,6 +255,9 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,
         return false;
     }
 
+    KisImageBarrierLock barrier(image);
+    image->waitForDone();
+
     KisLayerSP activeBefore = m_d->viewManager->activeLayer();
     KisLayerSP imported;
     if (!resultBounds.isEmpty()) {
@@ -286,17 +292,21 @@ bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,
     if (beh.isEmpty())
         beh = QStringLiteral("layer");
 
+    KisLayerSP nameTarget = imported;
     if (beh == QLatin1String("replace")) {
-        if (activeBefore && imported && imported != activeBefore) {
-            image->mergeDown(imported, nullptr);
-        }
+        if (activeBefore && imported && imported != activeBefore)
+            mergeImportedForReplace(m_d->viewManager.data(), image, imported, activeBefore);
+        if (activeBefore && layerStillInDocument(image, activeBefore))
+            nameTarget = activeBefore;
         activateAppliedResultLayer(m_d->viewManager.data(), image, imported, activeBefore, beh);
     } else {
         placeImportedLayerForBehavior(m_d->viewManager.data(), image, imported, activeBefore, beh);
         activateAppliedResultLayer(m_d->viewManager.data(), image, imported, activeBefore, beh);
     }
-    if (!committedLayerName.isEmpty() && imported)
-        imported->setName(committedLayerName);
+    image->waitForDone();
+    if (!committedLayerName.isEmpty() && nameTarget && layerStillInDocument(image, nameTarget))
+        nameTarget->setName(committedLayerName);
+    refreshCanvasProjectionAfterApply(image, nameTarget);
     if (m_d->canvas)
         m_d->canvas->updateCanvas();
     return true;

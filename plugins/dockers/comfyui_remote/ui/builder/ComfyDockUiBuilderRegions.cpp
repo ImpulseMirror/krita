@@ -101,11 +101,18 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     d->generate.regionPromptWidget = new ComfyRegionPromptWidget(d->generate.regionsGroupBox);
     d->generate.regionPromptWidget->setPromptHeaderMode(d->promptHeaderMode);
     d->generate.regionPromptWidget->setRootPromptEditors(d->generate.editPrompt, d->generate.editNegative);
-    d->generate.regionPromptWidget->setShowNegativePrompt(d->generate.negativePromptBlock
-                                                          && d->generate.negativePromptBlock->isVisible());
     {
         QJsonObject st = ComfyUIUtils::loadSettingsJson();
+        d->generate.regionPromptWidget->setShowNegativePrompt(st.value(QStringLiteral("show_negative_prompt")).toBool(false));
         d->generate.regionPromptWidget->setPromptTranslationCode(st.value(QStringLiteral("prompt_translation")).toString());
+    }
+    if (QPlainTextEdit *pos = d->generate.regionPromptWidget->positivePromptEditor()) {
+        d->promptTagCompleter->setWidget(pos);
+        pos->installEventFilter(dock);
+    }
+    if (QPlainTextEdit *neg = d->generate.regionPromptWidget->negativePromptEditor()) {
+        d->negativePromptTagCompleter->setWidget(neg);
+        neg->installEventFilter(dock);
     }
     d->generate.regionPromptWidget->bind(&comfyActiveRegionEntries(d), &d->activeRegionIndex);
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::activeIndexChanged, dock, [dock]() {

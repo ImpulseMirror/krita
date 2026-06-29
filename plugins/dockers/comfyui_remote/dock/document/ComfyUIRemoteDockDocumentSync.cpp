@@ -245,8 +245,19 @@ void ComfyUIRemoteDock::mergeDocumentModelIntoUiJson(QJsonObject *ui, KisImageSP
     if (wix >= 0 && wix < wsIds.size())
         ui->insert(QStringLiteral("workspace"), wsIds.at(wix));
     ui->insert(QStringLiteral("style"), encodeStyleIdForDocumentDefaults());
-    if (m_d->generate.spinStrength)
-        ui->insert(QStringLiteral("strength"), m_d->generate.spinStrength->value());
+    if (m_d->generate.spinStrength) {
+        const bool onLiveWorkspace = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2;
+        if (onLiveWorkspace) {
+            KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
+            ui->insert(QStringLiteral("strength"),
+                       cfg.readEntry("GenerateStrength", cfg.readEntry("Strength", 100)));
+            QJsonObject liveObj;
+            liveObj.insert(QStringLiteral("strength"), m_d->generate.spinStrength->value() / 100.0);
+            ui->insert(QStringLiteral("live"), liveObj);
+        } else {
+            ui->insert(QStringLiteral("strength"), m_d->generate.spinStrength->value());
+        }
+    }
     if (m_d->generate.checkRegionOnly)
         ui->insert(QStringLiteral("region_only"), m_d->generate.checkRegionOnly->isChecked());
     if (m_d->generate.checkEditMode)
@@ -355,15 +366,18 @@ void ComfyUIRemoteDock::applyModelFieldsFromUiJson(const QJsonObject &ui)
     if (ui.contains(QStringLiteral("style")))
         applyStyleIdFromDocumentDefaults(ui.value(QStringLiteral("style")).toString());
     if (ui.contains(QStringLiteral("strength")) && m_d->generate.spinStrength) {
-        const QJsonValue sv = ui.value(QStringLiteral("strength"));
-        int pct = 100;
-        if (sv.isDouble()) {
-            const double d = sv.toDouble();
-            pct = (d <= 1.0001) ? qBound(1, qRound(d * 100.0), 100) : qBound(1, qRound(d), 100);
-        } else {
-            pct = qBound(1, sv.toInt(100), 100);
+        const int wsIx = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;
+        if (wsIx != 2) {
+            const QJsonValue sv = ui.value(QStringLiteral("strength"));
+            int pct = 100;
+            if (sv.isDouble()) {
+                const double d = sv.toDouble();
+                pct = (d <= 1.0001) ? qBound(1, qRound(d * 100.0), 100) : qBound(1, qRound(d), 100);
+            } else {
+                pct = qBound(1, sv.toInt(100), 100);
+            }
+            m_d->generate.spinStrength->setValue(pct);
         }
-        m_d->generate.spinStrength->setValue(pct);
     }
     if (ui.contains(QStringLiteral("region_only")) && m_d->generate.checkRegionOnly) {
         QSignalBlocker b(m_d->generate.checkRegionOnly);

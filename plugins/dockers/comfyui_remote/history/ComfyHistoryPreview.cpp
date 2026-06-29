@@ -245,43 +245,6 @@ void ComfyUIRemoteDock::showHistoryPreviewForItem(QListWidgetItem *item)
     setStatusMessage(ComfyTr::tr("Previewing \"%1\". Tap Apply to keep, or tap another thumbnail.", label));
 }
 
-void ComfyUIRemoteDock::updateLiveResultPreview(const QImage &composition, const QPoint &docOffset)
-{
-    if (composition.isNull() || !m_d->viewManager || !m_d->viewManager->image())
-        return;
-    KisImageSP image = m_d->viewManager->image();
-    const QString previewName = QStringLiteral("[Preview] live");
-
-    KisLayerSP previewLayer = findPreviewLayerByUuidString(image, m_d->previewLayerId);
-    KisLayerSP imported;
-    if (previewLayer && previewLayer->name().startsWith(QLatin1String("[Preview]"))) {
-        if (auto *pl = qobject_cast<KisPaintLayer *>(previewLayer.data())) {
-            if (updatePreviewPaintLayerFromImage(m_d->viewManager.data(), image, pl, composition, previewName, docOffset))
-                imported = previewLayer;
-        }
-    }
-    if (!imported) {
-        KisPaintLayerSP pl(new KisPaintLayer(image, previewName, OPACITY_OPAQUE_U8));
-        if (!loadQImageIntoPaintLayer(pl.data(), image, composition, docOffset))
-            return;
-        configurePreviewLayerState(pl, true, true);
-        KisNodeSP root = image->rootLayer();
-        if (!root)
-            return;
-        KisNodeSP above = topDirectRootChild(root);
-        image->addNode(pl, root, above);
-        image->waitForDone();
-        imported = pl;
-        nudgePreviewLayerProjection(imported);
-    }
-
-    m_d->previewLayerId = imported->uuid().toString(QUuid::WithoutBraces);
-    savePreviewLayerIdToDocument(m_d->previewLayerId);
-    nudgePreviewLayerProjection(imported);
-    if (m_d->canvas)
-        m_d->canvas->updateCanvas();
-}
-
 void ComfyUIRemoteDock::clearHistoryPreviewState()
 {
     if (m_d->viewManager && m_d->viewManager->image()) {

@@ -55,7 +55,7 @@ ComfyWorkspaceSelectButton::ComfyWorkspaceSelectButton(QWidget *parent)
 
 void ComfyWorkspaceSelectButton::setCurrentIndex(int index)
 {
-    setWorkspaceIndex(qBound(0, index, count() - 1), false);
+    setWorkspaceIndex(qBound(0, index, count() - 1), true);
 }
 
 void ComfyWorkspaceSelectButton::setWorkspaceIndex(int index, bool notify)

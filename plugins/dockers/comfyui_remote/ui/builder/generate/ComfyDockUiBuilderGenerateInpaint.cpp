@@ -226,7 +226,7 @@ void buildInpaintSection(Workspace &ws)
     ComfyTheme::applyFlatComboStyle(d->inpaint.comboInpaintMode);
     ComfyTheme::applyFlatComboStyle(d->inpaint.comboFillMode);
     ComfyTheme::applyFlatComboStyle(d->inpaint.comboInpaintContext);
-    ComfyTheme::applyFlatComboStyle(d->generate.comboPreset);
+    ComfyTheme::applyToolbarComboStyle(d->generate.comboPreset);
     ComfyTheme::applyFlatComboStyle(d->generate.comboCheckpoint);
     ComfyTheme::applyFlatComboStyle(d->generate.comboQuality);
     ComfyTheme::applyFlatComboStyle(d->generate.comboQueueMode);

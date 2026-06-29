@@ -14,6 +14,7 @@
 
 #include <QSet>
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <QApplication>
 #include <QDir>
@@ -126,6 +127,55 @@ bool loraFilenameKnownOnServer(const QString &libraryBasename, const QStringList
             return true;
     }
     return false;
+}
+
+QStringList mergedServerLoraFilenames(const QStringList &serverLoraFilenames)
+{
+    QSet<QString> seen;
+    for (const QString &s : serverLoraFilenames) {
+        const QString t = s.trimmed();
+        if (!t.isEmpty())
+            seen.insert(t);
+    }
+    ComfyFileLibrary::instance().init();
+    for (const ComfyFileRecord &f : ComfyFileLibrary::instance().loras().files()) {
+        if ((f.source & ComfyFileSourceRemote) && !f.id.trimmed().isEmpty())
+            seen.insert(f.id.trimmed());
+    }
+    QStringList out(seen.begin(), seen.end());
+    out.sort(Qt::CaseInsensitive);
+    return out;
+}
+
+QString preferServerLoraEntry(const QString &resolvedName, const QStringList &serverLoraFilenames)
+{
+    const QString trimmed = resolvedName.trimmed();
+    if (trimmed.isEmpty() || serverLoraFilenames.isEmpty())
+        return trimmed;
+    for (const QString &entry : serverLoraFilenames) {
+        if (entry.compare(trimmed, Qt::CaseInsensitive) == 0)
+            return entry;
+    }
+    const QString base = QFileInfo(trimmed).fileName();
+    QString best;
+    int bestLen = INT_MAX;
+    for (const QString &entry : serverLoraFilenames) {
+        if (entry.compare(base, Qt::CaseInsensitive) == 0)
+            return entry;
+        if (QFileInfo(entry).fileName().compare(base, Qt::CaseInsensitive) == 0) {
+            if (entry.size() < bestLen) {
+                best = entry;
+                bestLen = entry.size();
+            }
+        }
+        if (entry.endsWith(QLatin1Char('/') + base, Qt::CaseInsensitive)) {
+            if (entry.size() < bestLen) {
+                best = entry;
+                bestLen = entry.size();
+            }
+        }
+    }
+    return best.isEmpty() ? trimmed : best;
 }
 
 static QString checkpointModelInfoFilename(const QJsonObject &o)

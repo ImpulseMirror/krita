@@ -31,6 +31,8 @@ void buildGenerateWorkspace(const Context &ctx, DockShell &shell)
     ComfyDockUiBuilderGenerateInternal::buildSeedSizeSection(ws);
     ComfyDockUiBuilderGenerateInternal::buildInpaintSection(ws);
     ComfyDockUiBuilderGenerateInternal::buildModeWorkspaceSection(ws);
+    ComfyDockUiBuilderGenerateInternal::buildLiveSection(ws);
+    ComfyDockUiBuilderGenerateInternal::insertLiveToolbarIntoTopRow(ws);
     ComfyDockUiBuilderGenerateInternal::buildQueueActionsSection(ws);
     ComfyDockUiBuilderGenerateInternal::buildControlPreviewSection(ws);
 

@@ -122,7 +122,8 @@ void StrengthSpinBox::stepBy(int step)
 LiveSpinnerWidget::LiveSpinnerWidget(QWidget *parent)
     : QWidget(parent)
 {
-    setFixedSize(48, 20);
+    // Upstream LivePreviewArea: percent label left, arc spinner right of preview.
+    setFixedSize(56, 18);
     setAttribute(Qt::WA_TransparentForMouseEvents);
     m_timer = new QTimer(this);
     connect(m_timer, &QTimer::timeout, this, [this]() {
@@ -155,13 +156,18 @@ void LiveSpinnerWidget::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::Antialiasing);
     const int w = width();
     const int h = height();
+    const QColor fg = palette().color(QPalette::WindowText);
+    const int arcSize = qMin(h, w / 2);
+    const int textWidth = w - arcSize;
+    p.setPen(fg);
+    p.drawText(QRect(0, 0, textWidth, h),
+               Qt::AlignVCenter | Qt::AlignRight,
+               QString::number(m_progress) + QLatin1Char('%'));
     const int span = 120 * 16;
     const int startAngle = (90 - m_angle) * 16;
     p.setPen(Qt::NoPen);
-    p.setBrush(palette().color(QPalette::WindowText));
-    p.drawPie(2, 0, w - 4, h - 4, startAngle, span);
-    p.setPen(palette().color(QPalette::WindowText));
-    p.drawText(QRect(0, 0, w, h), Qt::AlignCenter, QString::number(m_progress) + QLatin1Char('%'));
+    p.setBrush(fg);
+    p.drawPie(w - arcSize + 1, 1, arcSize - 2, arcSize - 2, startAngle, span);
 }
 
 void setLiveSpinnerProgress(QWidget *spinner, int percent)

@@ -86,6 +86,18 @@ public:
     // without becoming friends of the dock.
     void setStatusMessage(const QString &msg, bool isError = false, bool isWarning = false);
 
+#ifdef COMFYUI_ENABLE_TEST_HOOKS
+    struct LayoutTestAccess {
+        class QProgressBar *progressBar = nullptr;
+        class QWidget *historyGroup = nullptr;
+        class QScrollArea *generateScroll = nullptr;
+        class QWidget *generateChrome = nullptr;
+        class QWidget *contentPage = nullptr;
+    };
+    LayoutTestAccess layoutTestAccess() const;
+    void *testDockPrivate() const;
+#endif
+
 private:
 #if defined(COMFYUI_REMOTE_DOCK_IMPL)
 public:
@@ -99,6 +111,7 @@ public:
     void refreshRegionsList();
     // §13.18: ProgressKind — upload = amber (progress_alt), generation = default
     void setProgressBarKind(bool isUpload);
+    void resetProgressBarToIdle();
     void loadRegionsFromConfig();
     void saveRegionsToConfig();
     void setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout);
@@ -301,11 +314,18 @@ private Q_SLOTS:
     void submitLiveWorkflow(const QJsonObject &workflow);
     void finalizeLiveWorkflowAndSubmit(QJsonObject workflow);
     void buildLivePreparedPrompts(quint32 seed);
-    void updateLiveResultPreview(const QImage &composition, const QPoint &docOffset);
+    /// LivePreviewArea — composite preview in docker panel only (upstream result_available).
+    void showLiveDockerPreview(const QImage &composition);
+    /// Remove mistaken/stale `[Preview] live` canvas layers from earlier builds.
+    void removeStaleLiveCanvasPreviewLayer();
+    void clearLiveDockerPreview();
     ComfyPrepareLiveWorkflow::Input prepareLiveWorkflowInput() const;
     void setLiveProgress(int percent);
     void startLiveSpinner();
     void stopLiveSpinner();
+    /// FAITHFUL_PORT: reparent shared widgets + show/hide live-only chrome (ai_diffusion/ui/live.py)
+    void updateLiveWorkspaceUi();
+    void updateLiveToolbarState();
     void slotAddRegion();
     void slotRemoveRegion();
     void slotMoveRegionUp();
@@ -377,6 +397,7 @@ public:
     QString encodeStyleIdForDocumentDefaults() const;
     QString encodeStyleIdFromPresetCombo(const QComboBox *cb) const;
     QJsonArray currentStyleLoras() const;
+    QJsonArray currentStyleLorasForLive() const;
     void applyStyleIdToPresetCombo(QComboBox *cb, const QString &styleId);
     void applyStyleIdFromDocumentDefaults(const QString &styleId);
     /// Resolve ckpt from selected style/preset (not stale comboCheckpoint after server refresh).
@@ -441,6 +462,8 @@ public:
     void dumpUiLayoutDiagnostics(const char *reason);
     /// Zero-height hidden rows so scroll sizeHint matches visible Generate stack only.
     void syncCompactGenerateLayoutRows(bool compactGenerate);
+    /// FAITHFUL_PORT: HistoryWidget lives only on Generation workspace (upstream stacked pages).
+    void syncHistoryPanelWorkspaceVisibility();
     QScopedPointer<Private> m_d;
 };
 

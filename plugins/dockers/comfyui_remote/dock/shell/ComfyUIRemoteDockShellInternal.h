@@ -52,7 +52,7 @@ private:
     QPointer<QSpinBox> m_steps;
 };
 
-/// §13.105: compact progress for Live view (48×20, 120° arc + percentage).
+/// §13.105: compact progress for Live preview row (percent label + 120° arc).
 class LiveSpinnerWidget : public QWidget
 {
 public:

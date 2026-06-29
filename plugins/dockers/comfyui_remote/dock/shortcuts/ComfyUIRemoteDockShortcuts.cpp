@@ -12,9 +12,14 @@
 #include "ComfyControlRunner.h"
 #include "ComfyGenerateUi.h"
 #include "ComfyHistoryInternal.h"
+#include "ComfyLiveRunner.h"
+#include "ComfyLiveRunnerInternal.h"
 
+#include <QApplication>
+#include <QEventLoop>
 #include <QTimer>
 #include <QRandomGenerator>
+#include <QThread>
 
 #include <kis_image.h>
 #include <kis_group_layer.h>
@@ -25,6 +30,41 @@
 #include "ComfyUIRemoteDockShellInternal.h"
 
 using namespace ComfyDockShellInternal;
+
+namespace {
+
+struct LiveApplyBlock {
+    ComfyUIRemoteDock::Private *d = nullptr;
+    KisImageSP image;
+
+    explicit LiveApplyBlock(ComfyUIRemoteDock::Private *priv)
+        : d(priv)
+    {
+        if (!d)
+            return;
+        d->liveRt.liveApplyInProgress = true;
+        image = d->viewManager ? d->viewManager->image() : nullptr;
+        for (int i = 0; i < 500 && ComfyLiveRunnerInternal::livePipelineBusy(d); ++i) {
+            if (image)
+                image->waitForDone();
+            QThread::msleep(20);
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
+        if (image)
+            image->waitForDone();
+    }
+
+    ~LiveApplyBlock()
+    {
+        if (!d)
+            return;
+        if (image)
+            image->waitForDone();
+        d->liveRt.liveApplyInProgress = false;
+    }
+};
+
+} // namespace
 
 void ComfyUIRemoteDock::slotAiDiffusionToggleWorkspace()
 {
@@ -62,7 +102,8 @@ void ComfyUIRemoteDock::slotAiDiffusionGenerateAction()
         if (m_d->live.checkLiveMode) {
             if (!m_d->live.checkLiveMode->isChecked())
                 m_d->live.checkLiveMode->setChecked(true);
-            slotLiveTick();
+            else
+                ComfyLiveRunner::startLivePollLoop(this);
         }
         break;
     case 3:
@@ -91,7 +132,7 @@ void ComfyUIRemoteDock::slotAiDiffusionCancelCurrent()
         m_d->inpaintRt.inpaintPromptId.clear();
         if (m_d->inpaint.btnInpaint)
             m_d->inpaint.btnInpaint->setEnabled(true);
-        m_d->progressBar->setValue(0);
+        resetProgressBarToIdle();
         QString urlStr = m_d->editServerUrl->text().trimmed();
         if (!urlStr.isEmpty()) {
             QUrl interruptUrl(urlStr);
@@ -115,7 +156,7 @@ void ComfyUIRemoteDock::slotAiDiffusionCancelCurrent()
         m_d->upscaleRt.upscalePromptId.clear();
         if (m_d->upscale.btnUpscale)
             m_d->upscale.btnUpscale->setEnabled(true);
-        m_d->progressBar->setValue(0);
+        resetProgressBarToIdle();
         QString urlStr = m_d->editServerUrl->text().trimmed();
         if (!urlStr.isEmpty()) {
             QUrl interruptUrl(urlStr);
@@ -212,6 +253,13 @@ void ComfyUIRemoteDock::slotAiDiffusionApply()
     }
     // §10.1 Live: apply current live result (same behavior as finished live frame path)
     if (!m_d->liveRt.lastLiveResultImagePath.isEmpty() && QFile::exists(m_d->liveRt.lastLiveResultImagePath)) {
+        const LiveApplyBlock liveApply(m_d.data());
+        removeStaleLiveCanvasPreviewLayer();
+        if (m_d->viewManager) {
+            KisImageSP prepImage = m_d->viewManager->image();
+            if (prepImage)
+                ComfyHistoryInternal::removePreviewLayersFromImage(prepImage, m_d->viewManager.data(), m_d->previewLayerId);
+        }
         QJsonObject ls = ComfyUIUtils::loadSettingsJson();
         QString regionBeh = ls.value(QStringLiteral("apply_region_behavior_live")).toString();
         if (regionBeh.isEmpty())
@@ -230,14 +278,23 @@ void ComfyUIRemoteDock::slotAiDiffusionApply()
             QString liveBeh = ls.value(QStringLiteral("apply_behavior_live")).toString();
             if (liveBeh.isEmpty())
                 liveBeh = QStringLiteral("replace");
+            const QString layerName = ComfyHistoryInternal::liveResultLayerName(
+                m_d->liveRt.livePreparedPositive, static_cast<qint64>(m_d->liveRt.livePreparedSeed));
             QRect resultBounds;
-            if (m_d->liveRt.livePrepared.hasMask && !m_d->liveRt.livePrepared.maskPaddedBounds.isEmpty())
-                resultBounds = m_d->liveRt.livePrepared.maskPaddedBounds;
-            applied = applyResultFileWithBehavior(m_d->liveRt.lastLiveResultImagePath, liveBeh, QString(), resultBounds);
+            if (m_d->liveRt.livePrepared.hasMask && m_d->liveRt.livePrepared.contextBounds.isValid())
+                resultBounds = m_d->liveRt.livePrepared.contextBounds;
+            applied = applyResultFileWithBehavior(m_d->liveRt.lastLiveResultImagePath, liveBeh, layerName,
+                                                  resultBounds);
         }
         if (applied && ls.value(QStringLiteral("new_seed_after_apply")).toBool(false) && m_d->generate.spinSeed) {
             m_d->generate.spinSeed->setValue(
                 static_cast<int>(QRandomGenerator::global()->bounded(static_cast<quint32>(1u << 31))));
+        }
+        if (applied && m_d->viewManager) {
+            KisImageSP image = m_d->viewManager->image();
+            KisLayerSP active = m_d->viewManager->activeLayer();
+            if (image)
+                ComfyHistoryInternal::refreshCanvasProjectionAfterApply(image, active);
         }
         if (m_d->canvas)
             m_d->canvas->updateCanvas();
@@ -253,10 +310,26 @@ void ComfyUIRemoteDock::slotAiDiffusionApplyAlternative()
         setStatusMessage(ComfyTr::tr("No live result to apply yet."), false, true);
         return;
     }
-    if (!applyResultFileWithBehavior(m_d->liveRt.lastLiveResultImagePath, QStringLiteral("layer")))
+    const LiveApplyBlock liveApply(m_d.data());
+    removeStaleLiveCanvasPreviewLayer();
+    const QString layerName = ComfyHistoryInternal::liveResultLayerName(
+        m_d->liveRt.livePreparedPositive, static_cast<qint64>(m_d->liveRt.livePreparedSeed));
+    QRect resultBounds;
+    if (m_d->liveRt.livePrepared.hasMask && m_d->liveRt.livePrepared.contextBounds.isValid())
+        resultBounds = m_d->liveRt.livePrepared.contextBounds;
+    if (!applyResultFileWithBehavior(m_d->liveRt.lastLiveResultImagePath, QStringLiteral("layer"), layerName,
+                                     resultBounds))
         setStatusMessage(ComfyTr::tr("Could not import image."), true);
-    else if (m_d->canvas)
-        m_d->canvas->updateCanvas();
+    else {
+        if (m_d->viewManager) {
+            KisImageSP image = m_d->viewManager->image();
+            KisLayerSP active = m_d->viewManager->activeLayer();
+            if (image)
+                ComfyHistoryInternal::refreshCanvasProjectionAfterApply(image, active);
+        }
+        if (m_d->canvas)
+            m_d->canvas->updateCanvas();
+    }
 }
 void ComfyUIRemoteDock::slotAiDiffusionCreateRegion()
 {

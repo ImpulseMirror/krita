@@ -109,6 +109,9 @@ QString defaultIpAdapterFaceFileName(Arch arch);
 /// True when arch supports ComfyUI_IPAdapter_plus nodes (SD1.5 / SDXL family).
 bool supportsIpAdapterWorkflow(Arch arch);
 
+/// Python resources.search_path(ResourceKind.lora, arch, loraKey) for sampler presets (hyper, lcm, …).
+QStringList samplerLoraSearchPaths(Arch arch, const QString &loraKey);
+
 } // namespace ComfyResources
 
 #endif

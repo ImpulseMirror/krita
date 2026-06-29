@@ -224,42 +224,84 @@ DocumentImageResult getDocumentImage(KisImageSP image, const QRect &boundsIn, co
     return out;
 }
 
-QImage compositeLiveResultPreview(KisImageSP image,
-                                  const QRect &contextBoundsInDoc,
-                                  const QRect &resultPlacementInDoc,
-                                  const QImage &result,
-                                  bool drawGeneratingOverlay)
+namespace {
+
+QImage compositeLiveResultPreviewOntoContext(QImage canvas,
+                                            const QRect &contextBoundsInDoc,
+                                            const QRect &resultPlacementInDoc,
+                                            const QImage &result,
+                                            bool drawGeneratingOverlay)
 {
-    if (result.isNull() || !image)
-        return result;
-    const QRect doc = image->bounds();
-    QRect contextBounds = contextBoundsInDoc.isValid() ? contextBoundsInDoc.intersected(doc) : doc;
-    if (contextBounds.isEmpty())
-        contextBounds = doc;
-    const DocumentImageResult capture = getDocumentImage(image, contextBounds, {});
-    if (!capture)
-        return result;
-    QImage canvas = capture.image.convertToFormat(QImage::Format_ARGB32);
     if (canvas.isNull())
         return result;
 
-    QRect local = resultPlacementInDoc.translated(-contextBounds.topLeft());
+    QRect local = resultPlacementInDoc.translated(-contextBoundsInDoc.topLeft());
     local = local.intersected(QRect(QPoint(0, 0), canvas.size()));
-    if (local.isEmpty())
+    if (local.isEmpty() && !result.isNull())
         local = QRect(QPoint(0, 0), canvas.size().boundedTo(result.size()));
 
     QPainter painter(&canvas);
     if (drawGeneratingOverlay) {
         painter.setCompositionMode(QPainter::CompositionMode_Multiply);
-        painter.fillRect(canvas.rect(), QBrush(QColor(0, 0, 96, 192), Qt::DiagCrossPattern));
+        painter.setBrush(QBrush(QColor(0, 0, 96, 192), Qt::DiagCrossPattern));
+        painter.setPen(Qt::NoPen);
+        painter.drawRect(canvas.rect());
         painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
     }
-    if (result.size() == local.size())
-        painter.drawImage(local.topLeft(), result);
-    else
-        painter.drawImage(local, result.scaled(local.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+    if (!result.isNull()) {
+        if (result.size() == local.size())
+            painter.drawImage(local.topLeft(), result);
+        else
+            painter.drawImage(local, result.scaled(local.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+    }
     painter.end();
     return canvas;
+}
+
+} // namespace
+
+QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,
+                                             const QRect &contextBoundsInDoc,
+                                             const QRect &resultPlacementInDoc,
+                                             const QImage &result,
+                                             bool drawGeneratingOverlay)
+{
+    if (contextCapture.isNull())
+        return result;
+    QImage canvas = contextCapture.convertToFormat(QImage::Format_ARGB32);
+    if (canvas.isNull())
+        return result;
+    return compositeLiveResultPreviewOntoContext(canvas,
+                                                 contextBoundsInDoc,
+                                                 resultPlacementInDoc,
+                                                 result,
+                                                 drawGeneratingOverlay);
+}
+
+QImage compositeLiveResultPreview(KisImageSP image,
+                                  const QRect &contextBoundsInDoc,
+                                  const QRect &resultPlacementInDoc,
+                                  const QImage &result,
+                                  bool drawGeneratingOverlay,
+                                  const QList<KisNodeSP> &excludeNodes)
+{
+    if (!image)
+        return result;
+    const QRect doc = image->bounds();
+    QRect contextBounds = contextBoundsInDoc.isValid() ? contextBoundsInDoc.intersected(doc) : doc;
+    if (contextBounds.isEmpty())
+        contextBounds = doc;
+    const DocumentImageResult capture = getDocumentImage(image, contextBounds, excludeNodes);
+    if (!capture)
+        return result;
+    QImage canvas = capture.image.convertToFormat(QImage::Format_ARGB32);
+    if (canvas.isNull())
+        return result;
+    return compositeLiveResultPreviewOntoContext(canvas,
+                                                 contextBounds,
+                                                 resultPlacementInDoc,
+                                                 result,
+                                                 drawGeneratingOverlay);
 }
 
 QList<KisNodeSP> collectInpaintExcludeNodes(KisImageSP image,

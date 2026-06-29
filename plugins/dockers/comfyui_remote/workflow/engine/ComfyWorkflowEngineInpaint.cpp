@@ -235,14 +235,11 @@ QJsonObject buildRefineRegion(const RefineRegionParams &params)
         }
     }
 
-    if (params.colorMatch) {
-        detail::appendColorMatchAfterDecode(&workflow, QStringLiteral("9"), QStringLiteral("1"), processedMaskId,
-                                    processedMaskSlot, &nextId);
-    }
+    // color_match setting is intentionally not applied server-side on refine_region:
+    // INPAINT_ColorMatch + exclude_mask zeros SaveImage output while VAEDecode stays valid.
+    // Client composite preserves context outside the compositing mask.
 
     QString outputImageId = QStringLiteral("9");
-    if (params.colorMatch)
-        outputImageId = QString::number(nextId - 1);
     outputImageId = detail::appendNsfwFilterAfterDecode(&workflow, outputImageId, params.nsfwFilterSensitivity, &nextId);
 
     while (workflow.contains(QString::number(nextId)))

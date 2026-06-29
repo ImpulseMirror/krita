@@ -103,6 +103,9 @@ WorkflowGraphContext discoverWorkflowGraphContext(const QJsonObject &workflow);
 /// LoadImage(1) + VAEEncode(2) template used by buildRefine (full-canvas img2img).
 bool isImg2imgRefineWorkflow(const QJsonObject &workflow);
 
+/// LoadImage(1) + LoadImage mask(2) template used by buildInpaint / buildRefineRegion.
+bool isInpaintingTemplateWorkflow(const QJsonObject &workflow);
+
 /// Text2img + style options + conditioning + SamplerCustomAdvanced (GAP-A build_generate).
 struct GenerateParams : TextToImageParams {
     GenerationConditioningParams conditioning;

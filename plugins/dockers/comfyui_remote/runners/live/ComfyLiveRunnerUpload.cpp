@@ -5,6 +5,7 @@
 
 #include "ComfyLiveRunner.h"
 #include "ComfyLiveRunnerInternal.h"
+#include "ComfyInpaintRunnerInternal.h"
 
 #include "ComfyControlLayer.h"
 #include "ComfyFileLibrary.h"
@@ -22,7 +23,7 @@
 #include "ComfyUIUtils.h"
 #include "ComfyWorkflowEngine.h"
 
-#include <QDir>
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
@@ -43,17 +44,50 @@
 #include <kis_image.h>
 #include <kis_image_manager.h>
 
+Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 using namespace ComfyLiveRunnerInternal;
+using namespace ComfyInpaintRunnerInternal;
 
 namespace ComfyLiveRunner {
 
 void beginUploadPipeline(ComfyUIRemoteDock *dock)
 {
+    if (livePipelineBusy(dock->m_d.data()))
+        return;
+
+    const ComfyStyleEntry *styleEntry = dock->currentJsonStyleEntry();
+    const QString livePreset =
+        ComfyUIUtils::liveSamplerPresetName(styleEntry, ComfyUIUtils::loadSettingsJson());
+    const QString ckpt = dock->checkpointForGenerate();
+    const ComfyResources::Arch arch =
+        ComfyWorkflowEngine::resolveArch(ckpt, styleEntry ? styleEntry->architecture : QString());
+    const ComfyUIUtils::SamplerPresetLoraResult samplerLora =
+        ComfyUIUtils::resolveSamplerPresetLora(
+            livePreset,
+            arch,
+            ComfyUIUtils::mergedServerLoraFilenames(dock->m_d->comfyServerLoraFilenames));
+    if (!samplerLora.ok) {
+        if (!samplerLora.errorMessage.isEmpty())
+            dock->setStatusMessage(samplerLora.errorMessage, true);
+        return;
+    }
+
+    dock->m_d->liveRt.livePipelineBusy = true;
+    dock->startLiveSpinner();
+    dock->setLiveProgress(0);
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_LIVE beginUploadPipeline strength=")
+        << (dock->m_d->generate.spinStrength ? dock->m_d->generate.spinStrength->value() : -1)
+        << QStringLiteral("seed=") << (dock->m_d->generate.spinSeed ? dock->m_d->generate.spinSeed->value() : -1)
+        << QStringLiteral("editMode=")
+        << (dock->m_d->generate.checkEditMode && dock->m_d->generate.checkEditMode->isChecked());
 
     const QStringList loraPaths =
         dock->m_d->isConnected && dock->m_d->nam
-            ? ComfyUploadPipeline::collectMissingLoraUploadPaths(dock->m_d->comfyServerLoraFilenames)
+            ? ComfyUploadPipeline::collectMissingLoraUploadPaths(
+                  ComfyUIUtils::mergedServerLoraFilenames(dock->m_d->comfyServerLoraFilenames),
+                  samplerLora.loraFilename.isEmpty() ? QStringList() : QStringList { samplerLora.loraFilename })
             : QStringList();
 
     if (loraPaths.isEmpty()) {
@@ -79,7 +113,8 @@ void beginUploadPipeline(ComfyUIRemoteDock *dock)
     };
     handlers.onCancelled = [dock]() {
         dock->m_d->liveRt.liveAwaitingLoraUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
+        dock->stopLiveSpinner();
     };
     handlers.onComplete = [dock](const ComfyUploadPipeline::Result &) {
         dock->m_d->liveRt.liveAwaitingLoraUploads = false;
@@ -87,7 +122,8 @@ void beginUploadPipeline(ComfyUIRemoteDock *dock)
     };
     handlers.onAbort = [dock]() {
         dock->m_d->liveRt.liveAwaitingLoraUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
+        dock->stopLiveSpinner();
     };
     run->start(dock->m_d->editServerUrl->text().trimmed(), loraPaths, {}, std::move(handlers), &dock->m_d->comfyServerLoraFilenames);
 
@@ -98,7 +134,8 @@ void continueAfterLoraUploads(ComfyUIRemoteDock *dock)
 
     dock->m_d->liveRt.liveAwaitingLoraUploads = false;
     if (!dock->m_d->live.checkLiveMode->isChecked()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
+        dock->stopLiveSpinner();
         return;
     }
 
@@ -108,7 +145,8 @@ void continueAfterLoraUploads(ComfyUIRemoteDock *dock)
     if (!dock->m_d->liveRt.livePrepared.ok) {
         if (!dock->m_d->liveRt.livePrepared.errorMessage.isEmpty())
             dock->setStatusMessage(dock->m_d->liveRt.livePrepared.errorMessage, true);
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
+        dock->stopLiveSpinner();
         return;
     }
 
@@ -142,7 +180,7 @@ void continueAfterLoraUploads(ComfyUIRemoteDock *dock)
     };
     handlers.onCancelled = [dock]() {
         dock->m_d->liveRt.liveAwaitingControlUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
     };
     handlers.onComplete = [dock](const ComfyUploadPipeline::Result &result) {
         dock->m_d->liveRt.liveAwaitingControlUploads = false;
@@ -151,7 +189,7 @@ void continueAfterLoraUploads(ComfyUIRemoteDock *dock)
     };
     handlers.onAbort = [dock]() {
         dock->m_d->liveRt.liveAwaitingControlUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
     };
     run->start(dock->m_d->editServerUrl->text().trimmed(), {}, controlItems, std::move(handlers));
 
@@ -172,7 +210,7 @@ void buildPreparedPrompts(ComfyUIRemoteDock *dock, const quint32 liveSeed)
         const QString archKey = ComfyResources::archToKey(prep.arch);
         livePos = ComfyUIUtils::prependInpaintPromptInstructions(livePos, QStringLiteral("fill"), archKey);
     }
-    livePos = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(livePos, dock->currentStyleLoras());
+    livePos = ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(livePos, dock->currentStyleLorasForLive());
     dock->m_d->liveRt.livePreparedPositive = livePos;
 
     const ComfyUIUtils::ResolvedSamplingInputs sampling = ComfyUIUtils::resolveSamplingFromStyle(
@@ -196,12 +234,12 @@ void uploadCanvasAndPrompt(ComfyUIRemoteDock *dock)
 {
 
     if (!dock->m_d->live.checkLiveMode->isChecked() || !dock->m_d->viewManager || !dock->m_d->viewManager->image()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
     QString urlStr = dock->m_d->editServerUrl->text().trimmed();
     if (urlStr.isEmpty()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -212,7 +250,7 @@ void uploadCanvasAndPrompt(ComfyUIRemoteDock *dock)
         if (!dock->m_d->liveRt.livePrepared.ok) {
             if (!dock->m_d->liveRt.livePrepared.errorMessage.isEmpty())
                 dock->setStatusMessage(dock->m_d->liveRt.livePrepared.errorMessage, true);
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
         const quint32 liveSeed =
@@ -231,7 +269,7 @@ void uploadCanvasAndPrompt(ComfyUIRemoteDock *dock)
 
     const QImage canvasImg = dock->m_d->liveRt.livePrepared.contextImage;
     if (canvasImg.isNull()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -240,7 +278,7 @@ void uploadCanvasAndPrompt(ComfyUIRemoteDock *dock)
     tmp->open();
     tmp->close();
     if (!canvasImg.save(tmp->fileName())) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -260,13 +298,13 @@ void uploadCanvasAndPrompt(ComfyUIRemoteDock *dock)
         reply->deleteLater();
         if (!dock->m_d->live.checkLiveMode->isChecked() || reply->error() != QNetworkReply::NoError) {
             if (dock->m_d->live.checkLiveMode->isChecked())
-                dock->m_d->liveRt.liveTimer->start(30000);
+                dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
         dock->m_d->liveRt.liveUploadedImageName =
             QJsonDocument::fromJson(reply->readAll()).object().value(QStringLiteral("name")).toString();
         if (dock->m_d->liveRt.liveUploadedImageName.isEmpty()) {
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
         continueAfterCanvasUpload(dock);
@@ -278,7 +316,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock)
 {
 
     if (!dock->m_d->live.checkLiveMode->isChecked()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -286,7 +324,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock)
         const QImage maskPng =
             ComfyUIUtils::maskPngForComfyUpload(dock->m_d->liveRt.livePrepared.compositingMaskCropped);
         if (maskPng.isNull()) {
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
         QTemporaryFile *tmpMask = new QTemporaryFile(dock);
@@ -294,7 +332,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock)
         tmpMask->open();
         tmpMask->close();
         if (!maskPng.save(tmpMask->fileName())) {
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
 
@@ -315,13 +353,13 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock)
             reply->deleteLater();
             if (!dock->m_d->live.checkLiveMode->isChecked() || reply->error() != QNetworkReply::NoError) {
                 if (dock->m_d->live.checkLiveMode->isChecked())
-                    dock->m_d->liveRt.liveTimer->start(30000);
+                    dock->m_d->liveRt.livePipelineBusy = false;
                 return;
             }
             dock->m_d->liveRt.liveUploadedMaskName =
                 QJsonDocument::fromJson(reply->readAll()).object().value(QStringLiteral("name")).toString();
             if (dock->m_d->liveRt.liveUploadedMaskName.isEmpty()) {
-                dock->m_d->liveRt.liveTimer->start(30000);
+                dock->m_d->liveRt.livePipelineBusy = false;
                 return;
             }
             continueAfterMaskUpload(dock);
@@ -337,7 +375,7 @@ void continueAfterMaskUpload(ComfyUIRemoteDock *dock)
 {
 
     if (!dock->m_d->live.checkLiveMode->isChecked()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -361,7 +399,7 @@ void uploadNextRegionMask(ComfyUIRemoteDock *dock)
 
     if (!dock->m_d->liveRt.liveAwaitingRegionMaskUploads || !dock->m_d->viewManager || !dock->m_d->live.checkLiveMode->isChecked()) {
         dock->m_d->liveRt.liveAwaitingRegionMaskUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -375,7 +413,7 @@ void uploadNextRegionMask(ComfyUIRemoteDock *dock)
         if (region.maskGray.isNull()) {
             dock->setStatusMessage(ComfyTr::tr("Region mask is empty."), true);
             dock->m_d->liveRt.liveAwaitingRegionMaskUploads = false;
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
 
@@ -407,12 +445,12 @@ void uploadNextRegionMask(ComfyUIRemoteDock *dock)
     };
     handlers.onCancelled = [dock]() {
         dock->m_d->liveRt.liveAwaitingRegionMaskUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
     };
     handlers.onComplete = [finishRegionMasks](const ComfyUploadPipeline::Result &) { finishRegionMasks(); };
     handlers.onAbort = [dock]() {
         dock->m_d->liveRt.liveAwaitingRegionMaskUploads = false;
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
     };
     run->start(dock->m_d->editServerUrl->text().trimmed(), {}, maskItems, std::move(handlers));
 
@@ -422,7 +460,7 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
 {
 
     if (!dock->m_d->live.checkLiveMode->isChecked()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -442,7 +480,7 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
         ? ComfyUIUtils::mergeStyleLoraTriggersIntoPositivePrompt(
               ComfyUIUtils::evalWildcards(
                   ComfyUIUtils::stripPromptComments(dock->m_d->generate.editPrompt->toPlainText()).trimmed(), liveSeed),
-              dock->currentStyleLoras())
+              dock->currentStyleLorasForLive())
         : dock->m_d->liveRt.livePreparedPositive;
     const ComfyUIUtils::ResolvedSamplingInputs sampling = ComfyUIUtils::resolveSamplingFromStyle(
         dock->currentJsonStyleEntry(),
@@ -457,15 +495,47 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
               ComfyUIUtils::stripPromptComments(dock->m_d->generate.editNegative->toPlainText()).trimmed(), liveSeed)
         : dock->m_d->liveRt.livePreparedNegative;
 
-    QJsonObject workflow;
     const ComfyResources::Arch workflowArch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
+    {
+        const bool refineRegion =
+            prep.workflowKind == ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion;
+        QImage uploadMask = prep.compositingMaskCropped;
+        if (uploadMask.format() != QImage::Format_Grayscale8)
+            uploadMask = uploadMask.convertToFormat(QImage::Format_Grayscale8);
+        InpaintDiagSnapshot diag;
+        diag.event = QStringLiteral("upload");
+        diag.pluginVersion = ComfyUIUtils::pluginVersion();
+        diag.workflowKind = refineRegion ? QStringLiteral("refine_region") : QStringLiteral("live");
+        diag.archKey = ComfyResources::archToKey(workflowArch);
+        diag.refineRegion = refineRegion;
+        diag.strength0to1 = prep.strength0to1;
+        diag.denoise = sampling.denoiseStrength;
+        diag.useInpaintModel = prep.inpaintParams.useInpaintModel;
+        diag.selectionOriginal = prep.selectionOriginalBounds;
+        diag.maskPaddedBounds = prep.maskPaddedBounds;
+        diag.contextBounds = prep.contextBounds;
+        diag.targetBoundsRelative = prep.targetBoundsRelative;
+        diag.nativeContextSize = prep.nativeContextSize;
+        diag.uploadContextSize = prep.contextImage.size();
+        diag.diffusionExtent = prep.diffusionExtent;
+        diag.grow = prep.preprocess.grow;
+        diag.feather = prep.preprocess.feather;
+        diag.blend = prep.preprocess.blend;
+        diag.imageUploadName = dock->m_d->liveRt.liveUploadedImageName;
+        diag.maskUploadName = dock->m_d->liveRt.liveUploadedMaskName;
+        diag.contextPixels = describeImagePixels(prep.contextImage, QStringLiteral("uploadContext"));
+        diag.maskPixels = describeImagePixels(uploadMask, QStringLiteral("uploadMask"));
+        logLiveDiag(diag);
+    }
+
+    QJsonObject workflow;
     if (prep.workflowKind == ComfyPrepareGenerateWorkflow::WorkflowKind::Generate) {
         KisImageSP image = dock->m_d->viewManager->image();
         ComfyWorkflowEngine::TextToImageParams gen;
         gen.checkpoint = ckptName;
         gen.arch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
         gen.seed = static_cast<qint64>(liveSeed);
-        gen.styleLoras = dock->currentStyleLoras();
+        gen.styleLoras = dock->currentStyleLorasForLive();
         gen.positivePrompt = livePos;
         gen.negativePrompt = liveNeg;
         gen.denoise = 1.0;
@@ -493,7 +563,7 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
         rrp.maskImageName = dock->m_d->liveRt.liveUploadedMaskName;
         rrp.refine.arch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
         rrp.refine.seed = static_cast<qint64>(liveSeed);
-        rrp.refine.styleLoras = dock->currentStyleLoras();
+        rrp.refine.styleLoras = dock->currentStyleLorasForLive();
         rrp.refine.positivePrompt = livePos;
         rrp.refine.negativePrompt = liveNeg;
         rrp.refine.denoise = sampling.denoiseStrength;
@@ -506,7 +576,9 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
         rrp.featherMaskBy = prep.preprocess.feather;
         rrp.blendMaskBy = prep.preprocess.blend;
         rrp.targetBoundsRelative = prep.targetBoundsRelative;
-        rrp.nativeTargetBoundsRelative = prep.targetBoundsRelative;
+        rrp.nativeTargetBoundsRelative = prep.nativeTargetBoundsRelative.isValid()
+                                               ? prep.nativeTargetBoundsRelative
+                                               : prep.targetBoundsRelative;
         rrp.contextExtentWidth = qMax(64, prep.nativeContextSize.width());
         rrp.contextExtentHeight = qMax(64, prep.nativeContextSize.height());
         rrp.extentWidth = qMax(64, prep.diffusionExtent.width());
@@ -521,6 +593,16 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
         rrp.controlNetInpaintFile = inpaintModels.controlNetInpaintFile;
         rrp.fooocusInpaintHead = inpaintModels.fooocusInpaintHead;
         rrp.fooocusInpaintPatch = inpaintModels.fooocusInpaintPatch;
+        const ComfyStyleEntry *styleEntry = dock->currentJsonStyleEntry();
+        // Match inpaint refine_region: quality sampler preset, not live preset.
+        ComfyUIUtils::applyStrengthResolvedSamplingToRefine(
+            &rrp.refine,
+            styleEntry,
+            ComfyUIUtils::loadSettingsJson(),
+            rrp.refine.sampler,
+            rrp.refine.steps,
+            rrp.refine.cfg,
+            prep.strength0to1);
         workflow = ComfyWorkflowEngine::buildRefineRegion(rrp);
     } else {
         ComfyWorkflowEngine::LiveParams lp;
@@ -528,7 +610,7 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
         lp.imageName = dock->m_d->liveRt.liveUploadedImageName;
         lp.arch = workflowArch;
         lp.seed = static_cast<qint64>(liveSeed);
-        lp.styleLoras = dock->currentStyleLoras();
+        lp.styleLoras = dock->currentStyleLorasForLive();
         lp.positivePrompt = livePos;
         lp.negativePrompt = liveNeg;
         lp.denoise = sampling.denoiseStrength;
@@ -542,7 +624,7 @@ void continueAfterRegionMaskUpload(ComfyUIRemoteDock *dock)
     }
 
     if (workflow.isEmpty()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
     finalizeWorkflowAndSubmit(dock, workflow);
@@ -553,7 +635,7 @@ void finalizeWorkflowAndSubmit(ComfyUIRemoteDock *dock, QJsonObject workflow)
 {
 
     if (!dock->m_d->live.checkLiveMode->isChecked()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -568,7 +650,7 @@ void finalizeWorkflowAndSubmit(ComfyUIRemoteDock *dock, QJsonObject workflow)
     const ComfyResources::Arch arch = ComfyWorkflowEngine::resolveArch(ckptName, styleArch);
 
     ComfyWorkflowEngine::applyCheckpointStyleOptions(
-        &workflow, dock->m_d->generateRt.generateStyleVae, dock->m_d->generateRt.generateStyleClipSkip, dock->m_d->generateRt.generateStyleArch);
+        &workflow, dock->m_d->generateRt.generateStyleVae, dock->m_d->generateRt.generateStyleClipSkip, arch);
 
     QList<ComfyWorkflowEngine::IpAdapterLayerInput> ipInputs;
     QList<ComfyWorkflowEngine::ControlNetLayerInput> cnInputs;
@@ -598,33 +680,88 @@ void finalizeWorkflowAndSubmit(ComfyUIRemoteDock *dock, QJsonObject workflow)
         }
     }
 
-    ComfyWorkflowEngine::GenerationConditioningParams conditioning;
-    conditioning.ipLayers = ipInputs;
-    conditioning.controlLayers = cnInputs;
-    conditioning.regions = dock->m_d->liveRt.liveRegionalInputs;
-    conditioning.editReference =
-        ComfyResources::supportsEditInstructions(arch)
-        || (dock->m_d->generate.checkEditMode && dock->m_d->generate.checkEditMode->isChecked());
+    const bool img2imgRefine = ComfyWorkflowEngine::isImg2imgRefineWorkflow(workflow);
+    const bool inpaintWorkflow = ComfyWorkflowEngine::isInpaintingTemplateWorkflow(workflow);
+    const bool hasExtraConditioning = !ipInputs.isEmpty() || !cnInputs.isEmpty()
+        || dock->m_d->liveRt.liveRegionalInputs.size() >= 2;
 
-    ComfyWorkflowEngine::WorkflowGraphContext ctx = ComfyWorkflowEngine::discoverWorkflowGraphContext(workflow);
-    ComfyWorkflowEngine::applyGenerationConditioning(&workflow, conditioning, ctx, arch);
+    if (inpaintWorkflow) {
+        // buildRefineRegion / buildInpaint already finish sampler + NSFW (same as inpaint submit).
+        ComfyWorkflowEngine::applyIpAdapterLayers(&workflow, ipInputs, arch);
+        ComfyWorkflowEngine::applyControlNetLayers(&workflow, cnInputs, arch);
+    } else {
+        ComfyWorkflowEngine::GenerationConditioningParams conditioning;
+        conditioning.ipLayers = ipInputs;
+        conditioning.controlLayers = cnInputs;
+        conditioning.regions = dock->m_d->liveRt.liveRegionalInputs;
+        conditioning.editReference =
+            !img2imgRefine
+            && (ComfyResources::supportsEditInstructions(arch)
+                || (dock->m_d->generate.checkEditMode && dock->m_d->generate.checkEditMode->isChecked()));
 
-    if (ComfyWorkflowEngine::usesSamplerCustomAdvanced(arch)) {
-        double denoise = prep.strength0to1;
-        if (workflow.contains(ctx.samplerNodeId)) {
-            denoise = workflow.value(ctx.samplerNodeId)
-                          .toObject()
-                          .value(QStringLiteral("inputs"))
-                          .toObject()
-                          .value(QStringLiteral("denoise"))
-                          .toDouble(denoise);
+        ComfyWorkflowEngine::WorkflowGraphContext ctx = ComfyWorkflowEngine::discoverWorkflowGraphContext(workflow);
+        if (!img2imgRefine || hasExtraConditioning)
+            ComfyWorkflowEngine::applyGenerationConditioning(&workflow, conditioning, ctx, arch);
+
+        if (ComfyWorkflowEngine::usesSamplerCustomAdvanced(arch)) {
+            double denoise = prep.strength0to1;
+            if (workflow.contains(ctx.samplerNodeId)) {
+                denoise = workflow.value(ctx.samplerNodeId)
+                              .toObject()
+                              .value(QStringLiteral("inputs"))
+                              .toObject()
+                              .value(QStringLiteral("denoise"))
+                              .toDouble(denoise);
+            }
+            ComfyWorkflowEngine::finishWorkflowWithSamplerCustom(
+                &workflow, ctx.samplerNodeId, arch, ctx.extentWidth, ctx.extentHeight, denoise);
         }
-        ComfyWorkflowEngine::finishWorkflowWithSamplerCustom(
-            &workflow, ctx.samplerNodeId, arch, ctx.extentWidth, ctx.extentHeight, denoise);
+
+        ComfyWorkflowEngine::applyNsfwFilterToWorkflowOutput(&workflow, ComfyUIUtils::settingsNsfwFilterSensitivity());
     }
 
     ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);
-    ComfyWorkflowEngine::applyNsfwFilterToWorkflowOutput(&workflow, ComfyUIUtils::settingsNsfwFilterSensitivity());
+
+    {
+        QString latentPath;
+        const QString graphSummary = summarizeWorkflowGraph(workflow, &latentPath);
+        dock->m_d->liveRt.liveDiagLatentPath = latentPath;
+        dock->m_d->liveRt.liveDiagArchKey = ComfyResources::archToKey(arch);
+        double workflowDenoise = prep.strength0to1;
+        if (workflow.contains(QStringLiteral("8"))) {
+            workflowDenoise = workflow.value(QStringLiteral("8"))
+                                .toObject()
+                                .value(QStringLiteral("inputs"))
+                                .toObject()
+                                .value(QStringLiteral("denoise"))
+                                .toDouble(workflowDenoise);
+        }
+        dock->m_d->liveRt.liveDiagDenoise = workflowDenoise;
+        const bool refineRegion =
+            prep.workflowKind == ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion;
+        InpaintDiagSnapshot diag;
+        diag.event = QStringLiteral("build");
+        diag.pluginVersion = ComfyUIUtils::pluginVersion();
+        diag.workflowKind = refineRegion ? QStringLiteral("refine_region") : QStringLiteral("live");
+        diag.archKey = dock->m_d->liveRt.liveDiagArchKey;
+        diag.checkpoint = ckptName;
+        diag.strength0to1 = prep.strength0to1;
+        diag.denoise = workflowDenoise;
+        diag.useInpaintModel = prep.inpaintParams.useInpaintModel;
+        diag.refineRegion = refineRegion;
+        diag.contextBounds = prep.contextBounds;
+        diag.targetBoundsRelative = prep.targetBoundsRelative;
+        diag.nativeContextSize = prep.nativeContextSize;
+        diag.diffusionExtent = prep.diffusionExtent;
+        diag.imageUploadName = dock->m_d->liveRt.liveUploadedImageName;
+        diag.maskUploadName = dock->m_d->liveRt.liveUploadedMaskName;
+        diag.graphSummary = graphSummary;
+        diag.latentPath = latentPath;
+        logLiveDiag(diag);
+        qCWarning(KIS_COMFYUI_REMOTE).nospace()
+            << "COMFY_LIVE workflow latentPath=" << latentPath << " graph=" << graphSummary;
+    }
+
     submitWorkflow(dock, workflow);
 
 }
@@ -633,12 +770,12 @@ void submitWorkflow(ComfyUIRemoteDock *dock, const QJsonObject &workflow)
 {
 
     if (!dock->m_d->live.checkLiveMode->isChecked() || !dock->m_d->nam) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
     QString urlStr = dock->m_d->editServerUrl->text().trimmed();
     if (urlStr.isEmpty()) {
-        dock->m_d->liveRt.liveTimer->start(30000);
+        dock->m_d->liveRt.livePipelineBusy = false;
         return;
     }
 
@@ -651,17 +788,20 @@ void submitWorkflow(ComfyUIRemoteDock *dock, const QJsonObject &workflow)
     submitReq.expectedPromptId = expectedPromptId;
     ComfyPromptClient::submitPrompt(dock->m_d->nam, urlStr, submitReq, dock,
                                     [dock, expectedPromptId](const ComfyPromptClient::SubmitResult &result) {
-        if (!dock->m_d->live.checkLiveMode->isChecked())
+        if (!dock->m_d->live.checkLiveMode->isChecked()) {
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
+        }
         if (!result.ok) {
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
         if (result.promptId != expectedPromptId) {
             dock->setStatusMessage(ComfyTr::tr("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
-            dock->m_d->liveRt.liveTimer->start(30000);
+            dock->m_d->liveRt.livePipelineBusy = false;
             return;
         }
+        dock->m_d->liveRt.liveScheduler.notifyGenerationStarted(QDateTime::currentMSecsSinceEpoch());
         dock->m_d->liveRt.livePromptId = result.promptId;
         dock->m_d->liveRt.livePollCount = 0;
         dock->startLiveSpinner();

@@ -137,9 +137,11 @@ QString inpaintFailureVerdict(double rawNonBlack, double compositeNonBlack, cons
     return QStringLiteral("ok");
 }
 
-void logInpaintDiag(const InpaintDiagSnapshot &s)
+namespace {
+
+void logDiagSnapshot(const InpaintDiagSnapshot &s, QLatin1String tag)
 {
-    QString msg = QStringLiteral("INPAINT_DIAG event=%1").arg(s.event);
+    QString msg = QStringLiteral("%1 event=%2").arg(tag, s.event);
     appendField(&msg, "plugin", s.pluginVersion);
     appendField(&msg, "workflowKind", s.workflowKind);
     appendField(&msg, "arch", s.archKey);
@@ -180,6 +182,18 @@ void logInpaintDiag(const InpaintDiagSnapshot &s)
     appendField(&msg, "serverPx", s.serverPixels);
     appendField(&msg, "outputPx", s.outputPixels);
     qCWarning(KIS_COMFYUI_REMOTE).noquote() << msg;
+}
+
+} // namespace
+
+void logInpaintDiag(const InpaintDiagSnapshot &s)
+{
+    logDiagSnapshot(s, QLatin1String("INPAINT_DIAG"));
+}
+
+void logLiveDiag(const InpaintDiagSnapshot &s)
+{
+    logDiagSnapshot(s, QLatin1String("LIVE_DIAG"));
 }
 
 QString describeImagePixels(const QImage &image, const QString &label)

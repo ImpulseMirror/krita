@@ -81,7 +81,7 @@ void failGeneratePoll(ComfyUIRemoteDock *dock, const QString &promptId, const QS
                       bool removePendingHistory = false)
 {
     dock->setStatusMessage(msg, true);
-    dock->m_d->progressBar->setValue(0);
+    dock->resetProgressBarToIdle();
     dock->m_d->currentPromptId.clear();
     if (removePendingHistory)
         dock->m_d->history.pendingHistoryByPromptId.remove(promptId);
@@ -91,7 +91,7 @@ void failGeneratePoll(ComfyUIRemoteDock *dock, const QString &promptId, const QS
 void failGenerateDownload(ComfyUIRemoteDock *dock, const QString &msg)
 {
     dock->setStatusMessage(msg, true);
-    dock->m_d->progressBar->setValue(0);
+    dock->resetProgressBarToIdle();
     advanceGenerateJobQueue(dock, false);
 }
 

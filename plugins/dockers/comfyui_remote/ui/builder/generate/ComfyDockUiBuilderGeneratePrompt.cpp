@@ -151,10 +151,16 @@ void buildPromptSection(Workspace &ws)
 
     // §13.48: Tag autocomplete — shared model, Ctrl+Space in positive/negative prompts
     QObject::connect(d->promptTagCompleter, QOverload<const QString &>::of(&QCompleter::activated), dock, [dock, d](const QString &text) {
-        dock->insertPromptTagCompletion(d->generate.editPrompt, text);
+        QPlainTextEdit *pos = d->generate.regionPromptWidget
+                                  ? d->generate.regionPromptWidget->positivePromptEditor()
+                                  : d->generate.editPrompt;
+        dock->insertPromptTagCompletion(pos, text);
     });
     QObject::connect(d->negativePromptTagCompleter, QOverload<const QString &>::of(&QCompleter::activated), dock, [dock, d](const QString &text) {
-        dock->insertPromptTagCompletion(d->generate.editNegative, text);
+        QPlainTextEdit *neg = d->generate.regionPromptWidget
+                                  ? d->generate.regionPromptWidget->negativePromptEditor()
+                                  : d->generate.editNegative;
+        dock->insertPromptTagCompletion(neg, text);
     });
     dock->refreshPromptTagCompleter();
     QObject::connect(d->generate.editPrompt, &QPlainTextEdit::textChanged, dock, &ComfyUIRemoteDock::updateUpscaleUsePromptLabel);

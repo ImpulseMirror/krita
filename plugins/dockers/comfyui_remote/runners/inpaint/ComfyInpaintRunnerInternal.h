@@ -65,6 +65,9 @@ QString inpaintFailureVerdict(double rawNonBlack, double compositeNonBlack, cons
 
 void logInpaintDiag(const InpaintDiagSnapshot &snap);
 
+/// Grep logcat with: adb logcat | grep LIVE_DIAG
+void logLiveDiag(const InpaintDiagSnapshot &snap);
+
 QImage cropContextResultToTarget(const QImage &image, const QRect &contextBounds, const QRect &targetBounds);
 
 struct InpaintCompositeParams {

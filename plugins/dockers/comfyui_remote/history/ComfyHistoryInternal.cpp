@@ -337,6 +337,22 @@ QString upscaleResultLayerName(int width, int height, qint64 seed)
     return QStringLiteral("[Upscale] %1x%2 (%3)").arg(width).arg(height).arg(seed);
 }
 
+QString liveResultLayerName(const QString &positivePrompt, qint64 seed)
+{
+    QString s = ComfyUIUtils::stripPromptComments(positivePrompt).trimmed();
+    s.replace(QRegularExpression(QStringLiteral("<lora:[^>]*>")), QString());
+    s.replace(QRegularExpression(QStringLiteral("<layer:[^>]*>")), QString());
+    s = s.trimmed();
+    if (s.isEmpty())
+        s = QStringLiteral("result");
+    s.replace(QRegularExpression(QStringLiteral("[\r\n\t]+")), QStringLiteral(" "));
+    s = s.simplified();
+    const int maxLen = 200;
+    if (s.size() > maxLen)
+        s = s.left(maxLen).trimmed() + QStringLiteral("…");
+    return QStringLiteral("%1 (%2)").arg(s).arg(seed);
+}
+
 QPoint historyMaskedPreviewOffset(const ComfyUIRemoteDock::Private::HistoryEntry &e, const QSize &imageSize)
 {
     if (!e.hasMask)
@@ -522,6 +538,37 @@ void nudgePreviewLayerProjection(KisLayerSP layer)
     const QString op = layer->compositeOpId();
     if (!op.isEmpty())
         layer->setCompositeOpId(op);
+}
+
+void refreshCanvasProjectionAfterApply(KisImageSP image, KisLayerSP layer)
+{
+    if (!image)
+        return;
+
+    KisNodeSP refreshRoot = image->rootLayer();
+    if (layer && layerStillInDocument(image, layer))
+        refreshRoot = layer;
+
+    if (KisPaintLayer *pl = qobject_cast<KisPaintLayer *>(layer.data())) {
+        QRect dirty = pl->extent();
+        if (!dirty.isValid())
+            dirty = image->bounds();
+        if (dirty.isValid())
+            pl->setDirty(dirty);
+    }
+
+    image->refreshGraphAsync(refreshRoot);
+    image->waitForDone();
+
+    // Visibility toggle is what users did manually when projection stayed stale.
+    if (layer && layerStillInDocument(image, layer) && layer->visible()) {
+        layer->setVisible(false);
+        image->refreshGraphAsync(refreshRoot);
+        image->waitForDone();
+        layer->setVisible(true);
+        image->refreshGraphAsync(refreshRoot);
+        image->waitForDone();
+    }
 }
 
 bool loadImageFileIntoPaintLayer(KisPaintLayer *pl, KisImageSP image, const QString &path, const QPoint &offset)
@@ -747,6 +794,45 @@ bool commitPreviewLayerForApply(KisViewManager *viewManager,
     }
     image->waitForDone();
     activateAppliedResultLayer(viewManager, image, previewLayer, activeBefore, beh);
+    KisLayerSP resultLayer = previewLayer;
+    if (beh == QLatin1String("replace") && activeBefore && layerStillInDocument(image, activeBefore))
+        resultLayer = activeBefore;
+    refreshCanvasProjectionAfterApply(image, resultLayer);
+    return true;
+}
+
+bool mergeImportedForReplace(KisViewManager *viewManager,
+                             KisImageSP image,
+                             KisLayerSP imported,
+                             KisLayerSP activeBefore)
+{
+    if (!image || !imported || !activeBefore || imported.data() == activeBefore.data())
+        return false;
+
+    image->waitForDone();
+    if (!layerStillInDocument(image, imported) || !layerStillInDocument(image, activeBefore))
+        return false;
+
+    KisNodeSP parent = activeBefore->parent();
+    if (!parent)
+        return false;
+
+    const bool directlyAbove = imported->parent().data() == parent.data()
+                               && imported->prevSibling().data() == activeBefore.data();
+    if (!directlyAbove)
+        moveLayerInParent(viewManager, image, imported, parent, activeBefore, true);
+
+    image->waitForDone();
+    if (!layerStillInDocument(image, imported) || !layerStillInDocument(image, activeBefore))
+        return false;
+    if (imported->prevSibling().data() != activeBefore.data()) {
+        qCWarning(KIS_COMFYUI_REMOTE).noquote()
+            << QStringLiteral("mergeImportedForReplace: imported not above active layer, skip merge");
+        return false;
+    }
+
+    image->mergeDown(imported, nullptr);
+    image->waitForDone();
     return true;
 }
 
