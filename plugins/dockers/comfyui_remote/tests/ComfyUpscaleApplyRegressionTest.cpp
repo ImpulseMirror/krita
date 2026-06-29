@@ -106,6 +106,10 @@ private Q_SLOTS:
     void testReplaceApplyNamesActiveLayerAfterMerge();
     void testLivePollUpdatesCanvasPreviewLayer();
     void testLivePollDockerPreviewUsesGeneratingOverlay();
+    void testLiveMaskedPreviewUsesSetResultComposite();
+    void testLiveApplyRecompositesWithFeatherAtApplyTime();
+    void testLiveApplyBothShortcutPathsUseResolveImagePath();
+    void testLivePollCachesRawServerSeparatelyFromApplyImage();
     void testLiveApplyRefreshesCanvasProjection();
     void testLivePollDoesNotTouchCanvasLayers();
 };
@@ -206,6 +210,65 @@ void ComfyUpscaleApplyRegressionTest::testLivePollDockerPreviewUsesGeneratingOve
     QVERIFY(captureSource.contains(QStringLiteral("compositeLiveResultPreviewFromContext")));
     QVERIFY(captureSource.contains(QStringLiteral("DiagCrossPattern")));
     QVERIFY(captureSource.contains(QStringLiteral("CompositionMode_Multiply")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLiveMaskedPreviewUsesSetResultComposite()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY2(!pollSource.contains(QStringLiteral("dockerPreview = applyImage")),
+             "masked live preview must use set_result composite, not raw applyImage");
+    QVERIFY(pollSource.contains(QStringLiteral("compositeLiveResultPreviewFromContext")));
+    QVERIFY(pollSource.contains(QStringLiteral("LiveWorkspace.set_result")));
+
+    const QString captureSource = readPluginSource("utils/document/ComfyUIUtilsDocumentCapture.cpp");
+    QVERIFY(captureSource.contains(QStringLiteral("selectionMaskGray")));
+    QVERIFY(captureSource.contains(QStringLiteral("maskLine[x] > 127")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLiveApplyRecompositesWithFeatherAtApplyTime()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY(pollSource.contains(QStringLiteral("last_live_raw.png")));
+    QVERIFY(pollSource.contains(QStringLiteral("lastLiveRawResultImagePath")));
+
+    const QString applySource = readPluginSource("history/ComfyHistoryApply.cpp");
+    const QString resolveBody = functionBody(applySource, "QString ComfyUIRemoteDock::resolveLiveApplyImagePath()");
+    QVERIFY2(!resolveBody.isEmpty(), "resolveLiveApplyImagePath body not found");
+    QVERIFY(resolveBody.contains(QStringLiteral("compositeLiveServerResultAtApply")));
+    QVERIFY(resolveBody.contains(QStringLiteral("last_live_apply_composite.png")));
+
+    const QString shortcutsSource = readPluginSource("dock/shortcuts/ComfyUIRemoteDockShortcuts.cpp");
+    QVERIFY(shortcutsSource.contains(QStringLiteral("resolveLiveApplyImagePath")));
+
+    const QString internalSource = readPluginSource("runners/live/ComfyLiveRunnerInternal.cpp");
+    QVERIFY(internalSource.contains(QStringLiteral("compositeLiveServerResultAtApply")));
+    QVERIFY(internalSource.contains(QStringLiteral("getDocumentImage")));
+    QVERIFY(internalSource.contains(QStringLiteral("compositeInpaintServerOntoContext")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLiveApplyBothShortcutPathsUseResolveImagePath()
+{
+    const QString shortcutsSource = readPluginSource("dock/shortcuts/ComfyUIRemoteDockShortcuts.cpp");
+    const QString applyBody = functionBody(shortcutsSource, "void ComfyUIRemoteDock::slotAiDiffusionApply()");
+    const QString altBody = functionBody(shortcutsSource, "void ComfyUIRemoteDock::slotAiDiffusionApplyAlternative()");
+    QVERIFY2(!applyBody.isEmpty(), "slotAiDiffusionApply body not found");
+    QVERIFY2(!altBody.isEmpty(), "slotAiDiffusionApplyAlternative body not found");
+    QVERIFY(applyBody.contains(QStringLiteral("resolveLiveApplyImagePath")));
+    QVERIFY(altBody.contains(QStringLiteral("resolveLiveApplyImagePath")));
+    QVERIFY(!applyBody.contains(QStringLiteral("lastLiveResultImagePath), applyResultFileWithBehavior")));
+}
+
+void ComfyUpscaleApplyRegressionTest::testLivePollCachesRawServerSeparatelyFromApplyImage()
+{
+    const QString pollSource = readPluginSource("runners/live/ComfyLiveRunnerPoll.cpp");
+    QVERIFY(pollSource.contains(QStringLiteral("compositeLiveServerResult(resultImg, prep)")));
+    QVERIFY(pollSource.contains(QStringLiteral("resultImg.save(rawCachePath)")));
+    QVERIFY(pollSource.contains(QStringLiteral("lastLiveRawResultImagePath")));
+    QVERIFY(pollSource.contains(QStringLiteral("last_live_raw.png")));
+    const int compositePos = pollSource.indexOf(QStringLiteral("compositeLiveServerResult(resultImg, prep)"));
+    const int rawSavePos = pollSource.indexOf(QStringLiteral("resultImg.save(rawCachePath)"));
+    QVERIFY2(compositePos >= 0 && rawSavePos > compositePos,
+             "raw server cache must be saved after feathered applyImage composite");
 }
 
 void ComfyUpscaleApplyRegressionTest::testLiveApplyRefreshesCanvasProjection()

@@ -114,6 +114,12 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                     if (!applyImage.isNull())
                         applyImage.save(tmp.fileName());
 
+                    const QString rawCachePath =
+                        QDir(ComfyUIUtils::historyCacheDir()).filePath(QStringLiteral("last_live_raw.png"));
+                    QFile::remove(rawCachePath);
+                    if (resultImg.save(rawCachePath))
+                        dock->m_d->liveRt.lastLiveRawResultImagePath = rawCachePath;
+
                     const double rawNonBlack = imageNonBlackFraction(resultImg);
                     const double compositeNonBlack = imageNonBlackFraction(applyImage);
                     const bool refineRegion =
@@ -182,21 +188,33 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                         prep.workflowKind == ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion;
                     const QRect contextBounds =
                         prep.contextBounds.isValid() ? prep.contextBounds : dock->m_d->viewManager->image()->bounds();
-                    const QRect placement =
-                        prep.hasMask && prep.maskPaddedBounds.isValid() ? prep.maskPaddedBounds : contextBounds;
                     const QImage contextCapture =
                         prep.nativeContextImage.isNull() ? prep.contextImage : prep.nativeContextImage;
                     QImage dockerPreview;
-                    if ((prep.hasMask || refineRegion) && !applyImage.isNull()) {
-                        // Masked refine: show client composited merge (same pixels manual apply uses).
-                        dockerPreview = applyImage;
-                    } else if (!contextCapture.isNull()) {
+                    if (!contextCapture.isNull()) {
                         const double rawNonBlack = imageNonBlackFraction(resultImg);
-                        if (rawNonBlack >= 0.05) {
-                            const QImage highlightResult =
-                                prep.hasMask ? cropLiveResultToTarget(resultImg, prep) : resultImg;
+                        const bool masked = prep.hasMask || refineRegion;
+                        QImage highlightResult = resultImg;
+                        if (masked && !applyImage.isNull())
+                            highlightResult = applyImage;
+                        else if (masked)
+                            highlightResult = cropLiveResultToTarget(resultImg, prep);
+
+                        QRect placement = contextBounds;
+                        if (masked && prep.maskPaddedBounds.isValid() && prep.maskPaddedBounds != contextBounds)
+                            placement = prep.maskPaddedBounds;
+
+                        const QImage compositingMask = prep.nativeCompositingMask.isNull()
+                                                           ? prep.compositingMaskCropped
+                                                           : prep.nativeCompositingMask;
+                        const bool clipToMask = masked && placement == contextBounds && !compositingMask.isNull();
+
+                        if (!masked || rawNonBlack >= 0.05 || !applyImage.isNull()) {
+                            // FAITHFUL_PORT: LiveWorkspace.set_result (model.py) — DiagCross on context,
+                            // SourceOver generated patch; ui/live.py LivePreviewArea.show_result.
                             dockerPreview = ComfyUIUtils::compositeLiveResultPreviewFromContext(
-                                contextCapture, contextBounds, placement, highlightResult, true);
+                                contextCapture, contextBounds, placement, highlightResult, true,
+                                clipToMask ? compositingMask : QImage());
                         } else {
                             dockerPreview = resultImg;
                         }

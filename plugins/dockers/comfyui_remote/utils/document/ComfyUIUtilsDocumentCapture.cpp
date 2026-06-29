@@ -230,7 +230,8 @@ QImage compositeLiveResultPreviewOntoContext(QImage canvas,
                                             const QRect &contextBoundsInDoc,
                                             const QRect &resultPlacementInDoc,
                                             const QImage &result,
-                                            bool drawGeneratingOverlay)
+                                            bool drawGeneratingOverlay,
+                                            const QImage &selectionMaskGray)
 {
     if (canvas.isNull())
         return result;
@@ -249,12 +250,33 @@ QImage compositeLiveResultPreviewOntoContext(QImage canvas,
         painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
     }
     if (!result.isNull()) {
-        if (result.size() == local.size())
-            painter.drawImage(local.topLeft(), result);
-        else
-            painter.drawImage(local, result.scaled(local.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+        const bool clipToMask = !selectionMaskGray.isNull()
+                                && selectionMaskGray.size() == canvas.size()
+                                && local == QRect(QPoint(0, 0), canvas.size());
+        if (clipToMask) {
+            painter.end();
+            QImage patch = result;
+            if (patch.size() != canvas.size())
+                patch = patch.scaled(canvas.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            for (int y = 0; y < canvas.height(); ++y) {
+                const uchar *maskLine = selectionMaskGray.constScanLine(y);
+                QRgb *outLine = reinterpret_cast<QRgb *>(canvas.scanLine(y));
+                const QRgb *patchLine = reinterpret_cast<const QRgb *>(patch.constScanLine(y));
+                for (int x = 0; x < canvas.width(); ++x) {
+                    if (maskLine[x] > 127)
+                        outLine[x] = patchLine[x];
+                }
+            }
+        } else {
+            if (result.size() == local.size())
+                painter.drawImage(local.topLeft(), result);
+            else
+                painter.drawImage(local, result.scaled(local.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+            painter.end();
+        }
+    } else {
+        painter.end();
     }
-    painter.end();
     return canvas;
 }
 
@@ -264,7 +286,8 @@ QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,
                                              const QRect &contextBoundsInDoc,
                                              const QRect &resultPlacementInDoc,
                                              const QImage &result,
-                                             bool drawGeneratingOverlay)
+                                             bool drawGeneratingOverlay,
+                                             const QImage &selectionMaskGray)
 {
     if (contextCapture.isNull())
         return result;
@@ -275,7 +298,8 @@ QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,
                                                  contextBoundsInDoc,
                                                  resultPlacementInDoc,
                                                  result,
-                                                 drawGeneratingOverlay);
+                                                 drawGeneratingOverlay,
+                                                 selectionMaskGray);
 }
 
 QImage compositeLiveResultPreview(KisImageSP image,
@@ -283,7 +307,8 @@ QImage compositeLiveResultPreview(KisImageSP image,
                                   const QRect &resultPlacementInDoc,
                                   const QImage &result,
                                   bool drawGeneratingOverlay,
-                                  const QList<KisNodeSP> &excludeNodes)
+                                  const QList<KisNodeSP> &excludeNodes,
+                                  const QImage &selectionMaskGray)
 {
     if (!image)
         return result;
@@ -301,7 +326,8 @@ QImage compositeLiveResultPreview(KisImageSP image,
                                                  contextBounds,
                                                  resultPlacementInDoc,
                                                  result,
-                                                 drawGeneratingOverlay);
+                                                 drawGeneratingOverlay,
+                                                 selectionMaskGray);
 }
 
 QList<KisNodeSP> collectInpaintExcludeNodes(KisImageSP image,

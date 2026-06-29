@@ -11,6 +11,8 @@
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyLiveRunnerInternal.h"
+#include "ComfyPrepareLiveWorkflow.h"
 
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -21,6 +23,7 @@ Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QImage>
 #include <QUrl>
 #include <QUuid>
@@ -231,6 +234,40 @@ bool ComfyUIRemoteDock::tryApplyAnimationSingleFrameToTargetLayer(const QString 
         setStatusMessage(ComfyTr::tr("Frame written to layer \"%1\".", pl->name()));
     }
     return true;
+}
+
+QString ComfyUIRemoteDock::resolveLiveApplyImagePath() const
+{
+    if (m_d->liveRt.lastLiveResultImagePath.isEmpty())
+        return QString();
+
+    const ComfyPrepareLiveWorkflow::Result &prep = m_d->liveRt.livePrepared;
+    if (!prep.hasMask || m_d->liveRt.lastLiveRawResultImagePath.isEmpty() || !m_d->viewManager)
+        return m_d->liveRt.lastLiveResultImagePath;
+
+    QImage raw;
+    if (!raw.load(m_d->liveRt.lastLiveRawResultImagePath))
+        return m_d->liveRt.lastLiveResultImagePath;
+
+    KisImageSP image = m_d->viewManager->image();
+    if (!image)
+        return m_d->liveRt.lastLiveResultImagePath;
+
+    const QImage composite =
+        ComfyLiveRunnerInternal::compositeLiveServerResultAtApply(raw, prep, image);
+    if (composite.isNull())
+        return m_d->liveRt.lastLiveResultImagePath;
+
+    const QString path =
+        QDir(ComfyUIUtils::historyCacheDir()).filePath(QStringLiteral("last_live_apply_composite.png"));
+    QFile::remove(path);
+    if (!composite.save(path))
+        return m_d->liveRt.lastLiveResultImagePath;
+
+    qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_LIVE apply: recomposited with fresh context grow=") << prep.preprocess.grow
+        << QStringLiteral(" feather=") << prep.preprocess.feather << QStringLiteral(" blend=") << prep.preprocess.blend;
+    return path;
 }
 
 bool ComfyUIRemoteDock::applyResultFileWithBehavior(const QString &localPath,

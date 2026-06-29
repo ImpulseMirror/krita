@@ -272,8 +272,9 @@ void ComfyUIRemoteDock::slotAiDiffusionApply()
             }
         }
         bool applied = false;
+        const QString applyImagePath = resolveLiveApplyImagePath();
         if (!regionLayerNames.isEmpty() && regionBeh != QLatin1String("none"))
-            applied = applyResultToNamedRegionLayers(m_d->liveRt.lastLiveResultImagePath, regionLayerNames, regionBeh);
+            applied = applyResultToNamedRegionLayers(applyImagePath, regionLayerNames, regionBeh);
         if (!applied) {
             QString liveBeh = ls.value(QStringLiteral("apply_behavior_live")).toString();
             if (liveBeh.isEmpty())
@@ -283,7 +284,7 @@ void ComfyUIRemoteDock::slotAiDiffusionApply()
             QRect resultBounds;
             if (m_d->liveRt.livePrepared.hasMask && m_d->liveRt.livePrepared.contextBounds.isValid())
                 resultBounds = m_d->liveRt.livePrepared.contextBounds;
-            applied = applyResultFileWithBehavior(m_d->liveRt.lastLiveResultImagePath, liveBeh, layerName,
+            applied = applyResultFileWithBehavior(applyImagePath, liveBeh, layerName,
                                                   resultBounds);
         }
         if (applied && ls.value(QStringLiteral("new_seed_after_apply")).toBool(false) && m_d->generate.spinSeed) {
@@ -317,7 +318,8 @@ void ComfyUIRemoteDock::slotAiDiffusionApplyAlternative()
     QRect resultBounds;
     if (m_d->liveRt.livePrepared.hasMask && m_d->liveRt.livePrepared.contextBounds.isValid())
         resultBounds = m_d->liveRt.livePrepared.contextBounds;
-    if (!applyResultFileWithBehavior(m_d->liveRt.lastLiveResultImagePath, QStringLiteral("layer"), layerName,
+    const QString applyImagePath = resolveLiveApplyImagePath();
+    if (!applyResultFileWithBehavior(applyImagePath, QStringLiteral("layer"), layerName,
                                      resultBounds))
         setStatusMessage(ComfyTr::tr("Could not import image."), true);
     else {

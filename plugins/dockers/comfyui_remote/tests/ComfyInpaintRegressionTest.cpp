@@ -15,6 +15,8 @@
 #include <cmath>
 
 #include "ComfyInpaintRunnerInternal.h"
+#include "ComfyLiveRunnerInternal.h"
+#include "ComfyPrepareWorkflow.h"
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 #include "ComfyWorkflowEngine.h"
@@ -184,6 +186,10 @@ private Q_SLOTS:
     void testBuildRefineRegionSaveImageReachesVaeDecode();
     void testBuildInpaintFillStillUsesServerColorMatch();
     void testCompositeRefineBlackServerPaintsMaskRegionBlack();
+    void testCompositeLivePreviewMaskClipKeepsCrosshatchOutside();
+    void testCompositeLivePreviewDiagCrossTintsOutside();
+    void testCompositeLiveServerUsesFeatherBlendMask();
+    void testCompositeLiveServerPreservesContextOutsideMask();
 };
 
 void ComfyInpaintRegressionTest::testAssembleSelectionMaskEighthArea()
@@ -486,6 +492,131 @@ void ComfyInpaintRegressionTest::testCompositeRefineBlackServerPaintsMaskRegionB
     QVERIFY(qRed(maskedCenter) < 30 && qGreen(maskedCenter) < 30 && qBlue(maskedCenter) < 30);
     const QRgb outsideCorner = result.output.pixel(10, 10);
     QVERIFY(qRed(outsideCorner) > 100);
+}
+
+void ComfyInpaintRegressionTest::testCompositeLivePreviewMaskClipKeepsCrosshatchOutside()
+{
+    QImage context(64, 64, QImage::Format_ARGB32);
+    context.fill(qRgb(200, 180, 160));
+    QImage mask(64, 64, QImage::Format_Grayscale8);
+    mask.fill(0);
+    QPainter maskPainter(&mask);
+    maskPainter.fillRect(QRect(20, 20, 24, 24), QColor(255, 255, 255));
+
+    QImage patch(64, 64, QImage::Format_ARGB32);
+    patch.fill(qRgb(40, 90, 140));
+
+    const QRect bounds(0, 0, 64, 64);
+    const QImage preview =
+        ComfyUIUtils::compositeLiveResultPreviewFromContext(context, bounds, bounds, patch, true, mask);
+
+    const QRgb outside = preview.pixel(5, 5);
+    const QRgb inside = preview.pixel(32, 32);
+    QVERIFY2(outside != qRgb(40, 90, 140), "outside selection should not show patch color");
+    QVERIFY2(inside == qRgb(40, 90, 140), "inside selection should show patch color");
+    QVERIFY2(outside != qRgb(200, 180, 160), "outside selection should show DiagCross overlay");
+}
+
+void ComfyInpaintRegressionTest::testCompositeLivePreviewDiagCrossTintsOutside()
+{
+    QImage context(32, 32, QImage::Format_ARGB32);
+    context.fill(qRgb(220, 200, 180));
+    QImage mask(32, 32, QImage::Format_Grayscale8);
+    mask.fill(0);
+    QPainter maskPainter(&mask);
+    maskPainter.fillRect(QRect(10, 10, 12, 12), QColor(255, 255, 255));
+    QImage patch(32, 32, QImage::Format_ARGB32);
+    patch.fill(qRgb(40, 90, 140));
+    const QRect bounds(0, 0, 32, 32);
+    const QImage preview =
+        ComfyUIUtils::compositeLiveResultPreviewFromContext(context, bounds, bounds, patch, true, mask);
+    const QRgb outside = preview.pixel(5, 5);
+    const QRgb inside = preview.pixel(16, 16);
+    QVERIFY(inside == qRgb(40, 90, 140));
+    QVERIFY2(outside != qRgb(220, 200, 180), "outside selection should show DiagCross overlay");
+    QVERIFY2(outside != qRgb(40, 90, 140), "outside selection should not show patch color");
+}
+
+void ComfyInpaintRegressionTest::testCompositeLiveServerUsesFeatherBlendMask()
+{
+    const QSize size(64, 64);
+    QImage context(size, QImage::Format_ARGB32);
+    context.fill(qRgb(100, 120, 140));
+    QImage server(size, QImage::Format_RGB32);
+    server.fill(qRgb(240, 10, 10));
+
+    QImage mask(size, QImage::Format_Grayscale8);
+    mask.fill(0);
+    QPainter mp(&mask);
+    mp.fillRect(QRect(16, 16, 32, 32), QColor(255, 255, 255));
+
+    ComfyPrepareLiveWorkflow::Result prep;
+    prep.hasMask = true;
+    prep.contextBounds = QRect(0, 0, 64, 64);
+    prep.maskPaddedBounds = prep.contextBounds;
+    prep.nativeContextImage = context;
+    prep.contextImage = context;
+    prep.nativeCompositingMask = mask;
+    prep.compositingMaskCropped = mask;
+    prep.preprocess.grow = 0;
+    prep.preprocess.feather = 0;
+    prep.preprocess.blend = 8;
+    prep.workflowKind = ComfyPrepareWorkflow::WorkflowKind::RefineRegion;
+
+    const QImage softEdgeComposite = ComfyLiveRunnerInternal::compositeLiveServerResult(server, prep);
+    prep.preprocess.blend = 0;
+    const QImage hardEdgeComposite = ComfyLiveRunnerInternal::compositeLiveServerResult(server, prep);
+
+    QRgb softEdge = 0;
+    QRgb hardEdge = 0;
+    bool foundEdgeDiff = false;
+    for (int y = 16; y < 48 && !foundEdgeDiff; ++y) {
+        for (int x = 12; x < 20; ++x) {
+            const QRgb softPx = softEdgeComposite.pixel(x, y);
+            const QRgb hardPx = hardEdgeComposite.pixel(x, y);
+            if (softPx != hardPx) {
+                softEdge = softPx;
+                hardEdge = hardPx;
+                foundEdgeDiff = true;
+                break;
+            }
+        }
+    }
+    QVERIFY2(foundEdgeDiff, "blend preprocess should soften compositing boundary");
+    QVERIFY(qAbs(qRed(softEdge) - 100) < qAbs(qRed(hardEdge) - 100));
+}
+
+void ComfyInpaintRegressionTest::testCompositeLiveServerPreservesContextOutsideMask()
+{
+    const QSize size(64, 64);
+    QImage context(size, QImage::Format_ARGB32);
+    context.fill(qRgb(80, 90, 100));
+    QImage server(size, QImage::Format_RGB32);
+    server.fill(qRgb(240, 10, 10));
+
+    QImage mask(size, QImage::Format_Grayscale8);
+    mask.fill(0);
+    QPainter mp(&mask);
+    mp.fillRect(QRect(20, 20, 24, 24), QColor(255, 255, 255));
+
+    ComfyPrepareLiveWorkflow::Result prep;
+    prep.hasMask = true;
+    prep.contextBounds = QRect(0, 0, 64, 64);
+    prep.maskPaddedBounds = prep.contextBounds;
+    prep.nativeContextImage = context;
+    prep.contextImage = context;
+    prep.nativeCompositingMask = mask;
+    prep.compositingMaskCropped = mask;
+    prep.preprocess.grow = 0;
+    prep.preprocess.feather = 0;
+    prep.preprocess.blend = 0;
+    prep.workflowKind = ComfyPrepareWorkflow::WorkflowKind::RefineRegion;
+
+    const QImage composite = ComfyLiveRunnerInternal::compositeLiveServerResult(server, prep);
+    QCOMPARE(composite.pixel(5, 5), qRgb(80, 90, 100));
+    const QRgb inside = composite.pixel(32, 32);
+    QVERIFY(qRed(inside) > 200);
+    QVERIFY(qGreen(inside) < 50);
 }
 
 QTEST_MAIN(ComfyInpaintRegressionTest)

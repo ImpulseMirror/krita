@@ -173,6 +173,8 @@ public:
                                      const QString &applyBehavior,
                                      const QString &committedLayerName = QString(),
                                      const QRect &resultBounds = QRect());
+    /// Masked live apply: re-composite raw server output onto fresh document context (grow/feather/blend).
+    QString resolveLiveApplyImagePath() const;
     /// §13.74: Animation + Single Frame — copy result into selected target paint layer (avoids duplicate apply via generation_finished_action).
     bool tryApplyAnimationSingleFrameToTargetLayer(const QString &localPath, bool timelineMismatch = false);
     // §4.7: After a job completes — history selection + optional preview/apply from generation_finished_action

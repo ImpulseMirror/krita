@@ -294,6 +294,7 @@ struct LiveRuntime
     static const int liveMaxPollCount = 120;
     QTimer *livePollTimer = nullptr;
     QString lastLiveResultImagePath;
+    QString lastLiveRawResultImagePath;
     QString lastLiveResultCompositionPath;
     QString liveSamplerLoraBlockMessage;
     /// LIVE_DIAG: carried from workflow build through poll for verdict logging.

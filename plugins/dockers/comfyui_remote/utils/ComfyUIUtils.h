@@ -959,14 +959,16 @@ QImage compositeLiveResultPreview(KisImageSP image,
                                   const QRect &resultPlacementInDoc,
                                   const QImage &result,
                                   bool drawGeneratingOverlay = true,
-                                  const QList<KisNodeSP> &excludeNodes = QList<KisNodeSP>());
+                                  const QList<KisNodeSP> &excludeNodes = QList<KisNodeSP>(),
+                                  const QImage &selectionMaskGray = QImage());
 /// Same compositing as compositeLiveResultPreview but uses an already-captured context image
 /// (live docker preview must not re-capture the document — that toggles layer visibility).
 QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,
                                              const QRect &contextBoundsInDoc,
                                              const QRect &resultPlacementInDoc,
                                              const QImage &result,
-                                             bool drawGeneratingOverlay = true);
+                                             bool drawGeneratingOverlay = true,
+                                             const QImage &selectionMaskGray = QImage());
 
 /// Port `model._get_current_image` exclude list — root control layers (not isPartOfImage) + preview layer.
 QList<KisNodeSP> collectInpaintExcludeNodes(KisImageSP image,

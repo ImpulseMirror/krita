@@ -9,6 +9,7 @@
 #include "ComfyLiveScheduler.h"
 #include "ComfyPrepareWorkflow.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyUIUtils.h"
 
 #include <QDateTime>
 #include <QCryptographicHash>
@@ -149,6 +150,30 @@ QImage compositeLiveServerResult(const QImage &serverResult, const ComfyPrepareL
     params.serverPreMasked = false;
 
     return ComfyInpaintRunnerInternal::compositeInpaintServerOntoContext(params).output;
+}
+
+QImage compositeLiveServerResultAtApply(const QImage &serverResult,
+                                        const ComfyPrepareLiveWorkflow::Result &prep,
+                                        KisImageSP image)
+{
+    if (serverResult.isNull() || !image || !prep.hasMask)
+        return compositeLiveServerResult(serverResult, prep);
+
+    ComfyPrepareLiveWorkflow::Result freshPrep = prep;
+    const QRect captureRect =
+        prep.contextBounds.isValid() ? prep.contextBounds.intersected(image->bounds()) : image->bounds();
+    const ComfyUIUtils::DocumentImageResult capture =
+        ComfyUIUtils::getDocumentImage(image, captureRect, QList<KisNodeSP>());
+    if (!capture)
+        return compositeLiveServerResult(serverResult, prep);
+
+    const QImage freshContext = capture.image.convertToFormat(QImage::Format_ARGB32);
+    if (freshContext.isNull())
+        return compositeLiveServerResult(serverResult, prep);
+
+    freshPrep.nativeContextImage = freshContext;
+    freshPrep.contextImage = freshContext;
+    return compositeLiveServerResult(serverResult, freshPrep);
 }
 
 QImage cropLiveResultToTarget(const QImage &image, const ComfyPrepareLiveWorkflow::Result &prep)
