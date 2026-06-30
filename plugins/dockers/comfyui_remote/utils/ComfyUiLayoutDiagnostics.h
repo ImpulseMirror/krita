@@ -11,21 +11,13 @@
 #include <QSize>
 
 class QImage;
-
 class QWidget;
-class QLayout;
 class QScrollArea;
 
 namespace ComfyUiLayoutDiagnostics {
 
-/// Bump when changing diagnostic probes (grep logcat for COMFY_UI_DIAG).
-inline constexpr const char *kBuildMarker = "ui-diag-2025-06-28-r21";
-
 QString maskShapeDescription(const QImage &maskGray);
 QString imageAlphaCornerStats(const QImage &img);
-
-void logWidget(const char *tag, const QWidget *widget);
-void logLayoutChildren(const char *tag, QLayout *layout);
 
 /// Sum visible essential Generate chrome inside scroll (style row + prompt + strength + CTA).
 /// \a dockPrivate is ComfyUIRemoteDock::Private*.
@@ -50,14 +42,6 @@ void logHistoryThumbnailStage(const char *stage,
                               const QSize &maskSize,
                               const QString &detail);
 
-/// Implemented in .cpp; Private* is ComfyUIRemoteDock::Private (dock-only).
-void dumpDockerLayoutForDock(void *dockPrivate, QWidget *dockerRoot, const char *reason);
-/// One-line snapshot: contentPage children, gen/hist geometry, list items (logcat: COMFY_UI_DIAG genHistLayout).
-void logGenerateHistoryLayout(void *dockPrivate, const char *reason);
-/// Render-time chrome geometry chain (logcat: COMFY_UI_DIAG wsChrome).
-void logWorkspaceChromeLayout(void *dockPrivate, QWidget *dockerRoot, const char *reason);
-/// Live workspace layout snapshot (logcat: COMFY_UI_DIAG liveLayout).
-void logLiveWorkspaceLayout(void *dockPrivate, QWidget *dockerRoot, const char *reason);
 /// Reparent live preview below gen chrome on contentPage (Live workspace only).
 void restoreLivePreviewPanelLayout(void *dockPrivate, QWidget *contentPage);
 

@@ -104,8 +104,6 @@ void beginUploadPipeline(ComfyUIRemoteDock *dock)
 void submitWorkflow(ComfyUIRemoteDock *dock, QJsonObject workflow)
 {
 
-    qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow ENTER nodeCount=" << workflow.size()
-                                  << "hasNam=" << (dock->m_d->nam != nullptr);
     ComfyWorkflowEngine::applyCheckpointStyleOptions(
         &workflow, dock->m_d->generateRt.generateStyleVae, dock->m_d->generateRt.generateStyleClipSkip, dock->m_d->generateRt.generateStyleArch);
 
@@ -167,22 +165,15 @@ void submitWorkflow(ComfyUIRemoteDock *dock, QJsonObject workflow)
     submitReq.clientId = dock->m_d->clientId;
     submitReq.expectedPromptId = expectedPromptId;
     const QString urlStr = dock->m_d->editServerUrl->text().trimmed();
-    qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow POST expectedPromptId=" << expectedPromptId;
     if (!dock->m_d->nam) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow: dock->m_d->nam is null!";
         dock->setStatusMessage(ComfyTr::tr("Not connected to ComfyUI server."), true);
         dock->reEnableGenerateUi();
         return;
     }
     ComfyPromptClient::submitPrompt(dock->m_d->nam, urlStr, submitReq, dock,
                                     [dock, expectedPromptId](const ComfyPromptClient::SubmitResult &result) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow REPLY httpStatus=" << result.httpStatus
-                                      << " ok=" << result.ok
-                                      << " bodyBytes=" << result.responseBody.size();
         if (!result.ok) {
             if (!result.responseBody.isEmpty()) {
-                qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow body preview (utf8, truncated to 800B):"
-                                              << QString::fromUtf8(result.responseBody.left(800));
             }
             dock->setStatusMessage(ComfyTr::tr("Submit error: %1",
                                            result.errorMessage.isEmpty()
@@ -194,14 +185,11 @@ void submitWorkflow(ComfyUIRemoteDock *dock, QJsonObject workflow)
             return;
         }
         if (result.promptId != expectedPromptId) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow: prompt_id mismatch expected="
-                                          << expectedPromptId << "got=" << result.promptId;
             dock->setStatusMessage(ComfyTr::tr("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
             dock->reEnableGenerateUi();
             dock->m_d->progressBar->setValue(0);
             return;
         }
-        qCWarning(KIS_COMFYUI_REMOTE) << "submitInpaintWorkflow: accepted, polling promptId=" << result.promptId;
         dock->m_d->inpaintRt.inpaintPromptId = result.promptId;
         dock->m_d->inpaintRt.inpaintPollCount = 0;
         dock->m_d->labelStatus->setText(ComfyTr::tr("Inpainting…"));

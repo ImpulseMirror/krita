@@ -32,10 +32,6 @@ Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 void ComfyUIRemoteDock::slotPresetChanged(int index)
 {
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotPresetChanged index=" << index
-        << " name=" << (m_d->generate.comboPreset ? m_d->generate.comboPreset->itemText(index) : QString())
-        << " firstCustom=" << firstCustomPresetIndex();
     const int firstCustom = firstCustomPresetIndex();
     m_d->generate.btnDeletePreset->setEnabled(index >= firstCustom);
     updateNegativePromptAlertVisibility();  // §13.143: update alert when style changes
@@ -73,13 +69,6 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
     m_d->generate.comboSampler->setCurrentText(cfg.readEntry("Sampler", "euler"));
     m_d->generateRt.ksamplerScheduler = cfg.readEntry("Scheduler", QStringLiteral("normal"));
     QString ckpt = cfg.readEntry("Checkpoint", "");
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotPresetChanged loaded custom preset name=" << name
-        << " checkpoint=" << ckpt
-        << " promptLen=" << m_d->generate.editPrompt->toPlainText().size()
-        << " negLen=" << m_d->generate.editNegative->toPlainText().size()
-        << " w=" << m_d->generate.spinWidth->value() << " h=" << m_d->generate.spinHeight->value()
-        << " steps=" << m_d->generate.spinSteps->value() << " cfg=" << m_d->generate.spinCfg->value();
     if (!ckpt.isEmpty()) {
         int i = m_d->generate.comboCheckpoint->findText(ckpt);
         if (i >= 0) m_d->generate.comboCheckpoint->setCurrentIndex(i);
@@ -92,11 +81,9 @@ void ComfyUIRemoteDock::slotPresetChanged(int index)
 
 void ComfyUIRemoteDock::slotSaveAsPreset()
 {
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotSaveAsPreset ENTER";
     bool ok = false;
     QString name = QInputDialog::getText(this, ComfyTr::tr("Save preset"), ComfyTr::tr("Preset name:"), QLineEdit::Normal, QString(), &ok);
     if (!ok || name.trimmed().isEmpty()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotSaveAsPreset: user cancelled or empty name; aborting";
         return;
     }
     saveCustomPresetAsNew(name.trimmed());
@@ -106,7 +93,6 @@ bool ComfyUIRemoteDock::saveCustomPresetAsNew(const QString &nameIn)
 {
     const QString name = nameIn.trimmed();
     if (name.isEmpty()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "saveCustomPresetAsNew: empty name; aborting";
         return false;
     }
     KConfigGroup mainCfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -135,34 +121,17 @@ bool ComfyUIRemoteDock::saveCustomPresetAsNew(const QString &nameIn)
     if (m_d->generate.comboPreset->findText(name) < 0)
         m_d->generate.comboPreset->addItem(name);
     m_d->generate.comboPreset->setCurrentText(name);
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "saveCustomPresetAsNew SAVED name=" << name
-        << " checkpoint=" << m_d->generate.comboCheckpoint->currentText()
-        << " promptLen=" << m_d->generate.editPrompt->toPlainText().size()
-        << " negLen=" << m_d->generate.editNegative->toPlainText().size()
-        << " w=" << m_d->generate.spinWidth->value() << " h=" << m_d->generate.spinHeight->value()
-        << " steps=" << m_d->generate.spinSteps->value() << " cfg=" << m_d->generate.spinCfg->value();
     setStatusMessage(ComfyTr::tr("Saved preset \"%1\".", name));
     return true;
 }
 
 void ComfyUIRemoteDock::slotSaveCurrentPreset()
 {
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotSaveCurrentPreset ENTER idx="
-        << (m_d->generate.comboPreset ? m_d->generate.comboPreset->currentIndex() : -1)
-        << " name="
-        << (m_d->generate.comboPreset ? m_d->generate.comboPreset->currentText() : QStringLiteral("<null comboPreset>"))
-        << " firstCustomIdx=" << firstCustomPresetIndex();
     if (!m_d->generate.comboPreset) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotSaveCurrentPreset: comboPreset is null; aborting";
         return;
     }
     const int idx = m_d->generate.comboPreset->currentIndex();
     if (idx < firstCustomPresetIndex()) {
-        qCWarning(KIS_COMFYUI_REMOTE)
-            << "slotSaveCurrentPreset: refusing to save over a built-in style (idx=" << idx
-            << " < firstCustomIdx=" << firstCustomPresetIndex() << ")";
         // FAITHFUL_PORT: surface the rejection in the status bar too — on Android
         // the QMessageBox::information dialog can appear behind the Settings
         // dialog stack and the user sees nothing.
@@ -189,11 +158,6 @@ void ComfyUIRemoteDock::slotSaveCurrentPreset()
     presetCfg.writeEntry("Checkpoint", m_d->generate.comboCheckpoint->currentText());
     presetCfg.writeEntry("UsesNegativePrompt", true);
     presetCfg.config()->sync();
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotSaveCurrentPreset SAVED name=" << name
-        << " checkpoint=" << m_d->generate.comboCheckpoint->currentText()
-        << " promptLen=" << m_d->generate.editPrompt->toPlainText().size()
-        << " negLen=" << m_d->generate.editNegative->toPlainText().size();
     setStatusMessage(ComfyTr::tr("Saved preset \"%1\".", name));
 }
 

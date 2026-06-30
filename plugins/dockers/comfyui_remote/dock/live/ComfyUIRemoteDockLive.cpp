@@ -86,14 +86,6 @@ void applyLiveRegionPromptLayout(ComfyUIRemoteDock::Private *d)
     d->generate.regionPromptWidget->setMinimumSize(0, 0);
     d->generate.regionPromptWidget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     d->generate.regionPromptWidget->applyCompactLayout(posLines, showNeg, true, true);
-    qCWarning(KIS_COMFYUI_REMOTE).noquote()
-        << QStringLiteral("COMFY_UI_DIAG liveLayout applyPrompt posLines=") << posLines
-        << QStringLiteral("showNeg=") << showNeg
-        << QStringLiteral("regionPromptH=") << d->generate.regionPromptWidget->height()
-        << QStringLiteral("parent=")
-        << (d->generate.regionPromptWidget->parentWidget()
-                ? d->generate.regionPromptWidget->parentWidget()->metaObject()->className()
-                : QStringLiteral("null"));
 }
 
 } // namespace
@@ -316,12 +308,6 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
                 m_d->live.livePromptHostWidget->setMinimumHeight(promptH);
                 m_d->live.livePromptRowWidget->setMinimumHeight(promptH);
             }
-            qCWarning(KIS_COMFYUI_REMOTE).noquote()
-                << QStringLiteral("COMFY_UI_DIAG liveLayout promptRow minH=") << promptH
-                << QStringLiteral("promptRowPolicy=")
-                << m_d->live.livePromptRowWidget->sizePolicy().horizontalPolicy()
-                << m_d->live.livePromptRowWidget->sizePolicy().verticalPolicy()
-                << QStringLiteral("marker=") << ComfyUiLayoutDiagnostics::kBuildMarker;
         }
 
         QWidget *contentPage = nullptr;
@@ -379,9 +365,6 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
     const bool onUpscale = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 1;
     syncCompactGenerateLayoutRows(onGenerate || onUpscale || live);
     updateLiveToolbarState();
-    dumpUiLayoutDiagnostics("updateLiveWorkspaceUi");
-    ComfyUiLayoutDiagnostics::logLiveWorkspaceLayout(m_d.data(), widget(), "updateLiveWorkspaceUi");
-    qCWarning(KIS_COMFYUI_REMOTE).noquote() << QStringLiteral("COMFY_LIVE updateLiveWorkspaceUi live=") << live;
 }
 
 ComfyPrepareLiveWorkflow::Input ComfyUIRemoteDock::prepareLiveWorkflowInput() const

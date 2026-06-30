@@ -246,9 +246,6 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
-    QSize m_uiDiagLastSize;
-    bool m_uiDiagLoggedShow = false;
-
 #if defined(COMFYUI_REMOTE_DOCK_IMPL)
 public Q_SLOTS:
 #else
@@ -330,10 +327,6 @@ private Q_SLOTS:
     void updateLiveToolbarState();
     void slotAddRegion();
     void slotRemoveRegion();
-    void slotMoveRegionUp();
-    void slotMoveRegionDown();
-    void slotEditRegion();
-    void slotGenerateRegions();
     void slotInpaintPoll();
     /// §13.195: ai_diffusion_toggle_workspace — same cycle as Python Workspace enum
     void slotAiDiffusionToggleWorkspace();
@@ -461,7 +454,6 @@ public:
     void refreshPluginInformationTabUpdateUi();
     void refreshWelcomeAutoUpdatePanel();
     void syncPluginUpdateUi();
-    void dumpUiLayoutDiagnostics(const char *reason);
     /// Zero-height hidden rows so scroll sizeHint matches visible Generate stack only.
     void syncCompactGenerateLayoutRows(bool compactGenerate);
     /// FAITHFUL_PORT: HistoryWidget lives only on Generation workspace (upstream stacked pages).

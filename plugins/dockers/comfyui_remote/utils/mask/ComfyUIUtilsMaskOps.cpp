@@ -137,15 +137,6 @@ QImage denoiseToCompositingMask(const QImage &maskGray, int grow, int feather, i
     return m;
 }
 
-int calcSelectionPreProcessGrow(int extentWidth, int extentHeight, int areaWidth, int areaHeight, double strength0to1,
-                                int selectionFeatherPercent, double selectionMinTransition, int selectionGrowOffset)
-{
-    const SelectionPreProcess p = calcSelectionPreProcess(
-        extentWidth, extentHeight, areaWidth, areaHeight, strength0to1, selectionFeatherPercent,
-        selectionMinTransition, selectionGrowOffset, getSelectionBlendPixels(), false);
-    return p.grow;
-}
-
 // §4.6 / §3.5: selection_feather stored as 0–25 (percent); default 10
 void getSelectionModifierSettings(int *selectionFeatherPercent, double *selectionMinTransition, int *selectionGrowOffset)
 {

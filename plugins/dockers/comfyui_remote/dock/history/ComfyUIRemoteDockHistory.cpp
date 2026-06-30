@@ -11,7 +11,6 @@
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
-#include "ComfyUiLayoutDiagnostics.h"
 
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -34,16 +33,6 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
 {
     if (!m_d->history.listHistory)
         return;
-
-    qCWarning(KIS_COMFYUI_REMOTE).noquote()
-        << QStringLiteral("COMFY_UI_DIAG refreshHistoryList entries=") << m_d->history.historyEntries.size()
-        << QStringLiteral("listGeom=") << m_d->history.listHistory->geometry()
-        << QStringLiteral("histGroupGeom=")
-        << (m_d->history.histGroupBox ? m_d->history.histGroupBox->geometry() : QRect())
-        << QStringLiteral("histParent=")
-        << (m_d->history.histGroupBox && m_d->history.histGroupBox->parentWidget()
-                ? m_d->history.histGroupBox->parentWidget()->objectName()
-                : QString());
 
     QString keepJobId;
     int keepImageIndex = -1;
@@ -138,8 +127,6 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
         m_d->history.listHistory->scrollToBottom();
     syncHistoryListItemWidths(m_d->history.listHistory);
     m_d->history.listHistory->updateOverlayButtons();
-    ComfyUiLayoutDiagnostics::logGenerateHistoryLayout(m_d.data(), "refreshHistoryList");
-    dumpUiLayoutDiagnostics("refreshHistoryList");
 }
 
 void ComfyUIRemoteDock::slotHistoryItemSelected()

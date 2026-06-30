@@ -11,7 +11,6 @@
 
 #include <QLabel>
 #include <QAbstractScrollArea>
-#include <QLoggingCategory>
 #include <QScrollArea>
 #include <QSizePolicy>
 #include <QStackedWidget>
@@ -19,8 +18,6 @@
 #include <QWidget>
 
 #include "ComfyUiLayoutDiagnostics.h"
-
-Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
 
 namespace ComfyDockUiBuilder {
 
@@ -47,26 +44,17 @@ void finalizeContentScroll(DockShell &shell)
     shell.scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     shell.scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     shell.contentLayout->addWidget(shell.scroll, 0);
-    ComfyUiLayoutDiagnostics::logWidget("finalizeContentScroll.scroll", shell.scroll);
-    ComfyUiLayoutDiagnostics::logLayoutChildren("finalizeContentScroll.contentLayout", shell.contentLayout);
 }
 
 void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell)
 {
     ComfyUIRemoteDock::Private *d = ctx.d;
-    if (!d->generate.genContentContainer || !d->generate.regionPromptWidget) {
-        qCWarning(KIS_COMFYUI_REMOTE).noquote()
-            << QStringLiteral("COMFY_UI_DIAG finalizeGenerateWorkspaceLayout EARLY_RETURN genContent=")
-            << (d->generate.genContentContainer != nullptr) << QStringLiteral("regionPrompt=")
-            << (d->generate.regionPromptWidget != nullptr);
+    if (!d->generate.genContentContainer || !d->generate.regionPromptWidget)
         return;
-    }
     auto *lay = qobject_cast<QVBoxLayout *>(d->generate.genContentContainer->layout());
     if (!lay)
         return;
 
-    if (d->inpaint.labelPrompt)
-        d->inpaint.labelPrompt->setVisible(false);
     if (d->generate.rootPromptColumnWidget) {
         d->generate.rootPromptColumnWidget->setVisible(false);
         lay->removeWidget(d->generate.rootPromptColumnWidget);
@@ -127,16 +115,6 @@ void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell)
         shell.contentLayout->activate();
     if (shell.contentPage)
         shell.contentPage->updateGeometry();
-
-    qCWarning(KIS_COMFYUI_REMOTE).noquote()
-        << QStringLiteral("COMFY_UI_DIAG finalizeGenerateWorkspaceLayout histParent=")
-        << (d->history.histGroupBox && d->history.histGroupBox->parentWidget()
-                ? d->history.histGroupBox->parentWidget()->objectName()
-                : QStringLiteral("null"))
-        << QStringLiteral("progressParent=")
-        << (d->progressBar && d->progressBar->parentWidget() ? d->progressBar->parentWidget()->objectName()
-                                                             : QStringLiteral("null"));
-    ComfyUiLayoutDiagnostics::logLayoutChildren("finalizeGenerateWorkspaceLayout.contentLayout", shell.contentLayout);
 }
 
 void attachContentPage(const Context &ctx, DockShell &shell)

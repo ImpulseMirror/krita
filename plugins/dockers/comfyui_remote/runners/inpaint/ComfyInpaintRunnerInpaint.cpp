@@ -71,25 +71,11 @@ QString prepWorkflowKindName(ComfyPrepareGenerateWorkflow::WorkflowKind kind)
 
 void onInpaint(ComfyUIRemoteDock *dock)
 {
-
-    qCWarning(KIS_COMFYUI_REMOTE)
-        << "slotInpaint ENTER url=" << (dock->m_d->editServerUrl ? dock->m_d->editServerUrl->text() : QStringLiteral("<no-url-widget>"))
-        << "hasView=" << (dock->m_d->viewManager != nullptr)
-        << "hasImage=" << (dock->m_d->viewManager && dock->m_d->viewManager->image())
-        << "hasNam=" << (dock->m_d->nam != nullptr)
-        << "btnInpaint=" << (dock->m_d->inpaint.btnInpaint ? dock->m_d->inpaint.btnInpaint->isEnabled() : false)
-        << "isConnected=" << dock->m_d->isConnected;
     if (!dock->m_d->viewManager || !dock->m_d->viewManager->image()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: no view/image, aborting";
         dock->setStatusMessage(ComfyTr::tr("Open a document first."), true);
         return;
     }
     if (!dock->m_d->nam) {
-        // FAITHFUL_PORT/BUG: previously this function happily dereferenced
-        // dock->m_d->nam without checking it. If we landed here from
-        // tryStartRefineFromGenerate before isConnected ever flipped true the
-        // post() call would have crashed silently on some configurations.
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: dock->m_d->nam is null, aborting";
         dock->setStatusMessage(ComfyTr::tr("Not connected to ComfyUI server. Open Settings and connect first."), true);
         return;
     }
@@ -98,7 +84,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
     // §13.42: Block generation if document color mode is not RGBA 8-bit
     auto colorCheck = ComfyUIUtils::checkColorMode(image);
     if (!colorCheck.first) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: colorCheck failed:" << colorCheck.second;
         dock->setStatusMessage(colorCheck.second, true);
         return;
     }
@@ -111,15 +96,12 @@ void onInpaint(ComfyUIRemoteDock *dock)
     const ComfyPrepareGenerateWorkflow::Result prep =
         ComfyPrepareGenerateWorkflow::prepare(dock->prepareGenerateWorkflowInput(prepFlags));
     if (!prep.ok) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: prepare failed:" << prep.errorMessage;
         dock->setStatusMessage(prep.errorMessage, true);
         return;
     }
     if (!prep.hasMask
         || (prep.workflowKind != ComfyPrepareGenerateWorkflow::WorkflowKind::Inpaint
             && prep.workflowKind != ComfyPrepareGenerateWorkflow::WorkflowKind::RefineRegion)) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: unsupported workflow kind"
-                                      << static_cast<int>(prep.workflowKind);
         dock->setStatusMessage(ComfyTr::tr("Make a selection or enable region-only mode on an active region."), true);
         return;
     }
@@ -172,32 +154,21 @@ void onInpaint(ComfyUIRemoteDock *dock)
         diag.maskPixels = describeImagePixels(prep.compositingMaskCropped, QStringLiteral("prepMask"));
         logInpaintDiag(diag);
     }
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: mask rect=" << rect << "fromRegion=" << dock->m_d->inpaintRt.inpaintFromRegionLayer
-                                  << "image=" << QSize(extentW, extentH)
-                                  << "workflowKind=" << static_cast<int>(prep.workflowKind);
     QString urlStr = dock->m_d->editServerUrl->text().trimmed();
     if (urlStr.isEmpty()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: server URL empty";
         dock->setStatusMessage(ComfyTr::tr("Enter a server URL first."), true);
         return;
     }
     QUrl baseUrl(urlStr);
     if (!baseUrl.isValid()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: invalid URL=" << urlStr;
         dock->setStatusMessage(ComfyTr::tr("Invalid URL."), true);
         return;
     }
     if (dock->m_d->inpaintRt.inpaintCurrentImage.isNull() || dock->m_d->inpaintRt.inpaintCompositingMaskCropped.isNull()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: prepare returned empty context or mask";
         dock->setStatusMessage(ComfyTr::tr("Could not crop inpaint context."), true);
         return;
     }
     dock->m_d->inpaintRt.inpaintCurrentImage = dock->m_d->inpaintRt.inpaintCurrentImage.convertToFormat(QImage::Format_ARGB32);
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: contextBounds=" << dock->m_d->inpaintRt.inpaintContextBounds
-                                  << "croppedCanvas=" << dock->m_d->inpaintRt.inpaintCurrentImage.size()
-                                  << "nativeContext=" << dock->m_d->inpaintRt.inpaintNativeContextSize
-                                  << "diffusionExtent=" << dock->m_d->inpaintRt.inpaintDiffusionExtent
-                                  << "effectiveMode=" << prep.effectiveInpaintMode;
     // Upstream sends mask as Grayscale8: white = area to inpaint.
     QImage maskPng = dock->m_d->inpaintRt.inpaintCompositingMaskCropped.format() == QImage::Format_Grayscale8
                          ? dock->m_d->inpaintRt.inpaintCompositingMaskCropped
@@ -222,7 +193,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
     tmpImage->open();
     tmpImage->close();
     if (!dock->m_d->inpaintRt.inpaintCurrentImage.save(tmpImage->fileName())) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: failed to save temp image to" << tmpImage->fileName();
         dock->setStatusMessage(ComfyTr::tr("Could not save temp image."), true);
         return;
     }
@@ -231,14 +201,9 @@ void onInpaint(ComfyUIRemoteDock *dock)
     tmpMask->open();
     tmpMask->close();
     if (!maskPng.save(tmpMask->fileName())) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: failed to save temp mask to" << tmpMask->fileName();
         dock->setStatusMessage(ComfyTr::tr("Could not save temp mask."), true);
         return;
     }
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: temp image=" << tmpImage->fileName()
-                                  << "temp mask=" << tmpMask->fileName()
-                                  << "imageSize=" << QFileInfo(tmpImage->fileName()).size()
-                                  << "maskSize=" << QFileInfo(tmpMask->fileName()).size();
     if (dock->m_d->inpaint.btnInpaint)
         dock->m_d->inpaint.btnInpaint->setEnabled(false);
     if (dock->m_d->generate.btnGenerate)
@@ -262,11 +227,8 @@ void onInpaint(ComfyUIRemoteDock *dock)
     const int areaY = rect.y();
     const int areaW = rect.width();
     const int areaH = rect.height();
-    qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint POST image upload url=" << baseUrl.toString()
-                                  << "area=" << rect;
     QNetworkReply *reply = dock->m_d->nam->post(req, multiPart);
     if (!reply) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: nam->post returned null reply!";
         dock->setStatusMessage(ComfyTr::tr("Network error: could not start upload."), true);
         dock->reEnableGenerateUi();
         return;
@@ -279,8 +241,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
         dock->setProgressBarKind(false);  // §13.18: image upload finished
         const QVariant codeVar = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         const int code = codeVar.isValid() ? codeVar.toInt() : 0;
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: image upload REPLY httpStatus=" << code
-                                      << "err=" << reply->error() << "errStr=" << reply->errorString();
         if (reply->error() != QNetworkReply::NoError) {
             dock->setStatusMessage(ComfyTr::tr("Upload error: %1", reply->errorString()), true);
             dock->reEnableGenerateUi();
@@ -290,8 +250,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
         QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
         dock->m_d->inpaintRt.inpaintUploadedImageName = obj.value("name").toString();
         dock->m_d->inpaintRt.inpaintUploadedImageSubfolder = obj.value("subfolder").toString();
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: image uploaded name=" << dock->m_d->inpaintRt.inpaintUploadedImageName
-                                      << "subfolder=" << dock->m_d->inpaintRt.inpaintUploadedImageSubfolder;
         if (dock->m_d->inpaintRt.inpaintUploadedImageName.isEmpty()) {
             dock->setStatusMessage(ComfyTr::tr("Server did not return image name."), true);
             dock->reEnableGenerateUi();
@@ -313,10 +271,8 @@ void onInpaint(ComfyUIRemoteDock *dock)
         maskPart->append(part);
         QNetworkRequest reqMask(uploadUrl);
         ComfyUIUtils::setComfyUIRequestHeaders(reqMask);
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint POST mask upload url=" << uploadUrl.toString();
         QNetworkReply *replyMask = dock->m_d->nam->post(reqMask, maskPart);
         if (!replyMask) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: mask nam->post returned null!";
             dock->setStatusMessage(ComfyTr::tr("Network error: could not start mask upload."), true);
             dock->reEnableGenerateUi();
             return;
@@ -329,8 +285,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
             dock->setProgressBarKind(false);  // §13.18: upload finished
             const QVariant codeVar2 = replyMask->attribute(QNetworkRequest::HttpStatusCodeAttribute);
             const int code2 = codeVar2.isValid() ? codeVar2.toInt() : 0;
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: mask upload REPLY httpStatus=" << code2
-                                          << "err=" << replyMask->error() << "errStr=" << replyMask->errorString();
             if (replyMask->error() != QNetworkReply::NoError) {
                 dock->setStatusMessage(ComfyTr::tr("Mask upload error: %1", replyMask->errorString()), true);
                 dock->reEnableGenerateUi();
@@ -340,8 +294,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
             QJsonObject obj = QJsonDocument::fromJson(replyMask->readAll()).object();
             dock->m_d->inpaintRt.inpaintUploadedMaskName = obj.value("name").toString();
             dock->m_d->inpaintRt.inpaintUploadedMaskSubfolder = obj.value("subfolder").toString();
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: mask uploaded name=" << dock->m_d->inpaintRt.inpaintUploadedMaskName
-                                          << "subfolder=" << dock->m_d->inpaintRt.inpaintUploadedMaskSubfolder;
             if (dock->m_d->inpaintRt.inpaintUploadedMaskName.isEmpty()) {
                 dock->setStatusMessage(ComfyTr::tr("Server did not return mask name."), true);
                 dock->reEnableGenerateUi();
@@ -490,17 +442,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
             } else {
                 workflow = ComfyWorkflowEngine::buildInpaint(bp);
             }
-            qCWarning(KIS_COMFYUI_REMOTE)
-                << "slotInpaint: built workflow nodeCount=" << workflow.size()
-                << "kind=" << (useRefineRegion ? "refine_region" : "inpaint")
-                << "ckpt=" << bp.checkpoint << "arch=" << static_cast<int>(bp.arch)
-                << "denoise=" << bp.denoise << "growMaskBy=" << bp.growMaskBy << "featherMaskBy=" << bp.featherMaskBy
-                << "effectiveMode=" << effectiveMode
-                << "useFillKind=" << useFillKind
-                << "useInpaintModel=" << inpaintParams.useInpaintModel
-                << "posLen=" << bp.positivePrompt.size()
-                << "negLen=" << bp.negativePrompt.size()
-                << "steps=" << bp.steps << "cfg=" << bp.cfg;
             {
                 QString latentPath;
                 const QString graphSummary = summarizeWorkflowGraph(workflow, &latentPath);
@@ -524,12 +465,8 @@ void onInpaint(ComfyUIRemoteDock *dock)
                 diag.graphSummary = graphSummary;
                 diag.latentPath = latentPath;
                 logInpaintDiag(diag);
-                qCWarning(KIS_COMFYUI_REMOTE).nospace()
-                    << "slotInpaint: workflow latentPath=" << latentPath
-                    << " graph=" << graphSummary;
             }
             if (workflow.isEmpty()) {
-                qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaint: workflow empty after build!";
                 dock->setStatusMessage(ComfyTr::tr("Inpainting workflow error."), true);
                 dock->reEnableGenerateUi();
                 dock->m_d->progressBar->setValue(0);
@@ -558,10 +495,6 @@ void onInpaint(ComfyUIRemoteDock *dock)
             pending.contextBounds = dock->m_d->inpaintRt.inpaintContextBounds;
             pending.targetBounds = dock->m_d->inpaintRt.inpaintTargetBounds;
             dock->m_d->inpaintRt.inpaintPendingEntry = pending;
-            qCWarning(KIS_COMFYUI_REMOTE)
-                << "slotInpaint: dispatching beginUploadPipeline(dock) pendingNodeCount="
-                << dock->m_d->inpaintRt.inpaintPendingWorkflow.size()
-                << "controlLayers=" << dock->m_d->inpaintRt.inpaintControlLayersActive.size();
             beginUploadPipeline(dock);
         });
     });

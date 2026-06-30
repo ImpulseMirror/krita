@@ -267,7 +267,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
     updateWelcomeVisibility();
     updateLiveWorkspaceUi();
     applyInterfaceAppearanceSettings();
-    dumpUiLayoutDiagnostics("ctor.afterApplyInterfaceAppearanceSettings");
     updateGenerateOptions();
     applyQualitySamplerPresetFromSettings();
     refreshQueueResolutionRowVisibility();
@@ -276,8 +275,6 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     // §13.81: deferred autostart probe for unset or legacy skipped server modes
     QTimer::singleShot(400, this, &ComfyUIRemoteDock::tryAutostartServerFallback);
-    QTimer::singleShot(0, this, [this]() { dumpUiLayoutDiagnostics("ctor.singleShot0"); });
-    QTimer::singleShot(800, this, [this]() { dumpUiLayoutDiagnostics("ctor.singleShot800"); });
 }
 ComfyUIRemoteDock::~ComfyUIRemoteDock()
 {
@@ -709,11 +706,6 @@ void ComfyUIRemoteDock::updateQueueStatus()
     m_d->generate.btnCancelQueue->setEnabled(running + queued > 0);
 }
 
-void ComfyUIRemoteDock::dumpUiLayoutDiagnostics(const char *reason)
-{
-    ComfyUiLayoutDiagnostics::dumpDockerLayoutForDock(m_d.data(), widget(), reason);
-}
-
 void ComfyUIRemoteDock::showEvent(QShowEvent *event)
 {
     QDockWidget::showEvent(event);
@@ -725,27 +717,15 @@ void ComfyUIRemoteDock::showEvent(QShowEvent *event)
                 return;
             const int ws = m_d->comboWorkspace->currentIndex();
             syncCompactGenerateLayoutRows(ws == 0 || ws == 1 || ws == 2);
-            ComfyUiLayoutDiagnostics::logGenerateHistoryLayout(m_d.data(), "showEvent.deferred");
-            ComfyUiLayoutDiagnostics::logWorkspaceChromeLayout(m_d.data(), widget(), "showEvent.deferred");
         });
-    }
-    if (!m_uiDiagLoggedShow) {
-        m_uiDiagLoggedShow = true;
-        dumpUiLayoutDiagnostics("showEvent.first");
     }
 }
 
 void ComfyUIRemoteDock::resizeEvent(QResizeEvent *event)
 {
     QDockWidget::resizeEvent(event);
-    const QSize sz = event->size();
-    const int delta = qAbs(sz.height() - m_uiDiagLastSize.height()) + qAbs(sz.width() - m_uiDiagLastSize.width());
     if (m_d->comboWorkspace) {
         const int ws = m_d->comboWorkspace->currentIndex();
         syncCompactGenerateLayoutRows(ws == 0 || ws == 1 || ws == 2);
     }
-    if (m_uiDiagLastSize.isValid() && delta < 24)
-        return;
-    m_uiDiagLastSize = sz;
-    dumpUiLayoutDiagnostics("resizeEvent");
 }

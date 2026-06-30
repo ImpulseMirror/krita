@@ -496,8 +496,6 @@ QString animationFramePath(const QString &documentPath, int frameIndex); // .../
 bool filesContentsEqual(const QString &pathA, const QString &pathB);
 
 // §13.153: ai_diffusion theme.icon(name) stems → Krita/Breeze icon names (functional parity without bundling SVGs)
-QString kritaIconNameForThemeStem(const QString &stem);
-
 // §13.141: Avoid ngrok browser warning when connecting to arbitrary ComfyUI URLs
 void setComfyUIRequestHeaders(QNetworkRequest &req);
 /// Non-empty when a /history/{prompt_id} entry reports ComfyUI execution failure (status.messages execution_error).
@@ -538,9 +536,6 @@ QString wrapPromptWithTranslationLanguage(const QString &prompt, const QString &
 
 /// Python `text.replace_layers` / `prepare_prompts` layer_replace — arch-specific placeholder text.
 QString layerPlaceholderReplacementForArch(ComfyResources::Arch arch);
-QString replaceLayerPlaceholdersInPrompt(const QString &prompt,
-                                         const QHash<QString, int> &layerMapping,
-                                         const QString &replacementTemplate = QStringLiteral("Picture {}"));
 // §13.35: Layer placeholders <layer:name> → replacement template (default "Picture {}").
 QStringList extractLayerPlaceholders(QString &prompt,
                                      const QString &replacementTemplate = QStringLiteral("Picture {}"));
@@ -771,10 +766,6 @@ SelectionPreProcess calcSelectionPreProcessFromModifiers(const QRect &selectionB
 int getSelectionBlendPixels();
 QImage rasterExpandMask(const QImage &maskGray, int grow, int feather);
 QImage denoiseToCompositingMask(const QImage &maskGray, int grow, int feather, int blend);
-// Legacy helper — returns calcSelectionPreProcess().grow
-int calcSelectionPreProcessGrow(int extentWidth, int extentHeight, int areaWidth, int areaHeight, double strength0to1,
-                                int selectionFeatherPercent = 50, double selectionMinTransition = 0,
-                                int selectionGrowOffset = 0);
 
 // §13.43: Read selection modifier settings from settings.json (selection_feather, selection_min_transition, selection_grow_offset). Defaults 50, 0, 0.
 void getSelectionModifierSettings(int *selectionFeatherPercent, double *selectionMinTransition, int *selectionGrowOffset);
@@ -804,8 +795,6 @@ QString findFirstWorkflowNodeIdByClassType(const QJsonObject &workflow, const QS
 bool workflowContainsKritaInjectionNodes(const QJsonObject &workflow);
 /// True when workflow has any ETN node expanded client-side before `/prompt` (`expand_custom` parity).
 bool workflowNeedsCustomKritaExpansion(const QJsonObject &workflow);
-/// True when any ETN style node uses `sampler_preset == live` (job/live sampling hint).
-bool isCustomWorkflowLiveCapture(const QJsonObject &workflow);
 /// `model.py::_generate_custom` — `exclude_internal = not is_live` where is_live = CustomGenerationMode.live.
 bool customWorkflowCaptureExcludesInternal(bool customGenerationModeLive);
 /// ETN_KritaStyle / ETN_KritaStyleAndPrompt `sampler_preset` (auto|regular|live).
@@ -954,13 +943,6 @@ DocumentImageResult getDocumentImage(KisImageSP image, const QRect &boundsIn, co
 
 /// `LiveWorkspace.set_result` — capture context, optional DiagCross multiply overlay on
 /// static areas, then SourceOver the new server patch at `resultPlacementInDoc`.
-QImage compositeLiveResultPreview(KisImageSP image,
-                                  const QRect &contextBoundsInDoc,
-                                  const QRect &resultPlacementInDoc,
-                                  const QImage &result,
-                                  bool drawGeneratingOverlay = true,
-                                  const QList<KisNodeSP> &excludeNodes = QList<KisNodeSP>(),
-                                  const QImage &selectionMaskGray = QImage());
 /// Same compositing as compositeLiveResultPreview but uses an already-captured context image
 /// (live docker preview must not re-capture the document — that toggles layer visibility).
 QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,

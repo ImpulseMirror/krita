@@ -328,25 +328,6 @@ bool workflowNeedsCustomKritaExpansion(const QJsonObject &workflow)
     return false;
 }
 
-bool isCustomWorkflowLiveCapture(const QJsonObject &workflow)
-{
-    for (auto it = workflow.constBegin(); it != workflow.constEnd(); ++it) {
-        if (!it.value().isObject())
-            continue;
-        const QJsonObject node = it.value().toObject();
-        const QString ct = node.value(QStringLiteral("class_type")).toString();
-        if (ct != QLatin1String("ETN_KritaStyleAndPrompt") && ct != QLatin1String("ETN_KritaStyle"))
-            continue;
-        if (node.value(QStringLiteral("inputs"))
-                .toObject()
-                .value(QStringLiteral("sampler_preset"))
-                .toString()
-            == QLatin1String("live"))
-            return true;
-    }
-    return false;
-}
-
 bool customWorkflowCaptureExcludesInternal(bool customGenerationModeLive)
 {
     return !customGenerationModeLive;

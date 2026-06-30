@@ -177,36 +177,7 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
                                      d->generate.regionPromptWidget->refresh();
                              });
                      });
-    QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::editingModeChanged, dock,
-                     [d](int idx) {
-                         Q_UNUSED(idx);
-                         if (d->generate.rootPromptColumnWidget)
-                             d->generate.rootPromptColumnWidget->setVisible(false);
-                         if (d->generate.negativePromptBlock)
-                             d->generate.negativePromptBlock->setVisible(false);
-                     });
     regLayout->addWidget(d->generate.regionPromptWidget);
-    d->generate.regionButtonsRowWidget = new QWidget(d->generate.regionsGroupBox);
-    QHBoxLayout *regionBtns = new QHBoxLayout(d->generate.regionButtonsRowWidget);
-    regionBtns->setContentsMargins(0, 0, 0, 0);
-    d->generate.btnAddRegion = new QPushButton(ComfyTr::tr("Add"));
-    d->generate.btnRemoveRegion = new QPushButton(ComfyTr::tr("Remove"));
-    d->generate.btnMoveRegionUp = new QPushButton(ComfyTr::tr("Up"));
-    d->generate.btnMoveRegionDown = new QPushButton(ComfyTr::tr("Down"));
-    d->generate.btnGenerateRegions = new QPushButton(ComfyTr::tr("Generate regions"));
-    d->generate.btnGenerateRegions->setToolTip(
-        ComfyTr::tr("Same as Generate: builds one job with regional prompts and masks (Python process_regions path)."));
-    QObject::connect(d->generate.btnAddRegion, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotAddRegion);
-    QObject::connect(d->generate.btnRemoveRegion, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotRemoveRegion);
-    QObject::connect(d->generate.btnMoveRegionUp, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotMoveRegionUp);
-    QObject::connect(d->generate.btnMoveRegionDown, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotMoveRegionDown);
-    QObject::connect(d->generate.btnGenerateRegions, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotGenerateRegions);
-    regionBtns->addWidget(d->generate.btnAddRegion);
-    regionBtns->addWidget(d->generate.btnRemoveRegion);
-    regionBtns->addWidget(d->generate.btnMoveRegionUp);
-    regionBtns->addWidget(d->generate.btnMoveRegionDown);
-    regionBtns->addWidget(d->generate.btnGenerateRegions);
-    regLayout->addWidget(d->generate.regionButtonsRowWidget);
     dock->setupRegionControlLayersUi(d->generate.regionsGroupBox, nullptr);
     // FAITHFUL_PORT: control-layer list is reached via strength-row icons, not
     // embedded in the compact region prompt stack (avoids overlap with empty-state text).

@@ -143,7 +143,6 @@ struct GenerateUi
     QToolButton *btnAddControlIcon = nullptr;
     QToolButton *btnAddRegionIcon = nullptr;
     QWidget *generateActionRowWidget = nullptr;
-    QWidget *regionButtonsRowWidget = nullptr;
     QMenu *menuGenerate = nullptr;
     QMenu *menuRefine = nullptr;
     QMenu *menuRefineSelection = nullptr;
@@ -158,13 +157,6 @@ struct GenerateUi
     QComboBox *regionHeaderCombo = nullptr;
     QLabel *regionHeaderLabel = nullptr;  // description or icon, visibility by mode
     class ComfyRegionPromptWidget *regionPromptWidget = nullptr;
-    QListWidget *listRegions = nullptr;   // legacy; unused when regionPromptWidget is set
-    QPushButton *btnAddRegion = nullptr;
-    QPushButton *btnRemoveRegion = nullptr;
-    QPushButton *btnMoveRegionUp = nullptr;
-    QPushButton *btnMoveRegionDown = nullptr;
-    QPushButton *btnEditRegion = nullptr;
-    QPushButton *btnGenerateRegions = nullptr;
     class ComfyQueueButton *btnQueuePopup = nullptr;
     QWidget *queueButtonRowWidget = nullptr;
     QWidget *queueBatchOptionsRow = nullptr;
@@ -308,7 +300,6 @@ struct InpaintUi
     QWidget *seamlessRowWidget = nullptr;
     QWidget *focusRowWidget = nullptr;
     QPushButton *btnInpaint = nullptr;
-    QLabel *labelPrompt = nullptr;
     QSlider *sliderStrength = nullptr;
     QWidget *strengthRowWidget = nullptr;
     QWidget *customInpaintRowWidget = nullptr;
@@ -538,7 +529,6 @@ struct ComfyUIRemoteDock::Private
     int activeRegionIndex = -1;
 
     QList<ComfyControlLayerEntry> rootControlLayers;
-    void refreshRootControlLayersList();
     /// P2.4: per-row generate_control_layer job (separate from §13.53 preview panel poll)
 
     /// Full-canvas img2img refine — canvas pixel size (img2img template has no EmptyLatentImage).
@@ -549,13 +539,7 @@ struct ComfyUIRemoteDock::Private
     // §13.90: PromptHeader — full (title + description), icon (icon only), none (no header)
     int promptHeaderMode = 0;  // 0=full, 1=icon, 2=none; persisted in config
 
-    void refreshRegionsList();
-    void loadRegionsFromConfig();
-    void saveRegionsToConfig();
-
     static const int builtinPresetCount = 5; // None, Portrait, Landscape, Anime, Realistic
-
-    void refreshHistoryList(bool scrollToBottom = false);
 
     QNetworkAccessManager *nam = nullptr;
     QTimer *pollTimer = nullptr;
@@ -718,13 +702,10 @@ inline const QList<ComfyUIRemoteDock::Private::RegionEntry> &comfyActiveRegionEn
 
 inline int comfyActiveRegionRow(const ComfyUIRemoteDock::Private *d)
 {
-    if (d->generate.regionPromptWidget) {
-        const int i = d->activeRegionIndex;
-        return i >= 0 ? i : -1;
-    }
-    if (d->generate.listRegions)
-        return d->generate.listRegions->currentRow();
-    return -1;
+    if (!d->generate.regionPromptWidget)
+        return -1;
+    const int i = d->activeRegionIndex;
+    return i >= 0 ? i : -1;
 }
 
 inline QList<ComfyControlLayerEntry> mergedJobControlLayers(const QList<ComfyControlLayerEntry> &root,

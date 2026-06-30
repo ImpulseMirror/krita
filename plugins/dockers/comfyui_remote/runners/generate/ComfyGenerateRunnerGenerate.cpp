@@ -71,39 +71,10 @@ void onGenerate(ComfyUIRemoteDock *dock)
     dock->commitPromptEditorsFromUi();
     if (dock->m_d->comboWorkspace && dock->m_d->comboWorkspace->currentIndex() == 4 && dock->m_d->checkCustomGraphLive)
         dock->m_d->customGraphLiveActive = dock->m_d->checkCustomGraphLive->isChecked();
-    // FAITHFUL_PORT/DEBUG: snapshot every decision input at the top so logcat
-    // shows exactly which precondition tripped when "nothing happens" on click.
-    const QString dbgUrl = dock->m_d->editServerUrl ? dock->m_d->editServerUrl->text().trimmed() : QStringLiteral("<null editServerUrl>");
-    const int dbgStrength = dock->m_d->generate.spinStrength ? dock->m_d->generate.spinStrength->value() : -1;
-    const bool dbgEditMode = dock->m_d->generate.checkEditMode && dock->m_d->generate.checkEditMode->isChecked();
-    const int dbgWorkspace = dock->m_d->comboWorkspace ? dock->m_d->comboWorkspace->currentIndex() : -1;
-    const int dbgCustomLen = dock->m_d->editCustomWorkflow ? dock->m_d->editCustomWorkflow->toPlainText().trimmed().size() : -1;
-    const bool dbgHasImage = dock->m_d->viewManager && dock->m_d->viewManager->image();
-    const bool dbgBtnEnabled = dock->m_d->generate.btnGenerate && dock->m_d->generate.btnGenerate->isEnabled();
-    const int dbgQueueDepth = dock->m_d->jobQueue.size();
-    const QString dbgCurrent = dock->m_d->currentPromptId;
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotGenerate ENTER url=" << dbgUrl
-        << " strength=" << dbgStrength
-        << " editMode=" << dbgEditMode
-        << " workspace=" << dbgWorkspace
-        << " customWorkflowLen=" << dbgCustomLen
-        << " hasImage=" << dbgHasImage
-        << " btnGenerateEnabled=" << dbgBtnEnabled
-        << " queueDepth=" << dbgQueueDepth
-        << " currentPromptId=" << dbgCurrent;
 
-    // FAITHFUL_PORT/CRASH-FREE FIX #3: recover from a stuck-disabled Generate
-    // button. Previously, if a previous upload reply was dropped mid-flight
-    // (e.g. the device sleeping during canvas upload to an unreachable
-    // 127.0.0.1:8188), the button stayed disabled forever and every subsequent
-    // click was eaten by Qt with no log / no status. The compact UI hides the
-    // disabled state, so the user only sees "nothing happens". Detect the
-    // wedge — disabled button with no current prompt and no jobs queued — and
-    // forcibly re-enable before processing the click.
+    // FAITHFUL_PORT/CRASH-FREE FIX #3: recover from a stuck-disabled Generate button.
     if (dock->m_d->generate.btnGenerate && !dock->m_d->generate.btnGenerate->isEnabled()
         && dock->m_d->currentPromptId.isEmpty() && dock->m_d->jobQueue.isEmpty()) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotGenerate: btnGenerate was stuck-disabled with no in-flight job; re-enabling";
         dock->m_d->generate.btnGenerate->setEnabled(true);
     }
 
@@ -115,7 +86,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
 
     dock->syncCheckpointComboFromStyle();
     const QString resolvedCheckpoint = dock->checkpointForGenerate();
-    qCWarning(KIS_COMFYUI_REMOTE).nospace() << "slotGenerate checkpoint=" << resolvedCheckpoint;
 
     // FAITHFUL_PORT: when the Size row is hidden (compact / Android view) the
     // user never sees the W/H spinners, so they keep their construction-time
@@ -141,9 +111,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
             dock->m_d->generate.spinWidth->setValue(tw);
         if (dock->m_d->generate.spinHeight && dock->m_d->generate.spinHeight->value() != th)
             dock->m_d->generate.spinHeight->setValue(th);
-        qCWarning(KIS_COMFYUI_REMOTE).nospace()
-            << "slotGenerate: compact-UI size override w=" << tw << " h=" << th
-            << " docBounds=" << img->bounds() << " targetRect=" << targetRect;
     }
     QUrl baseUrl(urlStr);
     if (!baseUrl.isValid()) {
@@ -155,7 +122,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
     // instead of letting the request silently time out and look like
     // "nothing happens".
     if (baseUrl.host() == QLatin1String("127.0.0.1") || baseUrl.host() == QLatin1String("localhost")) {
-        qCWarning(KIS_COMFYUI_REMOTE) << "slotGenerate: server URL points at device loopback" << baseUrl.toString();
         dock->setStatusMessage(
             ComfyTr::tr("Server URL is localhost (%1) — this is the tablet itself. Use your computer's LAN IP in Settings → Connection.",
                         baseUrl.host()), true);
@@ -527,7 +493,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
             return;
         }
         if (tryStartRefineFromGenerate(dock)) {
-            qCWarning(KIS_COMFYUI_REMOTE) << "slotGenerate: tryStartRefineFromGenerate took over (Refine path); returning";
             return;
         }
         qint64 seed = dock->m_d->generate.checkFixedSeed->isChecked()
@@ -624,9 +589,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
 
         if (processed.mode == ComfyRegionProcess::ProcessRegionsResult::Mode::MultiRegion
             && ComfyResources::supportsRegions(genParams.arch)) {
-            qCWarning(KIS_COMFYUI_REMOTE).nospace()
-                << "slotGenerate: MultiRegion path, regions=" << processed.regions.size()
-                << " arch=" << static_cast<int>(genParams.arch);
             dock->m_d->generateRt.generateProcessedRegions = processed.regions;
             dock->m_d->generateRt.generateRegionalInputs = ComfyRegionProcess::toRegionalWorkflowInputs(
                 dock->m_d->generateRt.generateProcessedRegions, genParams.promptTranslationLanguage);
@@ -637,13 +599,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
             return;
         }
 
-        qCWarning(KIS_COMFYUI_REMOTE).nospace()
-            << "slotGenerate: SingleRegion / no-region path, dispatching upload pipeline w=" << genParams.width
-            << " h=" << genParams.height
-            << " steps=" << genParams.steps
-            << " arch=" << static_cast<int>(genParams.arch)
-            << " posLen=" << genParams.positivePrompt.size()
-            << " negLen=" << genParams.negativePrompt.size();
         dock->m_d->generate.btnGenerate->setEnabled(false);
         beginUploadPipeline(dock);
         return;
@@ -709,11 +664,6 @@ void onGenerate(ComfyUIRemoteDock *dock)
     if (dock->m_d->clientId.isEmpty())
         dock->m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
-    qCWarning(KIS_COMFYUI_REMOTE).nospace()
-        << "slotGenerate: dispatching batch submitIndex=0/" << dock->m_d->batchCountTarget
-        << " queueMode=" << dock->m_d->batchQueueMode
-        << " baseUrl=" << dock->m_d->batchBaseUrl.toString()
-        << " useCustomWorkflow=" << dock->m_d->batchUseCustomWorkflow;
     dock->m_d->labelStatus->setText(ComfyTr::tr("Submitting…"));
     dock->m_d->progressBar->setValue(0);
     dock->m_d->generate.btnGenerate->setEnabled(false);

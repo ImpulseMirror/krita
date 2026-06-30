@@ -865,10 +865,10 @@ void ComfyUIRemoteDockTest::testCompositeControlImageOntoExtent()
 
 void ComfyUIRemoteDockTest::testKritaIconNameForThemeStem()
 {
-    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("workspace-generation")), QStringLiteral("tools-wizard"));
-    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-active")), QStringLiteral("run-build"));
-    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("star")), QStringLiteral("rating"));
-    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("not-a-real-theme-stem-xyz")),
+    QCOMPARE(ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("workspace-generation")), QStringLiteral("tools-wizard"));
+    QCOMPARE(ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")), QStringLiteral("run-build"));
+    QCOMPARE(ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("star")), QStringLiteral("rating"));
+    QCOMPARE(ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("not-a-real-theme-stem-xyz")),
              QStringLiteral("applications-graphics"));
 }
 
@@ -1823,7 +1823,7 @@ void ComfyUIRemoteDockTest::testCustomWorkflowLiveCapturePolicy()
                           {QStringLiteral("inputs"),
                            QJsonObject{{QStringLiteral("name"), QStringLiteral("style")},
                                        {QStringLiteral("sampler_preset"), QStringLiteral("live")}}}});
-    QVERIFY(ComfyUIUtils::isCustomWorkflowLiveCapture(wf));
+    QVERIFY(ComfyUIUtils::customWorkflowNodeUsesLiveSampling(QStringLiteral("live"), false));
 
     ComfyWorkflowEngine::ExpandCustomKritaWorkflowParams ks;
     ks.workflow = wf;
@@ -2352,7 +2352,7 @@ void ComfyUIRemoteDockTest::testComfyThemePaletteAndIcons()
     QVERIFY(!ComfyTheme::icon(QStringLiteral("settings")).isNull());
     QVERIFY(!ComfyTheme::icon(QStringLiteral("star")).isNull());
     QVERIFY(!ComfyTheme::checkpointIcon(ComfyResources::Arch::Sdxl).isNull());
-    QCOMPARE(ComfyUIUtils::kritaIconNameForThemeStem(QStringLiteral("queue-active")),
+    QCOMPARE(ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")),
              ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")));
 }
 

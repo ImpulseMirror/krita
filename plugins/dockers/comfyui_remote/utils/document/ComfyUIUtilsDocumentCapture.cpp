@@ -302,34 +302,6 @@ QImage compositeLiveResultPreviewFromContext(const QImage &contextCapture,
                                                  selectionMaskGray);
 }
 
-QImage compositeLiveResultPreview(KisImageSP image,
-                                  const QRect &contextBoundsInDoc,
-                                  const QRect &resultPlacementInDoc,
-                                  const QImage &result,
-                                  bool drawGeneratingOverlay,
-                                  const QList<KisNodeSP> &excludeNodes,
-                                  const QImage &selectionMaskGray)
-{
-    if (!image)
-        return result;
-    const QRect doc = image->bounds();
-    QRect contextBounds = contextBoundsInDoc.isValid() ? contextBoundsInDoc.intersected(doc) : doc;
-    if (contextBounds.isEmpty())
-        contextBounds = doc;
-    const DocumentImageResult capture = getDocumentImage(image, contextBounds, excludeNodes);
-    if (!capture)
-        return result;
-    QImage canvas = capture.image.convertToFormat(QImage::Format_ARGB32);
-    if (canvas.isNull())
-        return result;
-    return compositeLiveResultPreviewOntoContext(canvas,
-                                                 contextBounds,
-                                                 resultPlacementInDoc,
-                                                 result,
-                                                 drawGeneratingOverlay,
-                                                 selectionMaskGray);
-}
-
 QList<KisNodeSP> collectInpaintExcludeNodes(KisImageSP image,
                                           bool excludeInternal,
                                           const QList<ComfyControlLayerEntry> &rootControlLayers,

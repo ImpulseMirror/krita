@@ -56,10 +56,6 @@ QString sanitizePrompt(const QString &prompt)
     return out.trimmed().isEmpty() ? QStringLiteral("no prompt") : out.trimmed();
 }
 
-QString kritaIconNameForThemeStem(const QString &stem)
-{
-    return ComfyTheme::kritaIconNameForThemeStem(stem);
-}
 
 QString formatSaveImageFileName(const QString &templateStr, const QString &documentName, const QString &jobTimestamp,
                                 int jobIndex1Based, const QString &promptTrimmed)
@@ -264,27 +260,6 @@ QString layerPlaceholderReplacementForArch(ComfyResources::Arch arch)
     if (arch == ComfyResources::Arch::QwenEP)
         return QStringLiteral("Picture {}");
     return QStringLiteral("Picture {}");
-}
-
-QString replaceLayerPlaceholdersInPrompt(const QString &prompt,
-                                         const QHash<QString, int> &layerMapping,
-                                         const QString &replacementTemplate)
-{
-    static const QRegularExpression pattern(QStringLiteral("<layer:([^>]+)>"), QRegularExpression::CaseInsensitiveOption);
-    QString out = prompt;
-    QVector<QRegularExpressionMatch> matches;
-    QRegularExpressionMatchIterator it = pattern.globalMatch(prompt);
-    while (it.hasNext())
-        matches.append(it.next());
-    for (int i = matches.size() - 1; i >= 0; --i) {
-        const QRegularExpressionMatch &match = matches.at(i);
-        const QString name = match.captured(1).trimmed();
-        const auto mapped = layerMapping.constFind(name);
-        if (mapped == layerMapping.constEnd())
-            continue;
-        out.replace(match.capturedStart(), match.capturedLength(), replacementTemplate.arg(mapped.value()));
-    }
-    return out.trimmed();
 }
 
 QStringList extractLayerPlaceholders(QString &prompt, const QString &replacementTemplate)

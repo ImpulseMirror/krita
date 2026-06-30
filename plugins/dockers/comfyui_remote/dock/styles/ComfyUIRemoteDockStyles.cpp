@@ -371,24 +371,6 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
                 ComfyUiLayoutDiagnostics::measureEssentialGenerateChromeHeight(m_d.data(), contentWidth);
             const int contentH =
                 ComfyUiLayoutDiagnostics::measureEssentialGenerateContentHeight(m_d.data(), contentWidth);
-            if (liveWs) {
-                qCWarning(KIS_COMFYUI_REMOTE).noquote()
-                    << QStringLiteral("COMFY_UI_DIAG liveLayout sync reason=syncCompactGenerateLayoutRows marker=")
-                    << ComfyUiLayoutDiagnostics::kBuildMarker << QStringLiteral("chromeH=") << chromeH
-                    << QStringLiteral("contentH=") << contentH
-                    << QStringLiteral("paramsH=")
-                    << (m_d->live.liveParamsRowWidget ? m_d->live.liveParamsRowWidget->height() : -1)
-                    << QStringLiteral("promptRowH=")
-                    << (m_d->live.livePromptRowWidget ? m_d->live.livePromptRowWidget->height() : -1)
-                    << QStringLiteral("regionPromptH=")
-                    << (m_d->generate.regionPromptWidget ? m_d->generate.regionPromptWidget->height() : -1)
-                    << QStringLiteral("previewParent=")
-                    << (m_d->live.livePreviewGroupBox && m_d->live.livePreviewGroupBox->parentWidget()
-                            ? m_d->live.livePreviewGroupBox->parentWidget()->metaObject()->className()
-                            : QStringLiteral("null"))
-                    << QStringLiteral("previewH=")
-                    << (m_d->live.livePreviewGroupBox ? m_d->live.livePreviewGroupBox->height() : -1);
-            }
             if (contentH > 0 && m_d->generate.genContentContainer) {
                 if (liveWs) {
                     m_d->generate.genContentContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -461,18 +443,7 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
             if (auto *box = qobject_cast<QVBoxLayout *>(lay))
                 box->setAlignment(Qt::AlignTop);
         }
-        ComfyUiLayoutDiagnostics::logGenerateHistoryLayout(m_d.data(), "syncCompactGenerateLayoutRows");
-        QWidget *dockerRoot = widget();
-        ComfyUiLayoutDiagnostics::logWorkspaceChromeLayout(m_d.data(), dockerRoot, "syncCompactGenerateLayoutRows");
-        if (liveWs)
-            ComfyUiLayoutDiagnostics::logLiveWorkspaceLayout(m_d.data(), dockerRoot, "syncCompactGenerateLayoutRows");
     }
-
-    qCWarning(KIS_COMFYUI_REMOTE).noquote()
-        << QStringLiteral("COMFY_UI_DIAG syncCompactGenerateLayoutRows compact=") << compactGenerate
-        << QStringLiteral("genContentHint=")
-        << (m_d->generate.genContentContainer ? m_d->generate.genContentContainer->sizeHint() : QSize())
-        << QStringLiteral("progressH=") << (m_d->progressBar ? m_d->progressBar->height() : -1);
 }
 
 void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
@@ -524,8 +495,6 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     // verbose region heading label so the regions block reads cleanly.
     if (m_d->generate.regionHeaderCombo) m_d->generate.regionHeaderCombo->setVisible(false);
     if (m_d->generate.regionHeaderLabel) m_d->generate.regionHeaderLabel->setVisible(false);
-    if (m_d->generate.regionButtonsRowWidget) m_d->generate.regionButtonsRowWidget->setVisible(false);
-    if (m_d->inpaint.labelPrompt) m_d->inpaint.labelPrompt->setVisible(false);
     // FAITHFUL_PORT: the root "Control layers" groupbox (with "Add control layer"
     // button) is an advanced control-net workflow; upstream surfaces it via the
     // strength row's "Add control layer" icon, not a full groupbox on the home.
@@ -539,7 +508,6 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     syncHistoryPanelWorkspaceVisibility();
     syncCompactGenerateLayoutRows(onGenerate || onUpscale || liveWs);
     resetProgressBarToIdle();
-    dumpUiLayoutDiagnostics("applyInterfaceAppearanceSettings");
 }
 void ComfyUIRemoteDock::updateNegativePromptAlertVisibility()
 {
