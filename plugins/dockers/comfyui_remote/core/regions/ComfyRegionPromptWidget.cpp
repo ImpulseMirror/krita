@@ -4,6 +4,7 @@
  */
 
 #include "ComfyRegionPromptWidget.h"
+#include "ComfyTextArea.h"
 #include "ComfyPromptStackWidget.h"
 #include "ComfyPromptLayoutMetrics.h"
 #include "ComfyLocalization.h"
@@ -11,6 +12,7 @@
 #include "ComfyControlLayer.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUiLayoutDiagnostics.h"
 
 #include <QGuiApplication>
@@ -19,7 +21,6 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPlainTextEdit>
-#include <QComboBox>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -32,6 +33,7 @@
 #include <QSizePolicy>
 #include <QSignalBlocker>
 #include <QResizeEvent>
+#include <QSet>
 
 #include <KoColorConversionTransformation.h>
 #include <kis_paint_device.h>
@@ -58,6 +60,10 @@ public:
         setObjectName(QStringLiteral("InactiveRegionWidget"));
         setFrameStyle(QFrame::StyledPanel);
         setCursor(Qt::PointingHandCursor);
+        setFixedHeight(40);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setStyleSheet(QStringLiteral("QFrame#InactiveRegionWidget { background-color: %1; }")
+                          .arg(ComfyUiStyle::colors().secondaryPanel));
         auto *row = new QHBoxLayout(this);
         row->setContentsMargins(4, 4, 4, 4);
         row->setSpacing(6);
@@ -73,10 +79,19 @@ public:
         row->addLayout(m_icons);
     }
 
-    void setContent(const QPixmap &thumb, const QString &text, const QStringList &controlModeStems)
+    void setContent(const QPixmap &thumb, const QString &text, const QStringList &controlModeStems, bool placeholder)
     {
-        m_thumb->setPixmap(thumb.isNull() ? QPixmap() : thumb.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (thumb.isNull()) {
+            m_thumb->clear();
+            m_thumb->hide();
+            m_thumb->setFixedSize(0, 0);
+        } else {
+            m_thumb->show();
+            m_thumb->setFixedSize(32, 32);
+            m_thumb->setPixmap(thumb.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
         m_displayText = text;
+        m_placeholder = placeholder;
         while (QLayoutItem *it = m_icons->takeAt(0)) {
             if (QWidget *w = it->widget())
                 w->deleteLater();
@@ -109,57 +124,50 @@ private:
         const int w = qMax(20, m_prompt->width() - 4);
         m_prompt->setText(fm.elidedText(m_displayText, Qt::ElideRight, w));
         m_prompt->setToolTip(m_displayText);
+        if (m_placeholder) {
+            QFont f = m_prompt->font();
+            f.setItalic(true);
+            m_prompt->setFont(f);
+            m_prompt->setStyleSheet(QStringLiteral("color: %1;").arg(ComfyUiStyle::colors().secondaryText));
+        } else {
+            QFont f = m_prompt->font();
+            f.setItalic(false);
+            m_prompt->setFont(f);
+            m_prompt->setStyleSheet(QStringLiteral("color: %1;").arg(ComfyUiStyle::colors().primaryText));
+        }
     }
 
     QLabel *m_thumb = nullptr;
     QLabel *m_prompt = nullptr;
     QHBoxLayout *m_icons = nullptr;
     QString m_displayText;
+    bool m_placeholder = false;
 };
 
 QPixmap thumbnailForRegion(const ComfyUIRemoteDock::Private::RegionEntry &entry,
                            KisImageSP image,
                            bool isRoot)
 {
-    if (isRoot) {
-        return ComfyTheme::icon(QStringLiteral("region-prompt"))
-            .pixmap(32, 32);
-    }
-    if (image && !entry.layerIds.isEmpty()) {
-        const QStringList ids = ComfyRegionLink::parseLayerIds(entry.layerIds);
-        if (!ids.isEmpty()) {
-            if (KisLayerSP layer = ComfyRegionLink::findLayerByUuid(image, QUuid(ids.first()))) {
-                const QRect bounds = layer->exactBounds() & image->bounds();
-                if (!bounds.isEmpty()) {
-                    KisPaintDeviceSP dev = layer->projection();
-                    if (dev) {
-                        const KoColorProfile *profile =
-                            image->colorSpace() ? image->colorSpace()->profile() : nullptr;
-                        QImage rgba = dev->convertToQImage(profile, bounds.x(), bounds.y(), bounds.width(),
-                                                           bounds.height(),
-                                                           KoColorConversionTransformation::internalRenderingIntent(),
-                                                           KoColorConversionTransformation::internalConversionFlags());
-                        if (!rgba.isNull())
-                            return QPixmap::fromImage(
-                                rgba.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                    }
-                }
-            }
-        }
-    }
-    return ComfyTheme::icon(QStringLiteral("region-prompt"))
-        .pixmap(32, 32);
+    Q_UNUSED(entry);
+    Q_UNUSED(image);
+    if (isRoot)
+        return ComfyTheme::icon(QStringLiteral("root")).pixmap(32, 32);
+    return QPixmap();
 }
 
-QString inactivePromptText(const ComfyUIRemoteDock::Private::RegionEntry &r, bool isRoot)
+QString inactivePromptText(const ComfyUIRemoteDock::Private::RegionEntry &r, bool isRoot, bool *outPlaceholder = nullptr)
 {
     QString prompt = r.prompt;
     prompt.replace(QLatin1Char('\n'), QLatin1Char(' '));
     if (prompt.isEmpty()) {
+        if (outPlaceholder)
+            *outPlaceholder = true;
         if (isRoot)
             return QObject::tr("Common text prompt - click to add content");
         return QObject::tr("%1 - click to add regional text").arg(r.name);
     }
+    if (outPlaceholder)
+        *outPlaceholder = false;
     return prompt;
 }
 
@@ -172,6 +180,89 @@ QStringList controlIconStems(const QList<ComfyControlLayerEntry> &layers)
         stems.append(QStringLiteral("control-") + mode);
     }
     return stems;
+}
+
+bool regionHasLayerLinks(const ComfyUIRemoteDock::Private::RegionEntry &entry)
+{
+    return !ComfyRegionLink::parseLayerIds(entry.layerIds).isEmpty();
+}
+
+KisLayerSP primaryLinkedLayer(const ComfyUIRemoteDock::Private::RegionEntry &entry, KisImageSP image)
+{
+    for (const QString &idStr : ComfyRegionLink::parseLayerIds(entry.layerIds)) {
+        if (KisLayerSP layer = ComfyRegionLink::findLayerByUuid(image, QUuid(idStr)))
+            return ComfyRegionLink::linkTarget(layer);
+    }
+    return KisLayerSP();
+}
+
+KisNodeSP stackAnchorUnderRoot(KisLayerSP layer, KisGroupLayerSP root)
+{
+    if (!layer || !root)
+        return KisNodeSP();
+    KisNodeSP rootNode = root;
+    KisNodeSP node = layer;
+    while (node->parent() && node->parent() != rootNode)
+        node = node->parent();
+    return node->parent() == rootNode ? node : KisNodeSP();
+}
+
+int regionIndexForStackNode(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions,
+                            KisImageSP image,
+                            KisGroupLayerSP root,
+                            KisNodeSP stackNode,
+                            int skipIndex = -1)
+{
+    if (!stackNode)
+        return -1;
+    for (int i = 0; i < regions.size(); ++i) {
+        if (i == skipIndex || !regionHasLayerLinks(regions.at(i)))
+            continue;
+        if (stackAnchorUnderRoot(primaryLinkedLayer(regions.at(i), image), root) == stackNode)
+            return i;
+    }
+    return -1;
+}
+
+QList<int> unlinkedRegionIndices(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions, int skipIndex)
+{
+    QList<int> out;
+    for (int i = 0; i < regions.size(); ++i) {
+        if (i != skipIndex && !regionHasLayerLinks(regions.at(i)))
+            out.append(i);
+    }
+    return out;
+}
+
+QList<int> linkedRegionsTopToBottom(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions,
+                                    KisImageSP image,
+                                    int skipIndex = -1)
+{
+    QList<int> ordered;
+    QSet<int> used;
+    if (!image)
+        return ordered;
+    KisGroupLayerSP root = image->rootLayer();
+    if (!root)
+        return ordered;
+    for (KisNodeSP node = root->lastChild(); node; node = node->prevSibling()) {
+        const int idx = regionIndexForStackNode(regions, image, root, node, skipIndex);
+        if (idx >= 0 && !used.contains(idx)) {
+            ordered.append(idx);
+            used.insert(idx);
+        }
+    }
+    return ordered;
+}
+
+void layerSiblingNodesBottomToTop(KisNodeSP anchor, QList<KisNodeSP> *below, QList<KisNodeSP> *above)
+{
+    if (!anchor || !below || !above)
+        return;
+    for (KisNodeSP s = anchor->prevSibling(); s; s = s->prevSibling())
+        below->append(s);
+    for (KisNodeSP s = anchor->nextSibling(); s; s = s->nextSibling())
+        above->append(s);
 }
 
 } // namespace
@@ -191,25 +282,29 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     m_inactiveAbove->setSpacing(2);
     rootLayout->addLayout(m_inactiveAbove);
 
-    m_activeFrame = new QFrame(this);
+    m_activeFrame = new ComfyTextInputFrame(this);
     m_activeFrame->setObjectName(QStringLiteral("ActiveRegionWidget"));
-    m_activeFrame->setFrameStyle(QFrame::NoFrame);
+    m_activeFrame->setFrameShape(QFrame::NoFrame);
     m_activeFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     auto *activeLay = new QVBoxLayout(m_activeFrame);
     activeLay->setContentsMargins(0, 0, 0, 0);
     activeLay->setSpacing(0);
     activeLay->setAlignment(Qt::AlignTop);
 
-    auto *headerRow = new QHBoxLayout();
-    m_headerIcon = new QLabel(m_activeFrame);
+    m_headerHost = new QWidget(m_activeFrame);
+    auto *headerRow = new QHBoxLayout(m_headerHost);
+    headerRow->setContentsMargins(4, 4, 2, 0);
+    headerRow->setSpacing(4);
+    m_headerIcon = new QLabel(m_headerHost);
     m_headerIcon->setFixedSize(18, 18);
-    m_headerLabel = new QLabel(m_activeFrame);
+    m_headerIcon->setAlignment(Qt::AlignCenter);
+    m_headerLabel = new QLabel(m_headerHost);
     m_headerLabel->setWordWrap(true);
-    m_btnLink = new QPushButton(m_activeFrame);
+    m_btnLink = new QPushButton(m_headerHost);
     m_btnLink->setFlat(true);
     m_btnLink->setIcon(
         ComfyTheme::icon(QStringLiteral("link")));
-    m_btnRemove = new QPushButton(m_activeFrame);
+    m_btnRemove = new QPushButton(m_headerHost);
     m_btnRemove->setFlat(true);
     m_btnRemove->setToolTip(ComfyTr::tr("Remove this region"));
     m_btnRemove->setIcon(
@@ -218,34 +313,31 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     headerRow->addWidget(m_headerLabel, 1);
     headerRow->addWidget(m_btnLink);
     headerRow->addWidget(m_btnRemove);
-    activeLay->addLayout(headerRow);
 
     m_promptStack = new ComfyPromptStackWidget(m_activeFrame);
+    m_promptStack->setHeaderWidget(m_headerHost);
     m_editPrompt = m_promptStack->positiveEditor();
     m_editNegative = m_promptStack->negativeEditor();
     activeLay->addWidget(m_promptStack, 0, Qt::AlignTop);
     connect(m_promptStack, &ComfyPromptStackWidget::layoutHeightsChanged, this, [this]() {
+        if (!m_promptStack)
+            return;
+        if (m_promptStack->resizeDragging())
+            syncCompactHeightFromLayout();
+        else
+            applyCompactLayout(m_promptStack->positiveLineCount(), m_showNegativePrompt, m_showResizeHandle, m_liveLineCounts);
         if (m_activeFrame)
             m_activeFrame->updateGeometry();
         updateGeometry();
         Q_EMIT layoutHeightsChanged();
     });
 
-    m_comboMask = new QComboBox(m_activeFrame);
-    m_comboMask->setToolTip(ComfyTr::tr("Mask source: selection or a paint layer"));
-    activeLay->addWidget(m_comboMask);
-
-    m_btnTranslation = new QPushButton(m_activeFrame);
-    m_btnTranslation->setFlat(true);
-    m_btnTranslation->setToolTip(ComfyTr::tr("Toggle prompt translation (configure language in Settings → Interface)"));
-    activeLay->addWidget(m_btnTranslation, 0, Qt::AlignRight);
-
     m_noRegionStrip = new QWidget(m_activeFrame);
     auto *noLay = new QHBoxLayout(m_noRegionStrip);
     noLay->setContentsMargins(0, 0, 0, 0);
     m_noRegionLabel = new QLabel(m_noRegionStrip);
     m_noRegionLabel->setWordWrap(true);
-    m_noRegionLabel->setStyleSheet(QStringLiteral("font-style: italic; color: palette(mid);"));
+    ComfyUiStyle::styleHint(m_noRegionLabel);
     m_btnNewRegion = new QPushButton(ComfyTr::tr("New region"), m_noRegionStrip);
     m_btnNewRegion->setIcon(
         ComfyTheme::icon(QStringLiteral("region-add")));
@@ -260,7 +352,7 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     m_emptyHint = new QLabel(
         ComfyTr::tr("No regions yet. Use Add below, or link a layer after creating a region."), m_activeFrame);
     m_emptyHint->setWordWrap(true);
-    m_emptyHint->setStyleSheet(QStringLiteral("color: palette(mid); font-style: italic;"));
+    ComfyUiStyle::styleHint(m_emptyHint);
     activeLay->addWidget(m_emptyHint);
 
     rootLayout->addWidget(m_activeFrame);
@@ -280,20 +372,12 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
             return;
         (*m_regions)[*m_activeIndex].prompt = m_editPrompt->toPlainText();
         Q_EMIT regionEdited();
-        rebuildInactiveChips();
     });
     connect(m_editNegative, &QPlainTextEdit::textChanged, this, [this]() {
         if (m_syncingEditor)
             return;
         if (currentMode() == EditorMode::Root)
             pushRootPromptsToDock();
-    });
-    connect(m_comboMask, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        if (m_syncingEditor || currentMode() != EditorMode::Region || !m_regions || !m_activeIndex)
-            return;
-        (*m_regions)[*m_activeIndex].maskSource = m_comboMask->currentData().toString();
-        Q_EMIT regionEdited();
-        rebuildInactiveChips();
     });
     connect(m_btnLink, &QPushButton::clicked, this, [this]() {
         if (!m_regions || !m_activeIndex || !m_viewManager || currentMode() != EditorMode::Region)
@@ -312,23 +396,6 @@ ComfyRegionPromptWidget::ComfyRegionPromptWidget(QWidget *parent)
     connect(m_btnRemove, &QPushButton::clicked, this, &ComfyRegionPromptWidget::removeRegionRequested);
     connect(m_btnNewRegion, &QPushButton::clicked, this, &ComfyRegionPromptWidget::requestAddRegion);
     connect(m_btnLinkRegionMenu, &QPushButton::clicked, this, [this]() { showLinkMenu(m_btnLinkRegionMenu); });
-    connect(m_btnTranslation, &QPushButton::clicked, this, [this]() {
-        const bool ctrl = QGuiApplication::keyboardModifiers() & Qt::ControlModifier;
-        if (ctrl) {
-            const bool neg = currentMode() == EditorMode::Root && m_showNegativePrompt
-                             && m_editNegative && m_editNegative->hasFocus();
-            Q_EMIT translatePromptRequested(neg);
-            return;
-        }
-        QJsonObject st = ComfyUIUtils::loadSettingsJson();
-        const bool en = st.value(QStringLiteral("translation_enabled")).toBool(false);
-        st.insert(QStringLiteral("translation_enabled"), !en);
-        ComfyUIUtils::saveSettingsJson(st);
-        m_btnTranslation->setText(en ? QStringLiteral("EN") : m_promptTranslationCode.toUpper());
-        m_btnTranslation->setToolTip(
-            en ? ComfyTr::tr("Prompt translation is active. Click to disable. Ctrl+Click to translate text now.")
-               : ComfyTr::tr("Translation is disabled. Click to enable. Ctrl+Click to translate text now."));
-    });
 }
 
 bool ComfyRegionPromptWidget::eventFilter(QObject *obj, QEvent *event)
@@ -347,7 +414,6 @@ void ComfyRegionPromptWidget::setViewManager(KisViewManager *viewManager)
 {
     m_viewManager = viewManager;
     m_lastActiveLayerUuid = QUuid();
-    populateMaskCombo();
     refresh();
 }
 
@@ -355,6 +421,16 @@ void ComfyRegionPromptWidget::setPromptHeaderMode(int mode)
 {
     m_promptHeaderMode = qBound(0, mode, 2);
     rebuildActiveEditor();
+}
+
+void ComfyRegionPromptWidget::setLiveSingleRegionMode(bool liveSingleRegion)
+{
+    if (m_liveSingleRegionMode == liveSingleRegion)
+        return;
+    m_liveSingleRegionMode = liveSingleRegion;
+    rebuildInactiveChips();
+    syncActiveEditorFromRegion();
+    Q_EMIT layoutHeightsChanged();
 }
 
 void ComfyRegionPromptWidget::setShowNegativePrompt(bool show)
@@ -366,9 +442,6 @@ void ComfyRegionPromptWidget::setShowNegativePrompt(bool show)
 void ComfyRegionPromptWidget::setPromptTranslationCode(const QString &code)
 {
     m_promptTranslationCode = code.isEmpty() || code == QLatin1String("disabled") ? QStringLiteral("EN") : code;
-    if (m_btnTranslation)
-        m_btnTranslation->setText(m_promptTranslationCode.left(2).toUpper());
-    m_btnTranslation->setVisible(!code.isEmpty() && code != QLatin1String("disabled"));
 }
 
 void ComfyRegionPromptWidget::setNegativePromptWarningVisible(bool visible)
@@ -385,10 +458,14 @@ void ComfyRegionPromptWidget::setRootPromptEditors(QPlainTextEdit *positive, QPl
 
 void ComfyRegionPromptWidget::embedRegionControlPanel(QWidget *panel)
 {
-    if (m_controlPanelHost)
+    if (!panel || m_controlPanelHost)
         return;
     m_controlPanelHost = panel;
-    layout()->addWidget(panel);
+    if (auto *rootLayout = qobject_cast<QVBoxLayout *>(layout())) {
+        rootLayout->addSpacing(4);
+        rootLayout->addWidget(panel);
+    }
+    updateGeometry();
 }
 
 void ComfyRegionPromptWidget::bind(QList<ComfyUIRemoteDock::Private::RegionEntry> *regions, int *activeIndex)
@@ -414,10 +491,19 @@ void ComfyRegionPromptWidget::refresh()
         } else {
             *m_activeIndex = 0;
         }
+    } else if (m_liveSingleRegionMode && *m_activeIndex != ComfyRegionLink::kRootRegionIndex && m_viewManager
+               && m_viewManager->image()) {
+        const int linked = ComfyRegionLink::findRegionIndexForLayer(
+            *m_regions, m_viewManager->image(), m_viewManager->activeLayer(), ComfyRegionLink::LinkMode::Any);
+        if (linked >= 0)
+            *m_activeIndex = linked;
+        else if (*m_activeIndex >= 0)
+            *m_activeIndex = ComfyRegionLink::kUnlinkedRegionIndex;
     }
     rebuildInactiveChips();
     rebuildActiveEditor();
     Q_EMIT editingModeChanged(*m_activeIndex);
+    Q_EMIT layoutHeightsChanged();
 }
 
 void ComfyRegionPromptWidget::onActiveLayerChanged()
@@ -456,15 +542,8 @@ void ComfyRegionPromptWidget::focusPromptEditor()
 
 QVariant ComfyRegionPromptWidget::inputMethodQuery(Qt::InputMethodQuery query) const
 {
-    // Android IME uses QMetaObject::invokeMethod on the focus widget's ancestors;
-    // forward to the active prompt editor so soft keyboard / composition work.
-    if (m_editPrompt && m_editPrompt->hasFocus())
-        return m_editPrompt->inputMethodQuery(query);
-    if (m_editNegative && m_editNegative->hasFocus())
-        return m_editNegative->inputMethodQuery(query);
-    if (m_editPrompt && m_editPrompt->isVisible())
-        return m_editPrompt->inputMethodQuery(query);
-    return QWidget::inputMethodQuery(query);
+    // Android IME queries ancestors of the focused editor, not the editor itself.
+    return ComfyTextArea::forwardContainerInputMethodQuery(this, query);
 }
 
 ComfyRegionPromptWidget::EditorMode ComfyRegionPromptWidget::currentMode() const
@@ -488,7 +567,7 @@ void ComfyRegionPromptWidget::clearLayout(QLayout *layout)
         return;
     while (QLayoutItem *item = layout->takeAt(0)) {
         if (QWidget *w = item->widget())
-            w->deleteLater();
+            delete w;
         delete item;
     }
 }
@@ -503,11 +582,13 @@ void ComfyRegionPromptWidget::setActiveIndex(int index, bool emitSignal)
     *m_activeIndex = index;
     syncActiveEditorFromRegion();
     rebuildInactiveChips();
+    applyPromptLineHeights();
     updateLinkButton();
     updateNoRegionStrip();
     if (emitSignal) {
         Q_EMIT activeIndexChanged(index);
         Q_EMIT editingModeChanged(index);
+        Q_EMIT layoutHeightsChanged();
     }
 }
 
@@ -521,38 +602,108 @@ void ComfyRegionPromptWidget::rebuildInactiveChips()
     KisImageSP image = m_viewManager ? KisImageSP(m_viewManager->image()) : KisImageSP();
     const int active = *m_activeIndex;
 
-    auto placeChip = [this, active, image](InactiveRegionChip *chip, int index) {
-        chip->setProperty("regionIndex", index);
-        chip->installEventFilter(this);
-        if (index == active || (index == ComfyRegionLink::kRootRegionIndex && active == ComfyRegionLink::kRootRegionIndex))
-            return;
-        if (index == ComfyRegionLink::kRootRegionIndex || (active >= 0 && index < active)
-            || active == ComfyRegionLink::kUnlinkedRegionIndex || active == ComfyRegionLink::kRootRegionIndex)
-            m_inactiveAbove->addWidget(chip);
-        else
-            m_inactiveBelow->addWidget(chip);
-    };
-
-    if (!m_regions->isEmpty()) {
+    auto makeRootChip = [this, image]() -> InactiveRegionChip * {
         ComfyUIRemoteDock::Private::RegionEntry pseudo;
         pseudo.name = ComfyTr::tr("Common");
         if (m_dockRootPositive)
             pseudo.prompt = m_dockRootPositive->toPlainText();
         if (pseudo.prompt.isEmpty() && m_editPrompt)
             pseudo.prompt = m_editPrompt->toPlainText();
+        bool rootPlaceholder = false;
+        const QString rootText = inactivePromptText(pseudo, true, &rootPlaceholder);
         auto *rootChip = new InactiveRegionChip(this);
-        rootChip->setContent(thumbnailForRegion(pseudo, image, true), inactivePromptText(pseudo, true), {});
-        placeChip(rootChip, ComfyRegionLink::kRootRegionIndex);
+        rootChip->setContent(thumbnailForRegion(pseudo, image, true), rootText, {}, rootPlaceholder);
+        return rootChip;
+    };
+
+    auto makeRegionChip = [this, image](const ComfyUIRemoteDock::Private::RegionEntry &r) -> InactiveRegionChip * {
+        bool regionPlaceholder = false;
+        const QString chipText = inactivePromptText(r, false, &regionPlaceholder);
+        auto *chip = new InactiveRegionChip(this);
+        chip->setContent(thumbnailForRegion(r, image, false), chipText,
+                         controlIconStems(r.controlLayers), regionPlaceholder);
+        return chip;
+    };
+
+    if (m_liveSingleRegionMode) {
+        if (m_regions->isEmpty())
+            return;
+        if (active >= 0) {
+            if (InactiveRegionChip *rootChip = makeRootChip()) {
+                rootChip->setProperty("regionIndex", ComfyRegionLink::kRootRegionIndex);
+                rootChip->installEventFilter(this);
+                m_inactiveBelow->addWidget(rootChip);
+            }
+            return;
+        }
+        if (active == ComfyRegionLink::kRootRegionIndex && m_viewManager && m_viewManager->image()) {
+            const int linked = ComfyRegionLink::findRegionIndexForLayer(
+                *m_regions, m_viewManager->image(), m_viewManager->activeLayer(), ComfyRegionLink::LinkMode::Any);
+            if (linked >= 0) {
+                if (InactiveRegionChip *chip = makeRegionChip(m_regions->at(linked))) {
+                    chip->setProperty("regionIndex", linked);
+                    chip->installEventFilter(this);
+                    m_inactiveAbove->addWidget(chip);
+                }
+            }
+            return;
+        }
+        if (active == ComfyRegionLink::kUnlinkedRegionIndex) {
+            if (InactiveRegionChip *rootChip = makeRootChip()) {
+                rootChip->setProperty("regionIndex", ComfyRegionLink::kRootRegionIndex);
+                rootChip->installEventFilter(this);
+                m_inactiveBelow->addWidget(rootChip);
+            }
+        }
+        return;
     }
 
-    for (int i = 0; i < m_regions->size(); ++i) {
-        if (i == active)
-            continue;
-        const ComfyUIRemoteDock::Private::RegionEntry &r = m_regions->at(i);
-        auto *chip = new InactiveRegionChip(this);
-        chip->setContent(thumbnailForRegion(r, image, false), inactivePromptText(r, false),
-                         controlIconStems(r.controlLayers));
-        placeChip(chip, i);
+    auto installChip = [this](InactiveRegionChip *chip, int index, QVBoxLayout *layout) {
+        if (!chip || !layout)
+            return;
+        chip->setProperty("regionIndex", index);
+        chip->installEventFilter(this);
+        layout->addWidget(chip);
+    };
+
+    const bool rootActive = active == ComfyRegionLink::kRootRegionIndex || active == ComfyRegionLink::kUnlinkedRegionIndex;
+
+    if (rootActive) {
+        for (const int idx : unlinkedRegionIndices(*m_regions, active))
+            installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
+        for (const int idx : linkedRegionsTopToBottom(*m_regions, image, active))
+            installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
+        return;
+    }
+
+    if (active >= 0 && active < m_regions->size()) {
+        KisGroupLayerSP root = image ? image->rootLayer() : KisGroupLayerSP();
+        KisNodeSP anchor = stackAnchorUnderRoot(primaryLinkedLayer(m_regions->at(active), image), root);
+
+        for (const int idx : unlinkedRegionIndices(*m_regions, active))
+            installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
+
+        if (anchor) {
+            QList<KisNodeSP> belowNodes;
+            QList<KisNodeSP> aboveNodes;
+            layerSiblingNodesBottomToTop(anchor, &belowNodes, &aboveNodes);
+            for (auto it = aboveNodes.crbegin(); it != aboveNodes.crend(); ++it) {
+                const int idx = regionIndexForStackNode(*m_regions, image, root, *it, active);
+                if (idx >= 0)
+                    installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
+            }
+            for (auto it = belowNodes.crbegin(); it != belowNodes.crend(); ++it) {
+                const int idx = regionIndexForStackNode(*m_regions, image, root, *it, active);
+                if (idx >= 0)
+                    installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveBelow);
+            }
+        } else {
+            for (const int idx : linkedRegionsTopToBottom(*m_regions, image, active))
+                installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
+        }
+
+        if (!m_regions->isEmpty())
+            installChip(makeRootChip(), ComfyRegionLink::kRootRegionIndex, m_inactiveBelow);
     }
 }
 
@@ -562,44 +713,13 @@ void ComfyRegionPromptWidget::rebuildActiveEditor()
     applyPromptLineHeights();
 }
 
-void ComfyRegionPromptWidget::populateMaskCombo()
-{
-    if (!m_comboMask)
-        return;
-    const QString prev = m_comboMask->currentData().toString();
-    m_comboMask->clear();
-    m_comboMask->addItem(ComfyTr::tr("Current selection"), QStringLiteral("selection"));
-    if (m_viewManager && m_viewManager->image() && m_viewManager->image()->rootLayer()) {
-        QList<KisNodeSP> nodes;
-        nodes.append(m_viewManager->image()->rootLayer());
-        while (!nodes.isEmpty()) {
-            KisNodeSP node = nodes.takeFirst();
-            if (KisLayerSP layer = dynamic_cast<KisLayer *>(node.data())) {
-                if (!layer->name().isEmpty())
-                    m_comboMask->addItem(layer->name(), QString(QStringLiteral("layer:") + layer->name()));
-            }
-            for (int c = 0; c < static_cast<int>(node->childCount()); ++c)
-                nodes.append(node->at(c));
-        }
-    }
-    const int idx = m_comboMask->findData(prev);
-    if (idx >= 0)
-        m_comboMask->setCurrentIndex(idx);
-}
-
 void ComfyRegionPromptWidget::syncRootPromptsFromDock()
 {
     m_syncingEditor = true;
-    if (m_dockRootPositive && m_editPrompt) {
-        const QString t = m_dockRootPositive->toPlainText();
-        if (m_editPrompt->toPlainText() != t)
-            m_editPrompt->setPlainText(t);
-    }
-    if (m_dockRootNegative && m_editNegative) {
-        const QString t = m_dockRootNegative->toPlainText();
-        if (m_editNegative->toPlainText() != t)
-            m_editNegative->setPlainText(t);
-    }
+    if (m_dockRootPositive && m_editPrompt)
+        ComfyTextArea::setPlainTextPreserveCursor(m_editPrompt, m_dockRootPositive->toPlainText());
+    if (m_dockRootNegative && m_editNegative)
+        ComfyTextArea::setPlainTextPreserveCursor(m_editNegative, m_dockRootNegative->toPlainText());
     m_syncingEditor = false;
 }
 
@@ -627,7 +747,6 @@ void ComfyRegionPromptWidget::pushRootPromptsToDock()
 void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
 {
     m_syncingEditor = true;
-    populateMaskCombo();
     const EditorMode mode = currentMode();
     const bool hasRegions = m_regions && !m_regions->isEmpty();
 
@@ -639,40 +758,47 @@ void ComfyRegionPromptWidget::syncActiveEditorFromRegion()
     const bool showNeg = mode == EditorMode::Root && m_showNegativePrompt;
     if (m_promptStack)
         m_promptStack->setShowNegative(showNeg);
-    m_comboMask->setVisible(mode == EditorMode::Region);
     m_btnLink->setVisible(mode == EditorMode::Region);
     m_btnRemove->setVisible(mode == EditorMode::Region);
-    m_headerLabel->setVisible((mode == EditorMode::Root || mode == EditorMode::Region) && m_promptHeaderMode != 2);
-    m_headerIcon->setVisible((mode == EditorMode::Root || mode == EditorMode::Region) && m_promptHeaderMode == 1);
-    m_btnTranslation->setVisible((mode == EditorMode::Root || mode == EditorMode::Region)
-                                 && !m_promptTranslationCode.isEmpty()
-                                 && mode != EditorMode::Root);
+    const bool showFullHeader =
+        (mode == EditorMode::Root || mode == EditorMode::Region) && m_promptHeaderMode == 0;
+    const bool showIconOnlyHeader =
+        (mode == EditorMode::Root || mode == EditorMode::Region) && m_promptHeaderMode == 1;
+    if (m_headerHost)
+        m_headerHost->setVisible(showFullHeader);
+    m_headerLabel->setVisible(showFullHeader);
+    m_headerIcon->setVisible((showFullHeader || showIconOnlyHeader) && mode == EditorMode::Root);
+
+    const bool editingPrompt = (m_editPrompt && m_editPrompt->hasFocus())
+                               || (m_editNegative && m_editNegative->hasFocus());
 
     if (mode == EditorMode::Root) {
         m_headerLabel->setText(ComfyTr::tr("Text prompt common to all regions"));
-        syncRootPromptsFromDock();
+        m_headerIcon->setPixmap(ComfyTheme::icon(QStringLiteral("root")).pixmap(16, 16));
+        if (!editingPrompt)
+            syncRootPromptsFromDock();
     } else if (mode == EditorMode::Region && m_regions && m_activeIndex) {
         const ComfyUIRemoteDock::Private::RegionEntry &r = m_regions->at(*m_activeIndex);
         KisImageSP image = m_viewManager ? KisImageSP(m_viewManager->image()) : KisImageSP();
-        if (m_promptHeaderMode == 1) {
-            m_headerIcon->setPixmap(
-                ComfyTheme::icon(QStringLiteral("region-prompt"))
-                    .pixmap(16, 16));
-        }
         if (m_promptHeaderMode == 0)
             m_headerLabel->setText(
                 QStringLiteral("%1 - %2").arg(ComfyRegionLink::regionDisplayName(r, image), ComfyTr::tr("Regional text prompt")));
         m_editPrompt->setPlaceholderText(ComfyTr::tr("Prompt for this area"));
-        m_editPrompt->setPlainText(r.prompt);
-        int maskIdx = m_comboMask->findData(r.maskSource);
-        if (maskIdx < 0)
-            maskIdx = m_comboMask->findText(r.maskSource);
-        if (maskIdx >= 0)
-            m_comboMask->setCurrentIndex(maskIdx);
+        if (!editingPrompt)
+            ComfyTextArea::setPlainTextPreserveCursor(m_editPrompt, r.prompt);
     }
 
     updateLinkButton();
     updateNoRegionStrip();
+    if (m_headerLabel && m_editPrompt && m_headerLabel->isVisible()) {
+        QFont headerFont = m_editPrompt->font();
+        headerFont.setItalic(true);
+        m_headerLabel->setFont(headerFont);
+        m_headerLabel->setStyleSheet(
+            QStringLiteral("color: %1;").arg(ComfyUiStyle::colors().secondaryText));
+    }
+    if (m_promptStack)
+        m_promptStack->refreshFrameHeight();
     m_syncingEditor = false;
 }
 
@@ -687,7 +813,8 @@ void ComfyRegionPromptWidget::commitActiveEditorToRegion()
     if (currentMode() != EditorMode::Region)
         return;
     (*m_regions)[*m_activeIndex].prompt = m_editPrompt->toPlainText();
-    (*m_regions)[*m_activeIndex].maskSource = m_comboMask->currentData().toString();
+    if (m_viewManager && m_viewManager->image())
+        ComfyRegionLink::syncMaskSourceFromLinks(&(*m_regions)[*m_activeIndex], m_viewManager->image());
 }
 
 void ComfyRegionPromptWidget::updateLinkButton()
@@ -716,6 +843,38 @@ void ComfyRegionPromptWidget::updateNoRegionStrip()
                                      : ComfyTr::tr("Active layer cannot be linked to a region"));
 }
 
+int ComfyRegionPromptWidget::currentPositiveLineCount() const
+{
+    return m_promptStack ? m_promptStack->positiveLineCount() : 3;
+}
+
+void ComfyRegionPromptWidget::syncCompactHeightFromLayout()
+{
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    setMaximumHeight(QWIDGETSIZE_MAX);
+    setMinimumHeight(0);
+    if (m_controlPanelHost) {
+        m_controlPanelHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+        m_controlPanelHost->updateGeometry();
+    }
+    if (m_activeFrame)
+        m_activeFrame->updateGeometry();
+    updateGeometry();
+    adjustSize();
+
+    int compactH = 0;
+    if (QLayout *root = layout()) {
+        root->activate();
+        compactH = root->minimumSize().height();
+    }
+    if (compactH <= 0 && m_promptStack)
+        compactH = m_promptStack->layoutSizeHint().height();
+    if (compactH > 0) {
+        setFixedHeight(compactH);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+}
+
 void ComfyRegionPromptWidget::applyCompactLayout(int positiveLines,
                                                  bool showNegative,
                                                  bool showResizeHandle,
@@ -723,48 +882,36 @@ void ComfyRegionPromptWidget::applyCompactLayout(int positiveLines,
 {
     m_showNegativePrompt = showNegative;
     m_showResizeHandle = showResizeHandle;
+    m_liveLineCounts = liveLineCounts;
     if (m_promptStack)
         m_promptStack->setLiveLineCounts(liveLineCounts);
     syncActiveEditorFromRegion();
     const bool effectiveShowNeg = currentMode() == EditorMode::Root && m_showNegativePrompt;
     if (m_promptStack)
         m_promptStack->applyLayout(positiveLines, effectiveShowNeg, showResizeHandle);
+
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    setMaximumHeight(QWIDGETSIZE_MAX);
+    setMinimumHeight(0);
+    if (m_controlPanelHost) {
+        m_controlPanelHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+        m_controlPanelHost->updateGeometry();
+    }
+    if (m_activeFrame)
+        m_activeFrame->updateGeometry();
     updateGeometry();
     adjustSize();
 
     int compactH = 0;
-    if (m_promptStack)
-        compactH = m_promptStack->layoutSizeHint().height();
-    if (compactH <= 0 && m_editPrompt) {
-        compactH = ComfyPromptLayoutMetrics::stackFrameHeightForLines(
-            m_editPrompt->fontMetrics(), positiveLines, effectiveShowNeg);
-    }
-    if (m_activeFrame && m_activeFrame->isVisible()) {
-        if (auto *lay = qobject_cast<QVBoxLayout *>(m_activeFrame->layout())) {
-            const QMargins mg = lay->contentsMargins();
-            compactH += mg.top() + mg.bottom();
-            for (int i = 0; i < lay->count(); ++i) {
-                QLayoutItem *it = lay->itemAt(i);
-                if (!it || it->widget() == m_promptStack)
-                    continue;
-                if (QWidget *w = it->widget()) {
-                    if (w->isVisible())
-                        compactH += w->height();
-                } else if (QLayout *sub = it->layout()) {
-                    compactH += sub->sizeHint().height();
-                }
-            }
-        }
-    }
     if (QLayout *root = layout()) {
-        const QMargins rm = root->contentsMargins();
-        compactH += rm.top() + rm.bottom();
-        for (int i = 0; i < root->count(); ++i) {
-            QLayoutItem *it = root->itemAt(i);
-            if (!it)
-                continue;
-            if (QLayout *sub = it->layout())
-                compactH += sub->sizeHint().height();
+        root->activate();
+        compactH = root->minimumSize().height();
+    }
+    if (compactH <= 0 && m_promptStack) {
+        compactH = m_promptStack->layoutSizeHint().height();
+        if (compactH <= 0 && m_editPrompt) {
+            compactH = ComfyPromptLayoutMetrics::stackFrameHeightForLines(
+                m_editPrompt->fontMetrics(), positiveLines, effectiveShowNeg);
         }
     }
     if (compactH <= 0)
@@ -778,6 +925,7 @@ void ComfyRegionPromptWidget::applyCompactLayout(int positiveLines,
         << QStringLiteral("showNeg=") << effectiveShowNeg
         << QStringLiteral("resizeHandle=") << showResizeHandle
         << QStringLiteral("stackH=") << (m_promptStack ? m_promptStack->layoutSizeHint().height() : -1)
+        << QStringLiteral("controlH=") << (m_controlPanelHost ? m_controlPanelHost->sizeHint().height() : -1)
         << QStringLiteral("compactH=") << compactH
         << QStringLiteral("editPromptH=") << (m_editPrompt ? m_editPrompt->height() : -1)
         << QStringLiteral("editNegH=") << (m_editNegative ? m_editNegative->height() : -1)
@@ -793,10 +941,11 @@ void ComfyRegionPromptWidget::applyPromptLineHeights()
 
 void ComfyRegionPromptWidget::applyPromptLineHeights(int positiveLines)
 {
+    const bool effectiveShowNeg = currentMode() == EditorMode::Root && m_showNegativePrompt;
     const int lines =
-        ComfyPromptLayoutMetrics::positiveLinesForGenerateWorkspace(m_showNegativePrompt, positiveLines);
+        ComfyPromptLayoutMetrics::positiveLinesForGenerateWorkspace(effectiveShowNeg, positiveLines);
     if (m_promptStack)
-        m_promptStack->applyLayout(lines, m_showNegativePrompt, m_showResizeHandle);
+        m_promptStack->applyLayout(lines, effectiveShowNeg, m_showResizeHandle);
 }
 
 void ComfyRegionPromptWidget::resizeEvent(QResizeEvent *event)

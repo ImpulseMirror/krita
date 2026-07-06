@@ -3,11 +3,14 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyStyleLoraItemWidget.h"
+#include "ComfyTextArea.h"
 #include "ComfyFileLibrary.h"
 #include "ComfyLocalization.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
 
 #include <QComboBox>
@@ -16,7 +19,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QSpinBox>
+#include "ComfySpinBox.h"
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -32,6 +35,11 @@ QString displayNameFromLoraId(const QString &id)
 
 } // namespace
 
+QVariant ComfyStyleLoraItemWidget::inputMethodQuery(Qt::InputMethodQuery query) const
+{
+    return ComfyTextArea::forwardContainerInputMethodQuery(this, query);
+}
+
 ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     : QWidget(parent)
 {
@@ -40,13 +48,13 @@ ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     m_advancedButton = new QToolButton(this);
     m_advancedButton->setCheckable(true);
     m_advancedButton->setArrowType(Qt::RightArrow);
-    m_advancedButton->setAutoRaise(true);
+    ComfyUiStyle::applyExpanderButton(m_advancedButton);
     m_advancedButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     connect(m_advancedButton, &QToolButton::toggled, this, &ComfyStyleLoraItemWidget::expandAdvanced);
 
-    m_select = new QComboBox(this);
+    m_select = new ComfyComboBox(this);
     m_select->setEditable(true);
-    m_select->setMinimumWidth(200);
+    ComfyUiStyle::applyComboBox(m_select);
     m_select->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(m_select, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         const QString id = m_select->currentData().toString();
@@ -64,7 +72,7 @@ ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     m_enabled->setChecked(true);
     connect(m_enabled, &QAbstractButton::toggled, this, &ComfyStyleLoraItemWidget::notifyChanged);
 
-    m_strength = new QSpinBox(this);
+    m_strength = new ComfySpinBox(this);
     m_strength->setRange(-400, 400);
     m_strength->setSingleStep(5);
     m_strength->setValue(100);
@@ -75,6 +83,7 @@ ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     m_remove = new QToolButton(this);
     m_remove->setIcon(ComfyTheme::icon(QStringLiteral("discard")));
     m_remove->setAutoRaise(true);
+    ComfyUiStyle::applyIconToolButton(m_remove);
     connect(m_remove, &QToolButton::clicked, this, [this]() { emit removed(this); });
 
     auto *expanderLayout = new QHBoxLayout();
@@ -95,7 +104,7 @@ ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     m_advanced->setVisible(false);
 
     m_warningText = new QLabel(m_advanced);
-    m_warningText->setStyleSheet(QStringLiteral("color: #b8860b; font-weight: bold;"));
+    ComfyUiStyle::styleWarning(m_warningText);
     m_warningText->setWordWrap(true);
     m_warningText->hide();
 
@@ -103,6 +112,7 @@ ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     m_triggerEdit = new QLineEdit(m_advanced);
     m_triggerEdit->setPlaceholderText(
         ComfyTr::tr("Optional text which is added to the prompt when the LoRA is used"));
+    ComfyUiStyle::applyLineEdit(m_triggerEdit);
     connect(m_triggerEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
         if (m_currentId.isEmpty())
             return;
@@ -160,8 +170,8 @@ ComfyStyleLoraItemWidget::ComfyStyleLoraItemWidget(QWidget *parent)
     smallFont.setPointSize(qMax(6, smallFont.pointSize() - 1));
     m_fileIdLabel->setFont(smallFont);
     m_filePathLabel->setFont(smallFont);
-    m_fileIdLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
-    m_filePathLabel->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    ComfyUiStyle::styleCaption(m_fileIdLabel);
+    ComfyUiStyle::styleCaption(m_filePathLabel);
 
     auto *advancedLayout = new QVBoxLayout();
     advancedLayout->setContentsMargins(3, 2, 0, 2);

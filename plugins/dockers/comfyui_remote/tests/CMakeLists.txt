@@ -8,12 +8,14 @@ kis_add_tests(
     ComfyHistoryThumbnailRegressionTest.cpp
     ComfyHistoryListLayoutRegressionTest.cpp
     ComfyPromptStackLayoutRegressionTest.cpp
+    ComfyTextInputImeRegressionTest.cpp
     ComfyGenerateChromeLayoutRegressionTest.cpp
     ComfyHistoryWorkspaceVisibilityRegressionTest.cpp
     ComfyUpscaleApplyRegressionTest.cpp
     LINK_LIBRARIES kritacomfyuiremote_static kritaui kritaimage kritatestsdk
 )
 target_compile_definitions(ComfyGenerateChromeLayoutRegressionTest PRIVATE COMFYUI_ENABLE_TEST_HOOKS=1)
+target_compile_definitions(ComfyTextInputImeRegressionTest PRIVATE COMFYUI_ENABLE_TEST_HOOKS=1)
 target_compile_definitions(ComfyHistoryWorkspaceVisibilityRegressionTest PRIVATE COMFYUI_ENABLE_TEST_HOOKS=1)
 target_compile_definitions(ComfyUpscaleApplyRegressionTest PRIVATE
     "COMFYUI_TEST_PLUGIN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/..\"")

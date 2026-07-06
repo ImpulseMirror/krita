@@ -8,7 +8,9 @@
 #include "ComfyLocalization.h"
 #include "ComfyPromptResizeHandle.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
+#include "ComfyTextArea.h"
 
 #include <QEvent>
 #include <QFontMetrics>
@@ -30,23 +32,22 @@ using ComfyPromptLayoutMetrics::kPromptHeightPadPx;
 
 QString stackBaseStyle()
 {
-    return QStringLiteral("QFrame#PromptStackWidget { border: 1px solid palette(mid); background: palette(base); }");
+    return ComfyUiStyle::promptStackFrameStyleSheet(false);
 }
 
 QString stackFocusStyle()
 {
-    return QStringLiteral("QFrame#PromptStackWidget { border: 1px solid palette(highlight); background: palette(base); }");
+    return ComfyUiStyle::promptStackFrameStyleSheet(true);
 }
 
 QString negativeEditorStyle()
 {
-    return QStringLiteral(
-        "QPlainTextEdit { background-color: rgba(255, 0, 0, 15); border: none; padding: 0px; margin: 0px; }");
+    return ComfyUiStyle::promptTextAreaStyleSheet(true);
 }
 
 QString positiveEditorStyle()
 {
-    return QStringLiteral("QPlainTextEdit { background: transparent; border: none; padding: 0px; margin: 0px; }");
+    return ComfyUiStyle::promptTextAreaStyleSheet(false);
 }
 
 QFontMetrics promptFontMetrics(const QPlainTextEdit *editor)
@@ -63,18 +64,24 @@ int linesFromHeight(const QFontMetrics &fm, int heightPx)
                   10);
 }
 
-void paintResizeGrip(QPainter &p, const QWidget *widget)
+void paintCenteredResizeDots(QPainter &p, const QWidget *widget)
 {
     p.setRenderHint(QPainter::Antialiasing, true);
-    const QColor c = widget->palette().color(QPalette::PlaceholderText).lighter(100);
+    const QColor c(ComfyUiStyle::colors().highlight);
     p.setBrush(c);
     p.setPen(Qt::NoPen);
 
-    const int w = widget->width();
-    const int h = widget->height();
-    for (int i = 0, x = 2; x < w - 1; x += 3, ++i) {
-        const int y = (i % 2 == 0) ? 2 * h / 3 : h / 3;
-        p.drawEllipse(QPoint(x, y), 1, 1);
+    const int dotR = 1;
+    const int spacing = 4;
+    const int rows[2] = {3, 4};
+    const int baseY = widget->height() - 3;
+    for (int row = 0; row < 2; ++row) {
+        const int count = rows[row];
+        const int rowWidth = (count - 1) * spacing;
+        const int x0 = (widget->width() - rowWidth) / 2;
+        const int y = baseY - row * spacing;
+        for (int i = 0; i < count; ++i)
+            p.drawEllipse(QPoint(x0 + i * spacing, y), dotR, dotR);
     }
 }
 
@@ -82,49 +89,73 @@ void paintResizeGrip(QPainter &p, const QWidget *widget)
 class NegativePromptDragHandle : public QWidget
 {
 public:
-    using DragFn = std::function<void(int yPosInNegative)>;
+    using DragFn = std::function<void(int globalY)>;
     using ReleaseFn = std::function<void()>;
+    using PressFn = std::function<void(int globalY)>;
 
-    NegativePromptDragHandle(DragFn onDrag, ReleaseFn onRelease, QWidget *parent)
+    NegativePromptDragHandle(PressFn onPress, DragFn onDrag, ReleaseFn onRelease, QWidget *parent)
         : QWidget(parent)
+        , m_onPress(std::move(onPress))
         , m_onDrag(std::move(onDrag))
         , m_onRelease(std::move(onRelease))
     {
-        setFixedSize(22, 8);
+        setFixedHeight(12);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         setCursor(Qt::SizeVerCursor);
-        setAttribute(Qt::WA_TranslucentBackground, true);
         setToolTip(ComfyTr::tr("Drag vertically to resize the text area."));
     }
 
 protected:
+    bool event(QEvent *e) override
+    {
+        if (e->type() == QEvent::UngrabMouse && m_dragging) {
+            m_dragging = false;
+            if (m_onRelease)
+                m_onRelease();
+        }
+        return QWidget::event(e);
+    }
+
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        paintResizeGrip(p, this);
+        // Opaque hit target: translucent widgets only receive clicks on painted pixels.
+        p.fillRect(rect(), QColor(0, 0, 0, 1));
+        paintCenteredResizeDots(p, this);
     }
 
     void mousePressEvent(QMouseEvent *e) override
     {
-        if (e->button() == Qt::LeftButton)
+        if (e->button() == Qt::LeftButton) {
             m_dragging = true;
+            if (m_onPress)
+                m_onPress(e->globalPos().y());
+            grabMouse();
+            e->accept();
+        }
     }
 
     void mouseReleaseEvent(QMouseEvent *e) override
     {
-        Q_UNUSED(e);
-        if (m_dragging && m_onRelease)
-            m_onRelease();
-        m_dragging = false;
+        if (m_dragging) {
+            m_dragging = false;
+            releaseMouse();
+            if (m_onRelease)
+                m_onRelease();
+        }
+        e->accept();
     }
 
     void mouseMoveEvent(QMouseEvent *e) override
     {
         if (!m_dragging || !m_onDrag)
             return;
-        m_onDrag(mapToParent(e->pos()).y());
+        m_onDrag(e->globalPos().y());
+        e->accept();
     }
 
 private:
+    PressFn m_onPress;
     DragFn m_onDrag;
     ReleaseFn m_onRelease;
     bool m_dragging = false;
@@ -143,7 +174,7 @@ ComfyPromptStackWidget::ComfyPromptStackWidget(QWidget *parent)
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
 
-    m_positive = new QPlainTextEdit(this);
+    m_positive = new ComfyTextArea(nullptr, this);
     m_positive->setFrameShape(QFrame::NoFrame);
     m_positive->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_positive->setPlaceholderText(
@@ -156,7 +187,7 @@ ComfyPromptStackWidget::ComfyPromptStackWidget(QWidget *parent)
     m_positive->installEventFilter(this);
     lay->addWidget(m_positive);
 
-    m_negative = new QPlainTextEdit(this);
+    m_negative = new ComfyTextArea(nullptr, this);
     m_negative->setFrameShape(QFrame::NoFrame);
     m_negative->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_negative->setPlaceholderText(ComfyTr::tr("Describe content you want to avoid."));
@@ -212,6 +243,32 @@ void ComfyPromptStackWidget::setLiveLineCounts(bool liveLineCounts)
     m_liveLineCounts = liveLineCounts;
 }
 
+void ComfyPromptStackWidget::setHeaderWidget(QWidget *header)
+{
+    if (m_headerWidget == header)
+        return;
+    auto *lay = qobject_cast<QVBoxLayout *>(layout());
+    if (!lay)
+        return;
+    if (m_headerWidget) {
+        lay->removeWidget(m_headerWidget);
+        m_headerWidget->setParent(nullptr);
+    }
+    m_headerWidget = header;
+    if (m_headerWidget) {
+        m_headerWidget->setParent(this);
+        lay->insertWidget(0, m_headerWidget);
+    }
+    syncFrameToEditors();
+    updateGeometry();
+}
+
+void ComfyPromptStackWidget::refreshFrameHeight()
+{
+    syncFrameToEditors();
+    updateGeometry();
+}
+
 void ComfyPromptStackWidget::applyLayout(int positiveLines, bool showNegative, bool showResizeHandle)
 {
     m_positiveLines = qBound(1, positiveLines, 10);
@@ -219,7 +276,10 @@ void ComfyPromptStackWidget::applyLayout(int positiveLines, bool showNegative, b
     m_showResizeHandle = showResizeHandle;
     m_negative->setVisible(showNegative);
     applyHeights();
-    ensureResizeHandle();
+    if (!m_resizeDragging)
+        ensureResizeHandle();
+    else if (m_resizeHandle)
+        repositionChrome();
     if (m_resizeHandle)
         m_resizeHandle->setVisible(showResizeHandle);
     applyEditorChrome();
@@ -249,6 +309,8 @@ int ComfyPromptStackWidget::frameHeightForLines() const
     int h = heightForLines(fm, m_positiveLines);
     if (m_showNegative && m_negative)
         h += heightForLines(fm, kNegativeLineCount);
+    if (m_headerWidget && m_headerWidget->isVisible())
+        h += m_headerWidget->sizeHint().height();
     if (QLayout *lay = layout()) {
         const QMargins mg = lay->contentsMargins();
         h += mg.top() + mg.bottom();
@@ -259,6 +321,8 @@ int ComfyPromptStackWidget::frameHeightForLines() const
 void ComfyPromptStackWidget::syncFrameToEditors()
 {
     int h = 0;
+    if (m_headerWidget && m_headerWidget->isVisible())
+        h += m_headerWidget->height() > 0 ? m_headerWidget->height() : m_headerWidget->sizeHint().height();
     if (m_positive && m_positive->isVisible())
         h += m_positive->height();
     if (m_showNegative && m_negative && m_negative->isVisible())
@@ -273,15 +337,22 @@ void ComfyPromptStackWidget::syncFrameToEditors()
     updateGeometry();
 }
 
-void ComfyPromptStackWidget::onNegativeHandleDragged(int yPosInNegative)
+void ComfyPromptStackWidget::onNegativeHandleDragStarted(int globalY)
+{
+    m_resizeDragging = true;
+    m_dragAnchorGlobalY = globalY;
+    m_dragAnchorLines = m_positiveLines;
+}
+
+void ComfyPromptStackWidget::onNegativeHandleDragged(int globalY)
 {
     if (!m_positive || !m_negative)
         return;
     const QFontMetrics fm = promptFontMetrics(m_positive);
-    const int posH = m_positive->contentsRect().height();
-    const int negH = m_negative->contentsRect().height();
-    const int newHeight = yPosInNegative - negH + posH - kPromptHeightPadPx;
-    const int newLines = qBound(1, static_cast<int>(qRound(newHeight / double(qMax(1, fm.lineSpacing())))), 10);
+    const int dy = globalY - m_dragAnchorGlobalY;
+    const int lineDelta =
+        static_cast<int>(qRound(dy / double(qMax(1, fm.lineSpacing()))));
+    const int newLines = qBound(1, m_dragAnchorLines + lineDelta, 10);
     if (newLines == m_positiveLines)
         return;
     m_positiveLines = newLines;
@@ -304,19 +375,34 @@ void ComfyPromptStackWidget::persistPositiveLineCount()
 
 void ComfyPromptStackWidget::ensureResizeHandle()
 {
+    if (!m_showResizeHandle) {
+        if (m_resizeHandle) {
+            m_resizeHandle->deleteLater();
+            m_resizeHandle = nullptr;
+        }
+        return;
+    }
+
+    const bool wantNegativeHandle = m_showNegative;
     if (m_resizeHandle) {
+        const bool hasNegativeHandle = qobject_cast<ComfyPromptResizeHandle *>(m_resizeHandle) == nullptr;
+        if (wantNegativeHandle == hasNegativeHandle) {
+            repositionChrome();
+            return;
+        }
         m_resizeHandle->deleteLater();
         m_resizeHandle = nullptr;
     }
 
-    if (!m_showResizeHandle)
-        return;
-
     if (m_showNegative) {
         m_resizeHandle = new NegativePromptDragHandle(
-            [this](int y) { onNegativeHandleDragged(y); },
-            [this]() { persistPositiveLineCount(); },
-            m_negative);
+            [this](int globalY) { onNegativeHandleDragStarted(globalY); },
+            [this](int globalY) { onNegativeHandleDragged(globalY); },
+            [this]() {
+                m_resizeDragging = false;
+                persistPositiveLineCount();
+            },
+            this);
         connect(m_resizeHandle, &QObject::destroyed, this, [this]() {
             if (m_resizeHandle == sender())
                 m_resizeHandle = nullptr;
@@ -330,13 +416,21 @@ void ComfyPromptStackWidget::ensureResizeHandle()
                 persistPositiveLineCount();
             },
             heightForLines(promptFontMetrics(m_positive), 1),
-            m_positive);
+            this);
         m_resizeHandle = handle;
         connect(handle, &ComfyPromptResizeHandle::heightChanged, this, [this]() {
+            if (m_positive) {
+                const QFontMetrics fm = promptFontMetrics(m_positive);
+                m_positiveLines = linesFromHeight(fm, m_positive->height());
+            }
             syncFrameToEditors();
             repositionChrome();
             Q_EMIT layoutHeightsChanged();
         });
+    }
+    if (m_resizeHandle) {
+        m_resizeHandle->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+        repositionChrome();
     }
 }
 
@@ -346,6 +440,11 @@ void ComfyPromptStackWidget::applyEditorChrome()
         m_positive->setStyleSheet(positiveEditorStyle());
     if (m_negative)
         m_negative->setStyleSheet(m_showNegative ? negativeEditorStyle() : positiveEditorStyle());
+}
+
+QVariant ComfyPromptStackWidget::inputMethodQuery(Qt::InputMethodQuery query) const
+{
+    return ComfyTextArea::forwardContainerInputMethodQuery(this, query);
 }
 
 void ComfyPromptStackWidget::updateFocusBorder()
@@ -404,10 +503,14 @@ QSize ComfyPromptStackWidget::minimumSizeHint() const
 
 void ComfyPromptStackWidget::repositionChrome()
 {
-    if (m_resizeHandle && m_resizeHandle->parentWidget() == m_negative) {
-        const QRect r = m_negative->rect();
-        m_resizeHandle->move((r.width() - m_resizeHandle->width()) / 2, r.height() - m_resizeHandle->height());
+    if (m_resizeHandle && m_showResizeHandle && m_showNegative && m_negative && m_negative->isVisible()) {
+        const QRect r = m_negative->geometry();
+        const int hh = m_resizeHandle->height();
+        m_resizeHandle->setGeometry(r.x(), r.y() + r.height() - hh, r.width(), hh);
         m_resizeHandle->raise();
+    } else if (m_resizeHandle && m_showResizeHandle && m_positive && !m_showNegative) {
+        if (auto *handle = qobject_cast<ComfyPromptResizeHandle *>(m_resizeHandle))
+            handle->syncGeometry();
     }
 
     if (m_negativeWarning && m_negativeWarning->isVisible() && m_negative) {

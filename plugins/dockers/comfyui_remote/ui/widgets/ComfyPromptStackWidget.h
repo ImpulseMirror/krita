@@ -29,12 +29,18 @@ public:
     void applyLayout(int positiveLines, bool showNegative, bool showResizeHandle);
     /// When @p liveLineCounts is true, resize persists `prompt_line_count_live` (Live workspace).
     void setLiveLineCounts(bool liveLineCounts);
+    /// Optional row above positive editor (region/common prompt header). Included in frame height.
+    void setHeaderWidget(QWidget *header);
+    void refreshFrameHeight();
+    int positiveLineCount() const { return m_positiveLines; }
+    bool resizeDragging() const { return m_resizeDragging; }
     QSize layoutSizeHint() const;
 
 Q_SIGNALS:
     void layoutHeightsChanged();
 
 protected:
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     bool eventFilter(QObject *obj, QEvent *event) override;
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -50,8 +56,10 @@ private:
     void updateFocusBorder();
     void repositionChrome();
     void persistPositiveLineCount();
-    void onNegativeHandleDragged(int yPosInNegative);
+    void onNegativeHandleDragStarted(int globalY);
+    void onNegativeHandleDragged(int globalY);
 
+    QWidget *m_headerWidget = nullptr;
     QPlainTextEdit *m_positive = nullptr;
     QPlainTextEdit *m_negative = nullptr;
     QLabel *m_negativeWarning = nullptr;
@@ -62,6 +70,9 @@ private:
     bool m_showResizeHandle = true;
     int m_positiveLines = 3;
     int m_frameHeightPx = 0;
+    bool m_resizeDragging = false;
+    int m_dragAnchorGlobalY = 0;
+    int m_dragAnchorLines = 0;
 };
 
 #endif

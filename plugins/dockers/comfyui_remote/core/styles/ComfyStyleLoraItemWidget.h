@@ -39,6 +39,9 @@ public:
     bool isActive() const { return m_active; }
     void setActive(bool active);
 
+protected:
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
+
 Q_SIGNALS:
     void changed();
     void removed(ComfyStyleLoraItemWidget *self);
