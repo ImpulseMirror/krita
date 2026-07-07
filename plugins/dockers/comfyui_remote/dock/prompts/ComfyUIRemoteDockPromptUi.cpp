@@ -53,10 +53,8 @@ void ComfyUIRemoteDock::refreshQueueResolutionRowVisibility()
 {
     if (!m_d->generate.queueResolutionRow)
         return;
-    QString preset = ComfyUIUtils::loadSettingsJson().value(QStringLiteral("performance_preset")).toString();
-    if (preset.isEmpty())
-        preset = QStringLiteral("auto");
-    m_d->generate.queueResolutionRow->setVisible(preset == QLatin1String("custom"));
+    // FAITHFUL_PORT: QueuePopup always shows resolution multiplier (generation.py).
+    m_d->generate.queueResolutionRow->setVisible(true);
 }
 void ComfyUIRemoteDock::persistSeedToConfig()
 {
@@ -70,10 +68,10 @@ void ComfyUIRemoteDock::refreshQueuePopupSupportsBatch()
 {
     const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;
     const bool supportsBatch = (ws == 0);
+    if (m_d->generate.queueBatchLabel)
+        m_d->generate.queueBatchLabel->setVisible(supportsBatch);
     if (m_d->generate.queueBatchOptionsRow)
         m_d->generate.queueBatchOptionsRow->setVisible(supportsBatch);
-    if (m_d->generate.queueEnqueueModeRow)
-        m_d->generate.queueEnqueueModeRow->setVisible(supportsBatch);
 }
 void ComfyUIRemoteDock::showPromptTagCompletion(QPlainTextEdit *editor)
 {

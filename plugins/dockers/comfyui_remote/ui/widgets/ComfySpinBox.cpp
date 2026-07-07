@@ -177,6 +177,5 @@ QSize ComfySpinBox::sizeHint() const
 
 QSize ComfySpinBox::minimumSizeHint() const
 {
-    return QSize(ComfyUiStyle::Spacing::spinButtonWidth + ComfyUiStyle::Spacing::nestedPanel * 2,
-                 ComfyUiStyle::Spacing::comboHeight);
+    return sizeHint();
 }

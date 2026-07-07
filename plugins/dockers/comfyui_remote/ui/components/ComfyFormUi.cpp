@@ -400,7 +400,14 @@ SeedControls addSeedControls(QWidget *parent)
     controls.fixedSeedCheckBox = new ComfyCheckBox(ComfyTr::tr("Fixed seed"), controls.row);
     controls.seedSpinBox = new ComfySpinBox(controls.row);
     controls.seedSpinBox->setRange(0, 2147483647);
+    controls.seedSpinBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     ComfyUiStyle::applySpinBox(controls.seedSpinBox);
+    {
+        const QFontMetrics fm(controls.seedSpinBox->font());
+        controls.seedSpinBox->setMinimumWidth(
+            fm.horizontalAdvance(QStringLiteral("2147483647")) + ComfyUiStyle::Spacing::spinButtonWidth
+            + ComfyUiStyle::Spacing::nestedPanel * 2);
+    }
     controls.randomSeedButton = new QPushButton(controls.row);
     controls.randomSeedButton->setIcon(ComfyTheme::icon(QStringLiteral("random")));
     controls.randomSeedButton->setToolTip(ComfyTr::tr("Pick a new random seed."));

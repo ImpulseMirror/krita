@@ -182,87 +182,29 @@ QStringList controlIconStems(const QList<ComfyControlLayerEntry> &layers)
     return stems;
 }
 
-bool regionHasLayerLinks(const ComfyUIRemoteDock::Private::RegionEntry &entry)
-{
-    return !ComfyRegionLink::parseLayerIds(entry.layerIds).isEmpty();
-}
-
-KisLayerSP primaryLinkedLayer(const ComfyUIRemoteDock::Private::RegionEntry &entry, KisImageSP image)
-{
-    for (const QString &idStr : ComfyRegionLink::parseLayerIds(entry.layerIds)) {
-        if (KisLayerSP layer = ComfyRegionLink::findLayerByUuid(image, QUuid(idStr)))
-            return ComfyRegionLink::linkTarget(layer);
-    }
-    return KisLayerSP();
-}
-
-KisNodeSP stackAnchorUnderRoot(KisLayerSP layer, KisGroupLayerSP root)
-{
-    if (!layer || !root)
-        return KisNodeSP();
-    KisNodeSP rootNode = root;
-    KisNodeSP node = layer;
-    while (node->parent() && node->parent() != rootNode)
-        node = node->parent();
-    return node->parent() == rootNode ? node : KisNodeSP();
-}
-
-int regionIndexForStackNode(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions,
-                            KisImageSP image,
-                            KisGroupLayerSP root,
-                            KisNodeSP stackNode,
-                            int skipIndex = -1)
-{
-    if (!stackNode)
-        return -1;
-    for (int i = 0; i < regions.size(); ++i) {
-        if (i == skipIndex || !regionHasLayerLinks(regions.at(i)))
-            continue;
-        if (stackAnchorUnderRoot(primaryLinkedLayer(regions.at(i), image), root) == stackNode)
-            return i;
-    }
-    return -1;
-}
-
-QList<int> unlinkedRegionIndices(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions, int skipIndex)
+QList<int> regionIndicesNewerThanActive(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions, int active)
 {
     QList<int> out;
-    for (int i = 0; i < regions.size(); ++i) {
-        if (i != skipIndex && !regionHasLayerLinks(regions.at(i)))
-            out.append(i);
-    }
+    for (int i = regions.size() - 1; i > active; --i)
+        out.append(i);
     return out;
 }
 
-QList<int> linkedRegionsTopToBottom(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions,
-                                    KisImageSP image,
-                                    int skipIndex = -1)
+QList<int> regionIndicesOlderThanActive(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions, int active)
 {
-    QList<int> ordered;
-    QSet<int> used;
-    if (!image)
-        return ordered;
-    KisGroupLayerSP root = image->rootLayer();
-    if (!root)
-        return ordered;
-    for (KisNodeSP node = root->lastChild(); node; node = node->prevSibling()) {
-        const int idx = regionIndexForStackNode(regions, image, root, node, skipIndex);
-        if (idx >= 0 && !used.contains(idx)) {
-            ordered.append(idx);
-            used.insert(idx);
-        }
-    }
-    return ordered;
+    Q_UNUSED(regions);
+    QList<int> out;
+    for (int i = active - 1; i >= 0; --i)
+        out.append(i);
+    return out;
 }
 
-void layerSiblingNodesBottomToTop(KisNodeSP anchor, QList<KisNodeSP> *below, QList<KisNodeSP> *above)
+QList<int> regionIndicesNewestFirst(const QList<ComfyUIRemoteDock::Private::RegionEntry> &regions)
 {
-    if (!anchor || !below || !above)
-        return;
-    for (KisNodeSP s = anchor->prevSibling(); s; s = s->prevSibling())
-        below->append(s);
-    for (KisNodeSP s = anchor->nextSibling(); s; s = s->nextSibling())
-        above->append(s);
+    QList<int> out;
+    for (int i = regions.size() - 1; i >= 0; --i)
+        out.append(i);
+    return out;
 }
 
 } // namespace
@@ -641,38 +583,17 @@ void ComfyRegionPromptWidget::rebuildInactiveChips()
     const bool rootActive = active == ComfyRegionLink::kRootRegionIndex || active == ComfyRegionLink::kUnlinkedRegionIndex;
 
     if (rootActive) {
-        for (const int idx : unlinkedRegionIndices(*m_regions, active))
-            installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
-        for (const int idx : linkedRegionsTopToBottom(*m_regions, image, active))
+        for (const int idx : regionIndicesNewestFirst(*m_regions))
             installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
         return;
     }
 
     if (active >= 0 && active < m_regions->size()) {
-        KisGroupLayerSP root = image ? image->rootLayer() : KisGroupLayerSP();
-        KisNodeSP anchor = stackAnchorUnderRoot(primaryLinkedLayer(m_regions->at(active), image), root);
-
-        for (const int idx : unlinkedRegionIndices(*m_regions, active))
+        for (const int idx : regionIndicesNewerThanActive(*m_regions, active))
             installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
 
-        if (anchor) {
-            QList<KisNodeSP> belowNodes;
-            QList<KisNodeSP> aboveNodes;
-            layerSiblingNodesBottomToTop(anchor, &belowNodes, &aboveNodes);
-            for (auto it = aboveNodes.crbegin(); it != aboveNodes.crend(); ++it) {
-                const int idx = regionIndexForStackNode(*m_regions, image, root, *it, active);
-                if (idx >= 0)
-                    installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
-            }
-            for (auto it = belowNodes.crbegin(); it != belowNodes.crend(); ++it) {
-                const int idx = regionIndexForStackNode(*m_regions, image, root, *it, active);
-                if (idx >= 0)
-                    installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveBelow);
-            }
-        } else {
-            for (const int idx : linkedRegionsTopToBottom(*m_regions, image, active))
-                installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveAbove);
-        }
+        for (const int idx : regionIndicesOlderThanActive(*m_regions, active))
+            installChip(makeRegionChip(m_regions->at(idx)), idx, m_inactiveBelow);
 
         if (!m_regions->isEmpty())
             installChip(makeRootChip(), ComfyRegionLink::kRootRegionIndex, m_inactiveBelow);

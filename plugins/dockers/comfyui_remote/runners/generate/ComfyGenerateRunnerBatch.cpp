@@ -94,6 +94,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
             dock->startPolling();
         }
         dock->updateQueueStatus();
+        releaseGenerateActionAfterEnqueue(dock);
         return;
     }
 

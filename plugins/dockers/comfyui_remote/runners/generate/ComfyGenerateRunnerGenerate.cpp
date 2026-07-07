@@ -74,7 +74,8 @@ void onGenerate(ComfyUIRemoteDock *dock)
 
     // FAITHFUL_PORT/CRASH-FREE FIX #3: recover from a stuck-disabled Generate button.
     if (dock->m_d->generate.btnGenerate && !dock->m_d->generate.btnGenerate->isEnabled()
-        && dock->m_d->currentPromptId.isEmpty() && dock->m_d->jobQueue.isEmpty()) {
+        && dock->m_d->batchCountTarget == 0 && !dock->m_d->customGraphLiveActive
+        && !dock->m_d->isFullAnimationBatch && dock->m_d->inpaintRt.inpaintPromptId.isEmpty()) {
         dock->m_d->generate.btnGenerate->setEnabled(true);
     }
 

@@ -391,14 +391,14 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
 
         ComfyUiLayoutDiagnostics::ensureGenerateStrengthRowLayout(m_d.data());
 
-        if (auto *seedLay = m_d->generate.seedRowWidget
-                                ? qobject_cast<QHBoxLayout *>(m_d->generate.seedRowWidget->layout())
+        if (auto *seedLay = m_d->generate.seedControlRow
+                                ? qobject_cast<QHBoxLayout *>(m_d->generate.seedControlRow->layout())
                                 : nullptr) {
             removeFromParentLayout(m_d->generate.spinSeed);
             if (m_d->generate.spinSeed) {
                 m_d->generate.spinSeed->setPrefix(QString());
                 if (seedLay->indexOf(m_d->generate.spinSeed) < 0)
-                    seedLay->insertWidget(2, m_d->generate.spinSeed);
+                    seedLay->insertWidget(1, m_d->generate.spinSeed, 1);
             }
         }
     }

@@ -244,7 +244,14 @@ void onCancelQueue(ComfyUIRemoteDock *dock)
         dock->m_d->upscale.btnUpscale->setEnabled(true);
     if (dock->m_d->generate.btnControlPreviewRun)
         dock->m_d->generate.btnControlPreviewRun->setEnabled(true);
-    dock->m_d->generate.btnCancelQueue->setEnabled(false);
+    if (dock->m_d->generate.btnCancelAll)
+        dock->m_d->generate.btnCancelAll->setEnabled(false);
+    if (dock->m_d->generate.btnCancelActive)
+        dock->m_d->generate.btnCancelActive->setEnabled(false);
+    if (dock->m_d->generate.btnCancelQueued)
+        dock->m_d->generate.btnCancelQueued->setEnabled(false);
+    if (dock->m_d->generate.btnCancelQueue)
+        dock->m_d->generate.btnCancelQueue->setEnabled(false);
     dock->setStatusMessage(ComfyTr::tr("Cancelled."));
     dock->updateQueueStatus();
 

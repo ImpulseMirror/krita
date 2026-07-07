@@ -134,11 +134,17 @@ struct GenerateUi
     QCheckBox *checkFixedSeed = nullptr;
     QPushButton *btnRandomSeed = nullptr;
     QWidget *seedControlRow = nullptr;
+    QLabel *labelQueueDocumentCount = nullptr;
+    QLabel *labelQueueTotalCount = nullptr;
     QComboBox *comboQueueMode = nullptr;
     QSpinBox *spinBatchCount = nullptr;
-    QLabel *labelQueueCount = nullptr;
+    QAbstractSlider *sliderBatchCount = nullptr;
+    QLabel *labelBatchCount = nullptr;
     QPushButton *btnGenerate = nullptr;
-    QPushButton *btnCancelQueue = nullptr;
+    QToolButton *btnCancelActive = nullptr;
+    QToolButton *btnCancelQueued = nullptr;
+    QToolButton *btnCancelAll = nullptr;
+    QToolButton *btnCancelQueue = nullptr; // §compat: points at btnCancelAll
     QToolButton *btnAddControlIcon = nullptr;
     QToolButton *btnAddRegionIcon = nullptr;
     QWidget *generateActionRowWidget = nullptr;
@@ -159,7 +165,9 @@ struct GenerateUi
     class ComfyQueueButton *btnQueuePopup = nullptr;
     QWidget *queueButtonRowWidget = nullptr;
     QWidget *queueBatchOptionsRow = nullptr;
+    QLabel *queueBatchLabel = nullptr;
     QWidget *queueEnqueueModeRow = nullptr;
+    QLabel *queueEnqueueLabel = nullptr;
     QWidget *queueResolutionRow = nullptr; // §13.213: Resolution slider row (visible when perf preset = custom)
     QAbstractSlider *sliderResolutionMultiplier = nullptr;
     QLabel *labelResolutionMultiplier = nullptr;

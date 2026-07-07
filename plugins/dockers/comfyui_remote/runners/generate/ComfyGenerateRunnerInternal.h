@@ -52,5 +52,7 @@ ComfyWorkflowEngine::RefineParams animationRefineParamsFromDock(const ComfyUIRem
                                                                 const QString &styleArch,
                                                                 const QJsonArray &styleLoras,
                                                                 const QString &imageName);
+/// Re-enable Generate after jobs enter the queue (upstream enqueue_jobs parity).
+void releaseGenerateActionAfterEnqueue(ComfyUIRemoteDock *dock);
 
 } // namespace ComfyGenerateRunnerInternal

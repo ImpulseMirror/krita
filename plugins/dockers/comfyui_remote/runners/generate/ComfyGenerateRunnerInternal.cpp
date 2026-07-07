@@ -7,6 +7,7 @@
 
 #include "ComfyControlLayer.h"
 #include "ComfyFileLibrary.h"
+#include "ComfyGenerateUi.h"
 #include "ComfyLocalization.h"
 #include "ComfyRegionProcess.h"
 #include "ComfyStyleCollection.h"
@@ -656,6 +657,18 @@ void clearAnimationBatchState(ComfyUIRemoteDock::Private *d)
     d->batchNeedsPerFrameReference = false;
     d->batchNeedsPerFrameAnimationRefine = false;
     clearBatchCaptureStash(d);
+}
+
+void releaseGenerateActionAfterEnqueue(ComfyUIRemoteDock *dock)
+{
+    if (!dock || !dock->m_d->generate.btnGenerate)
+        return;
+    if (dock->m_d->customGraphLiveActive || dock->m_d->isFullAnimationBatch)
+        return;
+    if (!dock->m_d->inpaintRt.inpaintPromptId.isEmpty())
+        return;
+    dock->m_d->generate.btnGenerate->setEnabled(true);
+    ComfyGenerateUi::updateOptions(dock);
 }
 
 } // namespace ComfyGenerateRunnerInternal

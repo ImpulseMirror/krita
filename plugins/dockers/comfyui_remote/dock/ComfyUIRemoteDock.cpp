@@ -118,7 +118,43 @@ Q_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE, "krita.comfyui_remote")
 #include <QWidgetAction>
 #include <QUuid>
 #include <QCryptographicHash>
+#include <QHash>
 #include <QSet>
+
+namespace {
+
+struct QueueJobSnapshot {
+    int queued = 0;
+    bool hasActive = false;
+};
+
+QHash<ComfyUIRemoteDock *, QueueJobSnapshot> g_queueSnapshots;
+
+bool dockHasActiveJob(const ComfyUIRemoteDock::Private *d)
+{
+    return !d->currentPromptId.isEmpty()
+        || !d->inpaintRt.inpaintPromptId.isEmpty()
+        || !d->upscaleRt.upscalePromptId.isEmpty()
+        || !d->liveRt.livePromptId.isEmpty()
+        || !d->generateRt.controlPreviewPromptId.isEmpty()
+        || !d->generateRt.controlLayerJobPromptId.isEmpty();
+}
+
+void aggregateQueueCounts(const ComfyUIRemoteDock *self, int *documentCount, int *totalCount)
+{
+    const QueueJobSnapshot selfSnap = g_queueSnapshots.value(const_cast<ComfyUIRemoteDock *>(self));
+    *documentCount = selfSnap.queued + (selfSnap.hasActive ? 1 : 0);
+
+    int queuedSum = 0;
+    bool anyActive = false;
+    for (auto it = g_queueSnapshots.constBegin(); it != g_queueSnapshots.constEnd(); ++it) {
+        queuedSum += it->queued;
+        anyActive |= it->hasActive;
+    }
+    *totalCount = queuedSum + (anyActive ? 1 : 0);
+}
+
+} // namespace
 
 #include <algorithm>
 #include <functional>
@@ -282,6 +318,7 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 }
 ComfyUIRemoteDock::~ComfyUIRemoteDock()
 {
+    g_queueSnapshots.remove(this);
     if (m_d->pluginUpdateDownloadReply) {
         m_d->pluginUpdateDownloadReply->disconnect(this);
         m_d->pluginUpdateDownloadReply->abort();
@@ -708,18 +745,20 @@ void ComfyUIRemoteDock::startPolling()
 }
 void ComfyUIRemoteDock::updateQueueStatus()
 {
-    int running = 0;
-    if (!m_d->currentPromptId.isEmpty())
-        ++running;
-    if (!m_d->upscaleRt.upscalePromptId.isEmpty())
-        ++running;
-    if (!m_d->inpaintRt.inpaintPromptId.isEmpty())
-        ++running;
-    if (!m_d->liveRt.livePromptId.isEmpty())
-        ++running;
     const int queued = m_d->jobQueue.size();
-    const int total = running + queued;
-    m_d->generate.labelQueueCount->setText(ComfyTr::tr("Queue: %1", total));
+    const bool hasActive = dockHasActiveJob(m_d.data());
+    g_queueSnapshots.insert(this, QueueJobSnapshot{queued, hasActive});
+
+    int documentCount = 0;
+    int totalCount = 0;
+    aggregateQueueCounts(this, &documentCount, &totalCount);
+
+    if (m_d->generate.labelQueueDocumentCount)
+        m_d->generate.labelQueueDocumentCount->setText(QString::number(documentCount));
+    if (m_d->generate.labelQueueTotalCount)
+        m_d->generate.labelQueueTotalCount->setText(QString::number(totalCount));
+
+    const int total = documentCount;
     if (m_d->generate.btnQueuePopup) {
         const bool animWorkspace = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 3;
         QString tip;
@@ -735,7 +774,7 @@ void ComfyUIRemoteDock::updateQueueStatus()
             m_d->generate.btnQueuePopup->setDisplayState(ComfyQueueButton::DisplayState::Inactive, 0, tip);
         }
     }
-    if (running + queued > 0) {
+    if (hasActive || queued > 0) {
         if (queued > 0) {
             setStatusMessage(ComfyTr::tr("Queue: 1 running, %1 queued.", queued));
         } else {
@@ -744,7 +783,14 @@ void ComfyUIRemoteDock::updateQueueStatus()
     } else {
         setStatusMessage(ComfyTr::tr("Ready."));
     }
-    m_d->generate.btnCancelQueue->setEnabled(running + queued > 0);
+    if (m_d->generate.btnCancelActive)
+        m_d->generate.btnCancelActive->setEnabled(hasActive);
+    if (m_d->generate.btnCancelQueued)
+        m_d->generate.btnCancelQueued->setEnabled(queued > 0);
+    if (m_d->generate.btnCancelAll)
+        m_d->generate.btnCancelAll->setEnabled(hasActive || queued > 0);
+    if (m_d->generate.btnCancelQueue)
+        m_d->generate.btnCancelQueue->setEnabled(hasActive || queued > 0);
 }
 
 void ComfyUIRemoteDock::showEvent(QShowEvent *event)
