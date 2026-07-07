@@ -35,6 +35,7 @@ set(COMFYUI_REMOTE_INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}/runners/upscale"
   "${CMAKE_CURRENT_SOURCE_DIR}/settings"
   "${CMAKE_CURRENT_SOURCE_DIR}/ui"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ui/components"
   "${CMAKE_CURRENT_SOURCE_DIR}/ui/builder"
   "${CMAKE_CURRENT_SOURCE_DIR}/ui/builder/generate"
   "${CMAKE_CURRENT_SOURCE_DIR}/ui/generate"

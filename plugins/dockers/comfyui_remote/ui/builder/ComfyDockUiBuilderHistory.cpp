@@ -4,11 +4,13 @@
  */
 
 #include "ComfyDockUiBuilder.h"
+#include "ComfyGrid.h"
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyWorkspaceSelectButton.h"
 #include "ComfyPromptResizeHandle.h"
 #include "ComfySwitchWidget.h"
@@ -79,22 +81,21 @@ void buildHistoryPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     QGroupBox *histGroup = new QGroupBox();
     d->history.histGroupBox = histGroup;
     histGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    histGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
+    histGroup->setStyleSheet(ComfyUiStyle::flatGroupBoxStyleSheet());
     QVBoxLayout *histLayout = new QVBoxLayout(histGroup);
     histLayout->setContentsMargins(0, 0, 0, 0);
     d->history.listHistory = new ComfyHistoryListWidget();
     d->history.listHistory->setMinimumHeight(96);
     d->history.listHistory->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     d->history.listHistory->setViewMode(QListWidget::IconMode);
-    d->history.listHistory->setIconSize(QSize(96, 96));  // §13.28a: thumbnail size 96×96 px
+    d->history.listHistory->setIconSize(
+        QSize(ComfyUiStyle::Spacing::thumbnailWidth, ComfyUiStyle::Spacing::thumbnailWidth));
     d->history.listHistory->setFlow(QListView::LeftToRight);
     d->history.listHistory->setResizeMode(QListView::Adjust);
     d->history.listHistory->setSelectionMode(QAbstractItemView::SingleSelection);
     d->history.listHistory->setFrameShape(QFrame::NoFrame);
     d->history.listHistory->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);  // §13.28a: vertical scroll only
-    d->history.listHistory->setStyleSheet(QStringLiteral(
-        "QListWidget { background-color: transparent; }"
-        "QListWidget::item { background: transparent; }"));
+    ComfyUiStyle::applyGalleryList(d->history.listHistory);
     d->history.listHistory->setSpacing(0);
     d->history.listHistory->setUniformItemSizes(false);
     d->history.listHistory->setMovement(QListWidget::Static);
@@ -118,16 +119,15 @@ void buildHistoryPanel(const Context &ctx, QVBoxLayout *scrollLayout)
         dock->slotHistoryContextMenu(rect.bottomRight());
     });
     histLayout->addWidget(d->history.listHistory, 1);
-    d->history.historyButtonsRowWidget = new QWidget(histGroup);
+    d->history.historyButtonsRowWidget = new ComfyGridRow(histGroup);
     d->history.historyButtonsRowWidget->setVisible(false); // overlay buttons only (FAITHFUL_PORT)
-    QHBoxLayout *historyBtns = new QHBoxLayout(d->history.historyButtonsRowWidget);
-    historyBtns->setContentsMargins(0, 0, 0, 0);
+    auto *historyBtns = static_cast<ComfyGridRow *>(d->history.historyButtonsRowWidget);
     d->history.btnHistoryReRun = new QPushButton(ComfyTr::tr("Re-run"));
     d->history.btnHistoryApply = new QPushButton(ComfyTr::tr("Apply"));
     QObject::connect(d->history.btnHistoryReRun, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotHistoryReRun);
     QObject::connect(d->history.btnHistoryApply, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotHistoryApply);
-    historyBtns->addWidget(d->history.btnHistoryReRun);
-    historyBtns->addWidget(d->history.btnHistoryApply);
+    historyBtns->addWidget(d->history.btnHistoryReRun, 6);
+    historyBtns->addWidget(d->history.btnHistoryApply, 6);
     histLayout->addWidget(d->history.historyButtonsRowWidget);
     d->history.btnHistoryReRun->setEnabled(false);
     d->history.btnHistoryApply->setEnabled(false);

@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyUiStyle.h"
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilderGenerateInternal.h"
 
-#include "ComfyUIRemoteDockShellInternal.h"
+#include "ComfyFormUi.h"
+#include "ComfyGrid.h"
+#include "ComfyTextArea.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
@@ -48,7 +52,7 @@
 #include <QScrollArea>
 #include <QSize>
 #include <QSlider>
-#include <QSpinBox>
+#include "ComfySpinBox.h"
 #include <QStackedWidget>
 #include <QStringListModel>
 #include <QTimer>
@@ -62,11 +66,6 @@
 
 #include <kis_annotation.h>
 #include <kis_types.h>
-
-using ComfyDockShellInternal::ComfyPromptPlainTextEdit;
-using ComfyDockShellInternal::LiveSpinnerWidget;
-using ComfyDockShellInternal::StrengthSpinBox;
-using ComfyDockShellInternal::setComboCurrentItemData;
 
 
 namespace ComfyDockUiBuilderGenerateInternal {
@@ -85,7 +84,9 @@ void buildPromptSection(Workspace &ws)
     d->negativePromptTagCompleter = new QCompleter(d->tagKeywordModel, dock);
     d->negativePromptTagCompleter->setCaseSensitivity(Qt::CaseInsensitive);
     d->negativePromptTagCompleter->setCompletionMode(QCompleter::PopupCompletion);
-    d->generate.editPrompt = new ComfyPromptPlainTextEdit(d->promptTagCompleter);
+    auto promptColumn = ComfyFormUi::addTextAreaColumn(shell.genGroup, d->promptTagCompleter);
+    d->generate.rootPromptColumnWidget = promptColumn.column;
+    d->generate.editPrompt = promptColumn.editor;
     d->promptTagCompleter->setWidget(d->generate.editPrompt);
     d->generate.editPrompt->setTabChangesFocus(true);  // §13.196: Tab moves focus, not inserted
     d->generate.editPrompt->installEventFilter(dock);  // §13.196: Shift+Enter → Generate, ShortcutOverride
@@ -94,58 +95,48 @@ void buildPromptSection(Workspace &ws)
         "Tip: (word) for emphasis, [word] to reduce strength. Use commas to separate concepts. Shift+Enter to generate. "
         "Ctrl+Space for tag completion (CSV files in Settings → Interface)."));
     d->generate.editPrompt->setMaximumHeight(60);
-    {
-        d->generate.rootPromptColumnWidget = new QWidget(shell.genGroup);
-        QWidget *promptColumn = d->generate.rootPromptColumnWidget;
-        QVBoxLayout *promptColLayout = new QVBoxLayout(promptColumn);
-        promptColLayout->setContentsMargins(0, 0, 0, 0);
-        promptColLayout->setSpacing(0);
-        promptColLayout->addWidget(d->generate.editPrompt);
-        d->generate.promptResizeHandle = new ComfyPromptResizeHandle(
-            d->generate.editPrompt,
-            [dock, d](int lines) {
-                QJsonObject st = ComfyUIUtils::loadSettingsJson();
-                const bool live = d->comboWorkspace && d->comboWorkspace->currentIndex() == 2;
-                st.insert(live ? QStringLiteral("prompt_line_count_live") : QStringLiteral("prompt_line_count"), lines);
-                ComfyUIUtils::saveSettingsJson(st);
-            },
-            40,
-            promptColumn);
-        promptColLayout->addWidget(d->generate.promptResizeHandle);
-        genContentLayout->addWidget(promptColumn);
-    }
+    ComfyFormUi::attachTextAreaResizeHandle(
+        promptColumn,
+        40,
+        [dock, d](int lines) {
+            QJsonObject st = ComfyUIUtils::loadSettingsJson();
+            const bool live = d->comboWorkspace && d->comboWorkspace->currentIndex() == 2;
+            st.insert(live ? QStringLiteral("prompt_line_count_live") : QStringLiteral("prompt_line_count"), lines);
+            ComfyUIUtils::saveSettingsJson(st);
+        });
+    d->generate.promptResizeHandle = promptColumn.editor->resizeHandle();
+    genContentLayout->addWidget(promptColumn.column);
 
     d->generate.negativePromptBlock = new QWidget(dock);
     QVBoxLayout *negBlockLayout = new QVBoxLayout(d->generate.negativePromptBlock);
-    negBlockLayout->setContentsMargins(0, 0, 0, 0);
-    QHBoxLayout *negativePromptRow = new QHBoxLayout();
-    negativePromptRow->addWidget(new QLabel(ComfyTr::tr("Negative prompt:")));
-    negativePromptRow->addStretch();
+    ComfyUiStyle::applyTightRowLayout(negBlockLayout);
+    auto *negativePromptRow = new ComfyGridRow(d->generate.negativePromptBlock);
+    negativePromptRow->addWidget(new QLabel(ComfyTr::tr("Negative prompt:")), 10);
     d->generate.labelNegativePromptAlert = new QLabel(d->generate.negativePromptBlock);
     d->generate.labelNegativePromptAlert->setToolTip(ComfyTr::tr("The selected Style does not use the negative prompt."));
     d->generate.labelNegativePromptAlert->setPixmap(
         ComfyTheme::icon(QStringLiteral("alert")).pixmap(16, 16));
     d->generate.labelNegativePromptAlert->setVisible(false);
-    negativePromptRow->addWidget(d->generate.labelNegativePromptAlert);
-    negBlockLayout->addLayout(negativePromptRow);
-    d->generate.editNegative = new ComfyPromptPlainTextEdit(d->negativePromptTagCompleter);
+    negativePromptRow->addWidget(d->generate.labelNegativePromptAlert, 2, Qt::AlignRight | Qt::AlignVCenter);
+    negBlockLayout->addWidget(negativePromptRow);
+    auto negativeColumn = ComfyFormUi::addTextAreaColumn(d->generate.negativePromptBlock, d->negativePromptTagCompleter);
+    d->generate.editNegative = negativeColumn.editor;
     d->negativePromptTagCompleter->setWidget(d->generate.editNegative);
     d->generate.editNegative->setTabChangesFocus(true);  // §13.196: Tab moves focus
     d->generate.editNegative->setPlaceholderText(ComfyTr::tr("Describe content you want to avoid."));
     d->generate.editNegative->setToolTip(ComfyTr::tr("Ctrl+Space: tag completion (same lists as positive prompt)."));
     d->generate.editNegative->setMaximumHeight(400);
     d->generate.editNegative->installEventFilter(dock);
-    negBlockLayout->addWidget(d->generate.editNegative);
-    d->generate.negativeResizeHandle = new ComfyPromptResizeHandle(
-        d->generate.editNegative,
-        [dock, d](int lines) {
+    ComfyFormUi::attachTextAreaResizeHandle(
+        negativeColumn,
+        28,
+        [](int lines) {
             QJsonObject st = ComfyUIUtils::loadSettingsJson();
             st.insert(QStringLiteral("negative_prompt_line_count"), lines);
             ComfyUIUtils::saveSettingsJson(st);
-        },
-        28,
-        d->generate.negativePromptBlock);
-    negBlockLayout->addWidget(d->generate.negativeResizeHandle);
+        });
+    d->generate.negativeResizeHandle = negativeColumn.editor->resizeHandle();
+    negBlockLayout->addWidget(negativeColumn.column);
     genContentLayout->addWidget(d->generate.negativePromptBlock);
     dock->updateNegativePromptAlertVisibility();  // §13.143: initial state (e.g. "None" selected)
 
@@ -167,8 +158,8 @@ void buildPromptSection(Workspace &ws)
 
     d->generate.stepsParametersWidget = new QWidget(dock);
     QHBoxLayout *stepsCfgRow = new QHBoxLayout(d->generate.stepsParametersWidget);
-    stepsCfgRow->setContentsMargins(0, 0, 0, 0);
-    d->generate.spinSteps = new QSpinBox();
+    ComfyUiStyle::applyTightRowLayout(stepsCfgRow);
+    d->generate.spinSteps = new ComfySpinBox();
     d->generate.spinSteps->setRange(1, 150);
     d->generate.spinSteps->setValue(20);
     d->generate.spinSteps->setToolTip(ComfyTr::tr("Sampler steps"));
@@ -177,7 +168,7 @@ void buildPromptSection(Workspace &ws)
     d->generate.spinCfg->setValue(8.0);
     d->generate.spinCfg->setDecimals(1);
     d->generate.spinCfg->setToolTip(ComfyTr::tr("CFG scale (guidance strength)"));
-    d->generate.comboSampler = new QComboBox();
+    d->generate.comboSampler = new ComfyComboBox();
     d->generate.comboSampler->setEditable(true);
     d->generate.comboSampler->addItem("euler");
     d->generate.comboSampler->addItem("euler_ancestral");

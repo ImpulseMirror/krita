@@ -236,7 +236,7 @@ void onCancelQueue(ComfyUIRemoteDock *dock)
     dock->m_d->generateRt.controlPreviewPollCount = 0;
     dock->m_d->generateRt.controlLayerJobPromptId.clear();
 
-    dock->m_d->progressBar->setValue(0);
+    dock->resetProgressBarToIdle();
     dock->reEnableGenerateUi();
     if (dock->m_d->inpaint.btnInpaint)
         dock->m_d->inpaint.btnInpaint->setEnabled(true);
@@ -268,7 +268,7 @@ bool cancelCurrentJob(ComfyUIRemoteDock *dock)
         dock->m_d->currentPromptId = dock->m_d->jobQueue.takeFirst();
         dock->startPolling();
     } else {
-        dock->m_d->progressBar->setValue(0);
+        dock->resetProgressBarToIdle();
         if (dock->m_d->generate.btnGenerate)
             dock->m_d->generate.btnGenerate->setEnabled(true);
     }

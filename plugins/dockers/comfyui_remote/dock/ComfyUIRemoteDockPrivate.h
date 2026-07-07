@@ -37,6 +37,7 @@
 #include <QNetworkReply>
 
 class QWebSocket;
+class ComfySpinBox;
 #include <QTemporaryFile>
 #include <QUrl>
 #include <QRect>
@@ -47,7 +48,7 @@ class QWebSocket;
 #include <QDialog>
 #include <QFormLayout>
 #include <QToolButton>
-#include <QSlider>
+#include <QAbstractSlider>
 #include <QGroupBox>
 #include <QButtonGroup>
 #include <QRadioButton>
@@ -132,9 +133,7 @@ struct GenerateUi
     QSpinBox *spinSeed = nullptr;
     QCheckBox *checkFixedSeed = nullptr;
     QPushButton *btnRandomSeed = nullptr;
-    QCheckBox *queueCheckFixedSeed = nullptr;
-    QSpinBox *queueSpinSeed = nullptr;
-    QPushButton *queueBtnRandomSeed = nullptr;
+    QWidget *seedControlRow = nullptr;
     QComboBox *comboQueueMode = nullptr;
     QSpinBox *spinBatchCount = nullptr;
     QLabel *labelQueueCount = nullptr;
@@ -162,7 +161,7 @@ struct GenerateUi
     QWidget *queueBatchOptionsRow = nullptr;
     QWidget *queueEnqueueModeRow = nullptr;
     QWidget *queueResolutionRow = nullptr; // §13.213: Resolution slider row (visible when perf preset = custom)
-    QSlider *sliderResolutionMultiplier = nullptr;
+    QAbstractSlider *sliderResolutionMultiplier = nullptr;
     QLabel *labelResolutionMultiplier = nullptr;
     double resolutionMultiplier = 1.0;
     QGroupBox *genGroupBox = nullptr;
@@ -247,6 +246,7 @@ struct LiveUi
     QToolButton *btnLiveApplyLayer = nullptr;
     QToolButton *btnLiveEditToggle = nullptr;
     QToolButton *btnLiveRandomSeed = nullptr;
+    QWidget *liveTopToolbarWidget = nullptr;
     QWidget *liveParamsRowWidget = nullptr;
     QWidget *livePromptRowWidget = nullptr;
     QWidget *livePromptHostWidget = nullptr;
@@ -300,7 +300,8 @@ struct InpaintUi
     QWidget *seamlessRowWidget = nullptr;
     QWidget *focusRowWidget = nullptr;
     QPushButton *btnInpaint = nullptr;
-    QSlider *sliderStrength = nullptr;
+    QAbstractSlider *sliderStrength = nullptr;
+    QWidget *strengthSliderWidget = nullptr;
     QWidget *strengthRowWidget = nullptr;
     QWidget *customInpaintRowWidget = nullptr;
     QToolButton *btnInpaintMode = nullptr;
@@ -363,7 +364,7 @@ struct UpscaleUi
 {
     QComboBox *comboUpscaleModel = nullptr;
     QPushButton *btnUpscale = nullptr;
-    QSlider *sliderUpscaleFactor = nullptr;
+    QAbstractSlider *sliderUpscaleFactor = nullptr;
     QDoubleSpinBox *spinUpscaleFactor = nullptr;
     QLabel *labelUpscaleTargetSize = nullptr;
     QWidget *upscaleFactorRow = nullptr;
@@ -375,10 +376,10 @@ struct UpscaleUi
     QWidget *upscaleRefineDetails = nullptr;
     QComboBox *comboUpscaleRefinementModel = nullptr;
     QToolButton *btnUpscaleRefineSettings = nullptr;
-    QSlider *sliderUpscaleRefineStrength = nullptr;
-    QLabel *labelUpscaleRefineStrength = nullptr;
-    QSlider *sliderUpscaleRefineGuidance = nullptr;
-    QLabel *labelUpscaleRefineGuidance = nullptr;
+    QAbstractSlider *sliderUpscaleRefineStrength = nullptr;
+    ComfySpinBox *spinUpscaleRefineStrength = nullptr;
+    QAbstractSlider *sliderUpscaleRefineGuidance = nullptr;
+    ComfySpinBox *spinUpscaleRefineGuidance = nullptr;
     class ComfySwitchWidget *checkUpscaleUsePrompt = nullptr;
     QLabel *labelUpscaleUsePromptText = nullptr;
     QWidget *upscaleActionRowWidget = nullptr;
@@ -555,6 +556,8 @@ struct ComfyUIRemoteDock::Private
     QString currentPromptId;      // the one we're currently polling (§9.3 Job.id)
     QStringList jobQueue;         // prompt_ids waiting, first is running (§9.3 JobQueue)
     int pollCount = 0;
+    /// -1 = unknown (buffer +2/tick); [0,1] = known fraction from server/upload.
+    double jobProgressFraction = -1.0;
     static const int maxPollCount = 300; // 5 min at 1s
     KisSignalAutoConnectionsStore connections;
 
@@ -671,6 +674,7 @@ struct ComfyUIRemoteDock::Private
     QString lastNewsDigest;                   // §13.38: digest of current news (saved to settings when user clicks Ok)
     QLabel *welcomeStatusLabel = nullptr;
     QLabel *welcomeErrorLabel = nullptr;  // Yellow error line when connection failed
+    bool shellLayoutReady = false;
     bool isConnected = false;
     bool isConnecting = false;
     bool connectionErrorOccurred = false;

@@ -7,6 +7,7 @@
 #include "ComfyConnectionInternal.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
 
 #include <QUrl>
@@ -46,7 +47,7 @@ void ComfyUIRemoteDock::scheduleConnectionAutostartRetry(const QString &reason)
                          true);
         if (m_d->labelConnectionStatus) {
             m_d->labelConnectionStatus->setText(ComfyTr::tr("Disconnected"));
-            m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+            ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
         }
         refreshConnectionActionButton();
         updateWelcomeVisibility();
@@ -76,7 +77,7 @@ void ComfyUIRemoteDock::scheduleConnectionAutostartRetry(const QString &reason)
     if (m_d->labelConnectionStatus) {
         m_d->labelConnectionStatus->setText(
             ComfyTr::tr("Retrying (%1/%2)", attempt, m_d->connectionAutostartMaxRetries));
-        m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
     }
     setStatusMessage(ComfyTr::tr("Server not ready, retrying connection (%1/%2)…",
                                  attempt,
@@ -119,12 +120,12 @@ void ComfyUIRemoteDock::handleConnectionProbeFailure(uint session,
     setStatusMessage(userMessage, isError);
     if (m_d->labelConnectionStatus) {
         m_d->labelConnectionStatus->setText(ComfyTr::tr("Error: %1", userMessage));
-        m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: red;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Error);
     }
     if (m_d->labelDetectedModels) {
         m_d->labelDetectedModels->setText(
             ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
-        m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleCaption(m_d->labelDetectedModels);
         m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
     }
     updateWelcomeVisibility();
@@ -190,11 +191,11 @@ void ComfyUIRemoteDock::slotTestConnection()
             m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
         if (m_d->labelConnectionStatus) {
             m_d->labelConnectionStatus->setText(ComfyTr::tr("Disconnected"));
-            m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+            ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
         }
         if (m_d->labelDetectedModels) {
             m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
-            m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
+            ComfyUiStyle::styleCaption(m_d->labelDetectedModels);
             m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
         }
         clearObjectInfoDerivedServerCaches();
@@ -220,7 +221,7 @@ void ComfyUIRemoteDock::slotTestConnection()
             m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
         if (m_d->labelConnectionStatus) {
             m_d->labelConnectionStatus->setText(ComfyTr::tr("Error: Invalid URL"));
-            m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: red;"));
+            ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Error);
         }
         if (m_d->labelDetectedModels) {
             m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
@@ -238,7 +239,7 @@ void ComfyUIRemoteDock::slotTestConnection()
     updateWelcomeVisibility();
     if (m_d->labelConnectionStatus) {
         m_d->labelConnectionStatus->setText(ComfyTr::tr("Connecting"));
-        m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
     }
     refreshConnectionActionButton();
     QNetworkRequest req(url);
@@ -262,7 +263,7 @@ void ComfyUIRemoteDock::slotTestConnection()
             setStatusMessage(ComfyTr::tr("Loading server capabilities…"));
             if (m_d->labelConnectionStatus) {
                 m_d->labelConnectionStatus->setText(ComfyTr::tr("Loading server capabilities…"));
-                m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+                ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
             }
 
             QUrl objUrl = ComfyUIUtils::comfyResolveApiUrl(base, QStringLiteral("object_info"));

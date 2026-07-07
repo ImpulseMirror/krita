@@ -51,7 +51,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
     if (urlStr.isEmpty()) {
         dock->m_d->upscaleRt.upscalePromptId.clear();
         dock->m_d->upscale.btnUpscale->setEnabled(true);
-        dock->m_d->progressBar->setValue(0);
+        dock->resetProgressBarToIdle();
         return;
     }
     const QString promptId = dock->m_d->upscaleRt.upscalePromptId;
@@ -60,12 +60,13 @@ void onPollTimer(ComfyUIRemoteDock *dock)
         const auto failUpscale = [dock]() {
             dock->m_d->upscaleRt.upscalePromptId.clear();
             dock->m_d->upscale.btnUpscale->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
         };
         ComfyPollRunnerCommon::PollRunningConfig running;
         running.pollCount = &dock->m_d->upscaleRt.upscalePollCount;
         running.maxPollCount = UpscaleRuntime::upscaleMaxPollCount;
         running.pollTimer = dock->m_d->upscaleRt.upscalePollTimer;
+        running.onTick = [dock]() { dock->tickJobProgressBuffer(); };
         running.onTimeout = [dock, failUpscale]() {
             dock->setStatusMessage(ComfyTr::tr("Upscale timed out."), true);
             failUpscale();
@@ -85,7 +86,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             if (!errorMessage.isEmpty()) {
                 dock->m_d->upscaleRt.upscalePromptId.clear();
                 dock->m_d->upscale.btnUpscale->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             QTemporaryFile tmp;
@@ -93,7 +94,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             if (!tmp.open()) {
                 dock->m_d->upscaleRt.upscalePromptId.clear();
                 dock->m_d->upscale.btnUpscale->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             tmp.write(data);
@@ -113,13 +114,13 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                 dock->setStatusMessage(ComfyTr::tr("Could not import upscale result."), true);
                 dock->m_d->upscaleRt.upscalePromptId.clear();
                 dock->m_d->upscale.btnUpscale->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             dock->m_d->labelStatus->setText(dock->m_d->upscaleRt.upscaleLastSubmitUsedRefine
                 ? ComfyTr::tr("Upscale and refine done. Result added as new layer.")
                 : ComfyTr::tr("Upscale done. Result added as new layer."));
-            dock->m_d->progressBar->setValue(100);
+            dock->finishJobProgress();
             dock->m_d->upscaleRt.upscalePromptId.clear();
             dock->m_d->upscale.btnUpscale->setEnabled(true);
             dock->updateQueueStatus();

@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
+#include "ComfyComboBox.h"
 #include "ComfySettingsDialogBuilder.h"
+#include "ComfyFormUi.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyLocalization.h"
@@ -51,89 +54,15 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
     ComfyUIRemoteDock::Private *d = ctx.d;
     QDialog *dlg = ctx.dialog;
         // Interface tab (index 3) — Python InterfaceSettings (settings.py L699–793)
-        QWidget *interfacePage = new QWidget(dlg);
-        QVBoxLayout *interfaceOuter = new QVBoxLayout(interfacePage);
-        interfaceOuter->setContentsMargins(0, 0, 0, 0);
-        QScrollArea *ifaceScroll = new QScrollArea(interfacePage);
-        ifaceScroll->setWidgetResizable(true);
-        ifaceScroll->setFrameShape(QFrame::NoFrame);
-        ifaceScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        QWidget *ifaceInner = new QWidget();
-        QVBoxLayout *interfaceLayout = new QVBoxLayout(ifaceInner);
-        QLabel *ifaceHeading = new QLabel(ComfyTr::tr("Interface Settings"), ifaceInner);
-        QFont ifaceHeadingFont = ifaceHeading->font();
-        ifaceHeadingFont.setBold(true);
-        ifaceHeadingFont.setPointSize(ifaceHeadingFont.pointSize() + 2);
-        ifaceHeading->setFont(ifaceHeadingFont);
-        interfaceLayout->addWidget(ifaceHeading);
-        interfaceLayout->addSpacing(6);
-
-        auto makeIfaceLabelColumn = [](QWidget *parent, const QString &title, const QString &description) -> QWidget * {
-            auto *col = new QWidget(parent);
-            auto *colLayout = new QVBoxLayout(col);
-            colLayout->setContentsMargins(0, 0, 0, 0);
-            colLayout->setSpacing(2);
-            auto *titleLabel = new QLabel(title, col);
-            QFont titleFont = titleLabel->font();
-            titleFont.setBold(true);
-            titleLabel->setFont(titleFont);
-            colLayout->addWidget(titleLabel);
-            if (!description.isEmpty()) {
-                auto *descLabel = new QLabel(description, col);
-                descLabel->setWordWrap(true);
-                colLayout->addWidget(descLabel);
-            }
-            col->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-            return col;
-        };
-        auto addIfaceSpinRow = [makeIfaceLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                      QSpinBox **outSpin, int min, int max) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makeIfaceLabelColumn(row, title, description), 1);
-            auto *spin = new QSpinBox(row);
-            spin->setMinimumWidth(100);
-            spin->setRange(min, max);
-            rowLayout->addWidget(spin, 0, Qt::AlignRight | Qt::AlignVCenter);
-            *outSpin = spin;
-            return row;
-        };
-        auto addIfaceSwitchRow = [makeIfaceLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                        const QString &onLabel, const QString &offLabel,
-                                                        ComfySwitchWidget **outSwitch, QLabel **outStateLabel) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makeIfaceLabelColumn(row, title, description), 1);
-            auto *stateLabel = new QLabel(onLabel, row);
-            auto *sw = new ComfySwitchWidget(row);
-            rowLayout->addWidget(stateLabel, 0, Qt::AlignRight | Qt::AlignVCenter);
-            rowLayout->addWidget(sw, 0, Qt::AlignRight | Qt::AlignVCenter);
-            QObject::connect(sw, &QAbstractButton::toggled, row, [stateLabel, onLabel, offLabel](bool on) {
-                stateLabel->setText(on ? onLabel : offLabel);
-            });
-            *outSwitch = sw;
-            *outStateLabel = stateLabel;
-            return row;
-        };
-        auto addIfaceComboRow = [makeIfaceLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                       QComboBox **outCombo) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makeIfaceLabelColumn(row, title, description), 1);
-            auto *combo = new QComboBox(row);
-            combo->setMinimumWidth(230);
-            rowLayout->addWidget(combo, 0, Qt::AlignRight | Qt::AlignVCenter);
-            *outCombo = combo;
-            return row;
-        };
+        ComfyFormUi::ScrollTab ifaceTab =
+            ComfyFormUi::createScrollTab(dlg, ComfyTr::tr("Interface Settings"));
+        QWidget *ifaceInner = ifaceTab.inner;
+        QVBoxLayout *interfaceLayout = ifaceTab.innerLayout;
 
         QJsonObject ifaceSettings = ComfyUIUtils::loadSettingsJson();
 
         QComboBox *comboLanguage = nullptr;
-        interfaceLayout->addWidget(addIfaceComboRow(
+        interfaceLayout->addWidget(ComfyFormUi::addComboRow(
             ifaceInner,
             ComfyTr::tr("Language"),
             ComfyTr::tr("Interface language used by the plugin - requires restart!"),
@@ -155,7 +84,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
         }
 
         QComboBox *comboPromptTranslation = nullptr;
-        interfaceLayout->addWidget(addIfaceComboRow(
+        interfaceLayout->addWidget(ComfyFormUi::addComboRow(
             ifaceInner,
             ComfyTr::tr("Prompt Translation"),
             ComfyTr::tr("Translate text prompts from the selected language to English"),
@@ -163,7 +92,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
         d->settingsPromptTranslationCombo = comboPromptTranslation;
 
         QSpinBox *spinPromptLines = nullptr;
-        interfaceLayout->addWidget(addIfaceSpinRow(
+        interfaceLayout->addWidget(ComfyFormUi::addSpinRow(
             ifaceInner,
             ComfyTr::tr("Prompt Line Count"),
             ComfyTr::tr("Size of the text editor for image descriptions"),
@@ -172,34 +101,28 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             10));
         spinPromptLines->setValue(ifaceSettings.value(QStringLiteral("prompt_line_count")).toInt(3));
 
-        ComfySwitchWidget *switchShowNegative = nullptr;
-        QLabel *labelShowNegativeState = nullptr;
-        interfaceLayout->addWidget(addIfaceSwitchRow(
+        auto showNegativeRow = ComfyFormUi::addSwitchRow(
             ifaceInner,
             ComfyTr::tr("Negative Prompt"),
             ComfyTr::tr("Show text editor to describe things to avoid"),
             ComfyTr::tr("Show"),
-            ComfyTr::tr("Hide"),
-            &switchShowNegative,
-            &labelShowNegativeState));
-        switchShowNegative->setChecked(ifaceSettings.value(QStringLiteral("show_negative_prompt")).toBool(false));
-        labelShowNegativeState->setText(switchShowNegative->isChecked() ? ComfyTr::tr("Show") : ComfyTr::tr("Hide"));
+            ComfyTr::tr("Hide"));
+        showNegativeRow.setChecked(ifaceSettings.value(QStringLiteral("show_negative_prompt")).toBool(false));
+        interfaceLayout->addWidget(showNegativeRow.row);
+        ComfySwitchWidget *switchShowNegative = showNegativeRow.switchWidget;
 
-        ComfySwitchWidget *switchShowSteps = nullptr;
-        QLabel *labelShowStepsState = nullptr;
-        interfaceLayout->addWidget(addIfaceSwitchRow(
+        auto showStepsRow = ComfyFormUi::addSwitchRow(
             ifaceInner,
             ComfyTr::tr("Show Steps"),
             ComfyTr::tr("Display the number of steps to be evaluated in the weights box."),
             ComfyTr::tr("On"),
-            ComfyTr::tr("Off"),
-            &switchShowSteps,
-            &labelShowStepsState));
-        switchShowSteps->setChecked(ifaceSettings.value(QStringLiteral("show_steps")).toBool(false));
-        labelShowStepsState->setText(switchShowSteps->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+            ComfyTr::tr("Off"));
+        showStepsRow.setChecked(ifaceSettings.value(QStringLiteral("show_steps")).toBool(false));
+        interfaceLayout->addWidget(showStepsRow.row);
+        ComfySwitchWidget *switchShowSteps = showStepsRow.switchWidget;
 
         QSpinBox *spinRecentStyles = nullptr;
-        interfaceLayout->addWidget(addIfaceSpinRow(
+        interfaceLayout->addWidget(ComfyFormUi::addSpinRow(
             ifaceInner,
             ComfyTr::tr("Recent Styles"),
             ComfyTr::tr("Number of most recently used styles to show at the top of the style list"),
@@ -228,7 +151,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             auto *tagRow = new QWidget(ifaceInner);
             auto *tagRowLayout = new QHBoxLayout(tagRow);
             tagRowLayout->setContentsMargins(0, 4, 0, 4);
-            tagRowLayout->addWidget(makeIfaceLabelColumn(
+            tagRowLayout->addWidget(ComfyFormUi::makeLabelColumn(
                 tagRow,
                 ComfyTr::tr("Tag Auto-Completion"),
                 ComfyTr::tr("Enable text completion for tags from the selected files")),
@@ -240,13 +163,13 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             auto *tagListRow = new QWidget(ifaceInner);
             auto *tagListLayout = new QHBoxLayout(tagListRow);
             tagListLayout->setContentsMargins(16, 0, 0, 4);
-            chkTagDanbooru = new QCheckBox(ComfyTr::tr("Danbooru"), tagListRow);
+            chkTagDanbooru = new ComfyCheckBox(ComfyTr::tr("Danbooru"), tagListRow);
             chkTagDanbooru->setProperty("tagStem", QStringLiteral("Danbooru"));
-            chkTagDanbooruNsfw = new QCheckBox(ComfyTr::tr("Danbooru NSFW"), tagListRow);
+            chkTagDanbooruNsfw = new ComfyCheckBox(ComfyTr::tr("Danbooru NSFW"), tagListRow);
             chkTagDanbooruNsfw->setProperty("tagStem", QStringLiteral("Danbooru NSFW"));
-            chkTagE621 = new QCheckBox(ComfyTr::tr("e621"), tagListRow);
+            chkTagE621 = new ComfyCheckBox(ComfyTr::tr("e621"), tagListRow);
             chkTagE621->setProperty("tagStem", QStringLiteral("e621"));
-            chkTagE621Nsfw = new QCheckBox(ComfyTr::tr("e621 NSFW"), tagListRow);
+            chkTagE621Nsfw = new ComfyCheckBox(ComfyTr::tr("e621 NSFW"), tagListRow);
             chkTagE621Nsfw->setProperty("tagStem", QStringLiteral("e621 NSFW"));
             chkTagDanbooru->setChecked(selectedTagStems.contains(QStringLiteral("Danbooru")));
             chkTagDanbooruNsfw->setChecked(selectedTagStems.contains(QStringLiteral("Danbooru NSFW")));
@@ -290,7 +213,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
         }
 
         QComboBox *comboFinishedAction = nullptr;
-        interfaceLayout->addWidget(addIfaceComboRow(
+        interfaceLayout->addWidget(ComfyFormUi::addComboRow(
             ifaceInner,
             ComfyTr::tr("Finished Generation"),
             ComfyTr::tr("Action to take when an image generation job finishes"),
@@ -307,7 +230,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
         }
 
         QComboBox *comboApplyBehavior = nullptr;
-        interfaceLayout->addWidget(addIfaceComboRow(
+        interfaceLayout->addWidget(ComfyFormUi::addComboRow(
             ifaceInner,
             ComfyTr::tr("Apply Behavior"),
             ComfyTr::tr("Choose how result images are applied to the canvas (generation workspaces)"),
@@ -323,7 +246,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             comboApplyBehavior->setCurrentIndex(applyIdx >= 0 ? applyIdx : 1);
         }
 
-        QComboBox *comboApplyRegionBehavior = new QComboBox(ifaceInner);
+        QComboBox *comboApplyRegionBehavior = new ComfyComboBox(ifaceInner);
         comboApplyRegionBehavior->setMinimumWidth(230);
         comboApplyRegionBehavior->addItem(ComfyTr::tr("Do not update regions"), QStringLiteral("none"));
         comboApplyRegionBehavior->addItem(ComfyTr::tr("Modify region layers"), QStringLiteral("replace"));
@@ -349,7 +272,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
         }
 
         QComboBox *comboApplyBehaviorLive = nullptr;
-        interfaceLayout->addWidget(addIfaceComboRow(
+        interfaceLayout->addWidget(ComfyFormUi::addComboRow(
             ifaceInner,
             ComfyTr::tr("Apply Behavior (Live)"),
             ComfyTr::tr("Choose how result images are applied to the canvas in Live mode"),
@@ -365,7 +288,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             comboApplyBehaviorLive->setCurrentIndex(applyLiveIdx >= 0 ? applyLiveIdx : 0);
         }
 
-        QComboBox *comboApplyRegionBehaviorLive = new QComboBox(ifaceInner);
+        QComboBox *comboApplyRegionBehaviorLive = new ComfyComboBox(ifaceInner);
         comboApplyRegionBehaviorLive->setMinimumWidth(230);
         comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Do not update regions"), QStringLiteral("none"));
         comboApplyRegionBehaviorLive->addItem(ComfyTr::tr("Modify region layers"), QStringLiteral("replace"));
@@ -390,21 +313,18 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             interfaceLayout->addWidget(regionLiveRow);
         }
 
-        ComfySwitchWidget *switchNewSeedAfterApply = nullptr;
-        QLabel *labelNewSeedState = nullptr;
-        interfaceLayout->addWidget(addIfaceSwitchRow(
+        auto newSeedRow = ComfyFormUi::addSwitchRow(
             ifaceInner,
             ComfyTr::tr("Live: New Seed after Apply"),
             ComfyTr::tr("Pick a new seed after copying the result to the canvas in Live mode"),
             ComfyTr::tr("On"),
-            ComfyTr::tr("Off"),
-            &switchNewSeedAfterApply,
-            &labelNewSeedState));
-        switchNewSeedAfterApply->setChecked(ifaceSettings.value(QStringLiteral("new_seed_after_apply")).toBool(false));
-        labelNewSeedState->setText(switchNewSeedAfterApply->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+            ComfyTr::tr("Off"));
+        newSeedRow.setChecked(ifaceSettings.value(QStringLiteral("new_seed_after_apply")).toBool(false));
+        interfaceLayout->addWidget(newSeedRow.row);
+        ComfySwitchWidget *switchNewSeedAfterApply = newSeedRow.switchWidget;
 
         QComboBox *comboSaveFormat = nullptr;
-        interfaceLayout->addWidget(addIfaceComboRow(
+        interfaceLayout->addWidget(ComfyFormUi::addComboRow(
             ifaceInner,
             ComfyTr::tr("Save Image Format"),
             ComfyTr::tr("File format for saved images from thumbnails."),
@@ -424,33 +344,28 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
             comboSaveFormat->setCurrentIndex(sfi >= 0 ? sfi : 0);
         }
 
-        ComfySwitchWidget *switchSaveMeta = nullptr;
-        QLabel *labelSaveMetaState = nullptr;
-        interfaceLayout->addWidget(addIfaceSwitchRow(
+        auto saveMetaRow = ComfyFormUi::addSwitchRow(
             ifaceInner,
             ComfyTr::tr("Save Image Metadata"),
             ComfyTr::tr("When saving generated images from thumbnails, include metadata in the PNG"),
             ComfyTr::tr("On"),
-            ComfyTr::tr("Off"),
-            &switchSaveMeta,
-            &labelSaveMetaState));
-        switchSaveMeta->setChecked(ifaceSettings.value(QStringLiteral("save_image_metadata")).toBool(false));
-        labelSaveMetaState->setText(switchSaveMeta->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+            ComfyTr::tr("Off"));
+        saveMetaRow.setChecked(ifaceSettings.value(QStringLiteral("save_image_metadata")).toBool(false));
+        interfaceLayout->addWidget(saveMetaRow.row);
+        ComfySwitchWidget *switchSaveMeta = saveMetaRow.switchWidget;
+        QLabel *labelSaveMetaState = saveMetaRow.stateLabel;
 
-        ComfySwitchWidget *switchDumpWorkflow = nullptr;
-        QLabel *labelDumpWorkflowState = nullptr;
-        interfaceLayout->addWidget(addIfaceSwitchRow(
+        auto dumpWorkflowRow = ComfyFormUi::addSwitchRow(
             ifaceInner,
             ComfyTr::tr("Dump Workflow"),
             ComfyTr::tr("Write latest ComfyUI prompt to the log folder for test & debug"),
             ComfyTr::tr("On"),
-            ComfyTr::tr("Off"),
-            &switchDumpWorkflow,
-            &labelDumpWorkflowState));
+            ComfyTr::tr("Off"));
         const bool dumpOn = ifaceSettings.value(QStringLiteral("debug_dump_workflow")).toBool(false)
             || ifaceSettings.value(QStringLiteral("dump_workflow")).toBool(false);
-        switchDumpWorkflow->setChecked(dumpOn);
-        labelDumpWorkflowState->setText(dumpOn ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
+        dumpWorkflowRow.setChecked(dumpOn);
+        interfaceLayout->addWidget(dumpWorkflowRow.row);
+        ComfySwitchWidget *switchDumpWorkflow = dumpWorkflowRow.switchWidget;
 
         auto updateSaveFormatSideEffects = [switchSaveMeta, labelSaveMetaState, comboSaveFormat]() {
             const QString f = comboSaveFormat->currentData().toString();
@@ -557,9 +472,7 @@ void buildInterfaceTab(const Context &ctx, QStackedWidget *stack)
         }
 
         interfaceLayout->addStretch();
-        ifaceScroll->setWidget(ifaceInner);
-        interfaceOuter->addWidget(ifaceScroll);
-        stack->addWidget(interfacePage);
+        stack->addWidget(ifaceTab.page);
 
 }
 

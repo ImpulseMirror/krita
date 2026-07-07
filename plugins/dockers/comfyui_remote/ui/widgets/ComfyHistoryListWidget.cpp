@@ -8,6 +8,7 @@
 #include "ComfyHistoryInternal.h"
 #include "ComfyLocalization.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 
 #include <QEvent>
 #include <QFontMetrics>
@@ -32,7 +33,13 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
         if (index.data(ComfyHistoryInternal::HistoryItemIsHeaderRole).toInt() == 1) {
-            QStyledItemDelegate::paint(painter, option, index);
+            QStyleOptionViewItem opt = option;
+            initStyleOption(&opt, index);
+            painter->save();
+            painter->setPen(opt.palette.text().color());
+            QRect textRect = opt.rect.adjusted(ComfyUiStyle::Spacing::unit, 0, -ComfyUiStyle::Spacing::unit, 0);
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, opt.text);
+            painter->restore();
             return;
         }
 
@@ -79,16 +86,7 @@ public:
 
 QString overlayButtonStyleSheet()
 {
-    const QString grey = ComfyTheme::isDarkTheme() ? QStringLiteral("#888")
-                                                   : QStringLiteral("#606060");
-    const QString bg = ComfyTheme::isDarkTheme() ? QStringLiteral("rgba(64, 64, 64, 170)")
-                                                 : QStringLiteral("rgba(240, 240, 240, 160)");
-    const QString bgHover = ComfyTheme::isDarkTheme() ? QStringLiteral("rgba(72, 72, 72, 210)")
-                                                      : QStringLiteral("rgba(240, 240, 240, 200)");
-    return QStringLiteral(
-               "QPushButton { border: 1px solid %1; background: %2; padding: 2px; }"
-               "QPushButton:hover { background: %3; }")
-        .arg(grey, bg, bgHover);
+    return ComfyUiStyle::overlayButtonStyleSheet();
 }
 
 } // namespace
@@ -96,7 +94,7 @@ QString overlayButtonStyleSheet()
 ComfyHistoryListWidget::ComfyHistoryListWidget(QWidget *parent)
     : QListWidget(parent)
 {
-    setViewportMargins(0, 0, 0, 0);
+    setViewportMargins(ComfyUiStyle::Spacing::nestedPanel, 0, 0, 0);
     setItemDelegate(new HistoryThumbnailDelegate(this));
 
     m_applyButton = new QPushButton(ComfyTheme::icon(QStringLiteral("apply")),

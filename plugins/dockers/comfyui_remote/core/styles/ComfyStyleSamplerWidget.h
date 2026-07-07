@@ -12,7 +12,7 @@
 
 class QComboBox;
 class QLabel;
-class QSlider;
+class QAbstractSlider;
 class QToolButton;
 
 /// Mirrors ai_diffusion/ui/style.py SamplerWidget (without “edit custom presets” link).
@@ -41,9 +41,9 @@ private:
     QToolButton *m_expander = nullptr;
     QComboBox *m_preset = nullptr;
     QLabel *m_samplerInfo = nullptr;
-    QSlider *m_steps = nullptr;
+    QAbstractSlider *m_steps = nullptr;
     QLabel *m_stepsValue = nullptr;
-    QSlider *m_cfg = nullptr;
+    QAbstractSlider *m_cfg = nullptr;
     QLabel *m_cfgValue = nullptr;
     QWidget *m_extended = nullptr;
     bool m_loading = false;

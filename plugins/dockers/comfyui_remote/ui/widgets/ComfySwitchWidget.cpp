@@ -4,6 +4,7 @@
  */
 
 #include "ComfySwitchWidget.h"
+#include "ComfyUiStyle.h"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -15,17 +16,19 @@ ComfySwitchWidget::ComfySwitchWidget(QWidget *parent)
 {
     setCheckable(true);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    m_thumbRadius = fontMetrics().height() / 2;
-    m_trackRadius = m_thumbRadius + 2;
-    m_margin = qMax(0, m_thumbRadius - m_trackRadius);
-    m_baseOffset = qMax(m_thumbRadius, m_trackRadius);
+    setFixedSize(ComfyUiStyle::Spacing::toggleWidth, ComfyUiStyle::Spacing::toggleHeight);
+    const int trackH = ComfyUiStyle::Spacing::toggleHeight - 2 * ComfyUiStyle::Spacing::labelControl;
+    m_trackRadius = trackH / 2;
+    m_thumbRadius = ComfyUiStyle::Spacing::toggleKnob / 2;
+    m_margin = ComfyUiStyle::Spacing::labelControl;
+    m_baseOffset = m_margin + m_thumbRadius;
     m_offset = m_baseOffset;
     connect(this, &QAbstractButton::toggled, this, [this](bool) { syncOffsetToChecked(); });
 }
 
 QSize ComfySwitchWidget::sizeHint() const
 {
-    return QSize(4 * m_trackRadius + 2 * m_margin, 2 * m_trackRadius + 2 * m_margin);
+    return QSize(ComfyUiStyle::Spacing::toggleWidth, ComfyUiStyle::Spacing::toggleHeight);
 }
 
 void ComfySwitchWidget::setOffset(int value)
@@ -44,30 +47,31 @@ void ComfySwitchWidget::resizeEvent(QResizeEvent *event)
 
 void ComfySwitchWidget::syncOffsetToChecked()
 {
-    m_offset = isChecked() ? width() - m_baseOffset : m_baseOffset;
+    const int endOn = width() - m_margin - m_thumbRadius;
+    m_offset = isChecked() ? endOn : m_baseOffset;
     update();
 }
 
 void ComfySwitchWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
-    const QPalette pal = palette();
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-
+    const ComfyUiStyle::Colors style = ComfyUiStyle::colors();
     QColor trackBrush;
     QColor thumbBrush;
     qreal trackOpacity = 1.0;
     qreal thumbOpacity = 1.0;
     if (isEnabled()) {
-        trackBrush = isChecked() ? pal.highlight().color() : pal.color(QPalette::Dark);
-        thumbBrush = isChecked() ? pal.color(QPalette::Text) : pal.color(QPalette::Light);
+        trackBrush = isChecked() ? QColor(style.highlight) : QColor(style.toggleOff);
+        thumbBrush = isChecked() ? QColor(Qt::white) : QColor(Qt::black);
     } else {
         trackOpacity = 0.8;
-        trackBrush = pal.color(QPalette::Shadow);
-        thumbBrush = pal.color(QPalette::Mid);
+        trackBrush = QColor(style.disabledBg);
+        thumbBrush = QColor(style.disabledText);
     }
+
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
 
     p.setBrush(trackBrush);
     p.setOpacity(trackOpacity);
@@ -75,7 +79,8 @@ void ComfySwitchWidget::paintEvent(QPaintEvent *event)
 
     p.setBrush(thumbBrush);
     p.setOpacity(thumbOpacity);
-    p.drawEllipse(m_offset - m_thumbRadius, m_baseOffset - m_thumbRadius, 2 * m_thumbRadius, 2 * m_thumbRadius);
+    const int knobY = height() / 2;
+    p.drawEllipse(m_offset - m_thumbRadius, knobY - m_thumbRadius, 2 * m_thumbRadius, 2 * m_thumbRadius);
 }
 
 void ComfySwitchWidget::mouseReleaseEvent(QMouseEvent *event)
@@ -83,7 +88,7 @@ void ComfySwitchWidget::mouseReleaseEvent(QMouseEvent *event)
     const int start = m_offset;
     QAbstractButton::mouseReleaseEvent(event);
     if (event && event->button() == Qt::LeftButton) {
-        const int end = isChecked() ? width() - m_baseOffset : m_baseOffset;
+        const int end = isChecked() ? width() - m_margin - m_thumbRadius : m_baseOffset;
         auto *anim = new QPropertyAnimation(this, "offset", this);
         anim->setDuration(120);
         anim->setStartValue(start);

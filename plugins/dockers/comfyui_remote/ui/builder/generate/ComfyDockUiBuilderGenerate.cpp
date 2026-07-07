@@ -7,6 +7,7 @@
 #include "ComfyDockUiBuilderGenerateInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
+#include "ComfyUiStyle.h"
 
 #include <QVBoxLayout>
 #include <QWidget>
@@ -21,8 +22,8 @@ void buildGenerateWorkspace(const Context &ctx, DockShell &shell)
     ComfyUIRemoteDock::Private *d = ctx.d;
     d->generate.genContentContainer = new QWidget(shell.genGroup);
     QVBoxLayout *genContentLayout = new QVBoxLayout(d->generate.genContentContainer);
-    genContentLayout->setContentsMargins(0, 0, 0, 0);
-    genContentLayout->setSpacing(0);
+    genContentLayout->setContentsMargins(0, ComfyUiStyle::Spacing::sectionGap, 0, 0);
+    genContentLayout->setSpacing(ComfyUiStyle::Spacing::rowGap);
 
     Workspace ws{dock, d, &shell, genContentLayout};
     ComfyDockUiBuilderGenerateInternal::buildUpscaleWidgetsSection(ws);

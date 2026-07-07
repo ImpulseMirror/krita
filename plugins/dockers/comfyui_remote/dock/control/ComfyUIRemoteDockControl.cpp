@@ -14,6 +14,7 @@
 
 #include <QGroupBox>
 #include <QLabel>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QUuid>
 
@@ -43,53 +44,86 @@ void ComfyUIRemoteDock::wireControlLayerList(ComfyControlLayerListWidget *list,
                                              QList<ComfyControlLayerEntry> *layers,
                                              bool forRegion)
 {
+    Q_UNUSED(forRegion);
     if (!list)
         return;
     ComfyUIRemoteDock::Private *d = m_d.data();
     list->setViewManager(d->viewManager);
-    list->setArchKeyProvider([d]() { return currentArchKey(d); });
     list->setLayers(layers);
+    list->setArchKeyProvider([d]() { return currentArchKey(d); });
     connect(list, &ComfyControlLayerListWidget::entryEdited, this, [this]() {
         scheduleDocumentUiJsonSave();
     });
-    connect(list, &ComfyControlLayerListWidget::addLayerRequested, this, [this, forRegion]() {
-        if (forRegion)
+    connect(list, &ComfyControlLayerListWidget::addLayerRequested, this, [this]() {
+        if (comfyActiveRegionRow(m_d.data()) >= 0)
             slotAddRegionControlLayer();
         else
             slotAddControlLayer();
     });
-    connect(list, &ComfyControlLayerListWidget::generateRequested, this,
-            [this, forRegion](int index) { beginControlLayerGenerateJob(forRegion, index); });
-    connect(list, &ComfyControlLayerListWidget::removeRequested, this, [this, forRegion](int index) {
-        if (forRegion)
+    connect(list, &ComfyControlLayerListWidget::generateRequested, this, [this](int index) {
+        beginControlLayerGenerateJob(comfyActiveRegionRow(m_d.data()) >= 0, index);
+    });
+    connect(list, &ComfyControlLayerListWidget::removeRequested, this, [this](int index) {
+        if (comfyActiveRegionRow(m_d.data()) >= 0)
             slotRemoveRegionControlLayerAt(index);
         else
             slotRemoveControlLayerAt(index);
     });
-    connect(list, &ComfyControlLayerListWidget::addPoseCharacterRequested, this,
-            [this, forRegion](int index) { slotAddPoseForControlLayer(forRegion, index); });
+    connect(list, &ComfyControlLayerListWidget::addPoseCharacterRequested, this, [this](int index) {
+        slotAddPoseForControlLayer(comfyActiveRegionRow(m_d.data()) >= 0, index);
+    });
+    connect(list, &ComfyControlLayerListWidget::layoutChanged, this, [this]() {
+        if (!m_d->shellLayoutReady)
+            return;
+        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0) {
+            QTimer::singleShot(0, this, [this]() { syncCompactGenerateLayoutRows(true); });
+        }
+    });
 }
 
 void ComfyUIRemoteDock::setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout)
 {
-    m_d->generate.controlLayersGroupBox = new QGroupBox(ComfyTr::tr("Control layers"), parent);
-    auto *clLay = new QVBoxLayout(m_d->generate.controlLayersGroupBox);
-    m_d->generate.rootControlLayerList = new ComfyControlLayerListWidget(m_d->generate.controlLayersGroupBox);
+    Q_UNUSED(layout);
+    m_d->generate.rootControlLayerList = new ComfyControlLayerListWidget(parent);
+    m_d->generate.rootControlLayerList->setObjectName(QStringLiteral("ComfyRootControlLayerList"));
+    m_d->generate.rootControlLayerList->setCompactChrome(true);
     m_d->generate.rootControlLayerList->setToolTip(
         ComfyTr::tr("Control layers for the whole image on Generate (ControlNet and IP-Adapter)."));
-    clLay->addWidget(m_d->generate.rootControlLayerList);
     wireControlLayerList(m_d->generate.rootControlLayerList, &m_d->rootControlLayers, false);
-    layout->addWidget(m_d->generate.controlLayersGroupBox);
+
+    // Legacy groupbox kept for hidden advanced panel; compact chrome embeds rootControlLayerList in region prompt.
+    m_d->generate.controlLayersGroupBox = new QGroupBox(ComfyTr::tr("Control layers"), parent);
+    m_d->generate.controlLayersGroupBox->hide();
+}
+
+void ComfyUIRemoteDock::refreshInlineControlLayersList()
+{
+    if (!m_d->generate.rootControlLayerList)
+        return;
+    m_d->generate.rootControlLayerList->setLayoutNotificationsEnabled(m_d->shellLayoutReady);
+    QList<ComfyUIRemoteDock::Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
+    const int row = comfyActiveRegionRow(m_d.data());
+    if (row >= 0 && row < regs.size())
+        m_d->generate.rootControlLayerList->setLayers(&regs[row].controlLayers);
+    else
+        m_d->generate.rootControlLayerList->setLayers(&m_d->rootControlLayers);
+    m_d->generate.rootControlLayerList->refreshLayerCombos();
+    refreshControlLayerGenerateButtons();
 }
 
 void ComfyUIRemoteDock::refreshRootControlLayersList()
 {
-    if (m_d->generate.rootControlLayerList) {
-        m_d->generate.rootControlLayerList->setLayers(&m_d->rootControlLayers);
-        m_d->generate.rootControlLayerList->refresh();
-        m_d->generate.rootControlLayerList->refreshLayerCombos();
+    refreshInlineControlLayersList();
+    if (m_d->generate.regionControlLayerList) {
+        QList<ComfyUIRemoteDock::Private::RegionEntry> &regs = comfyActiveRegionEntries(m_d.data());
+        const int row = comfyActiveRegionRow(m_d.data());
+        const bool hasRegion = row >= 0 && row < regs.size();
+        if (hasRegion) {
+            m_d->generate.regionControlLayerList->setLayers(&regs[row].controlLayers);
+            m_d->generate.regionControlLayerList->refresh();
+            m_d->generate.regionControlLayerList->refreshLayerCombos();
+        }
     }
-    refreshControlLayerGenerateButtons();
 }
 
 void ComfyUIRemoteDock::slotAddControlLayer()
@@ -169,7 +203,7 @@ void ComfyUIRemoteDock::refreshRegionControlLayersList()
             m_d->generate.regionControlLayerList->refresh();
         }
     }
-    refreshControlLayerGenerateButtons();
+    refreshInlineControlLayersList();
 }
 
 void ComfyUIRemoteDock::slotAddRegionControlLayer()

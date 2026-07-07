@@ -238,7 +238,7 @@ void onGenerate(ComfyUIRemoteDock *dock)
                 dock->m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
             dock->m_d->labelStatus->setText(ComfyTr::tr("Submitting…"));
-            dock->m_d->progressBar->setValue(0);
+            dock->beginJobProgress();
             dock->m_d->generate.btnGenerate->setEnabled(false);
             onBatchSubmitNext(dock);
             return;
@@ -376,7 +376,7 @@ void onGenerate(ComfyUIRemoteDock *dock)
                 dock->m_d->generate.spinSeed->setValue(static_cast<int>(dock->m_d->batchBaseSeed));
             if (dock->m_d->clientId.isEmpty())
                 dock->m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-            dock->m_d->progressBar->setValue(0);
+            dock->beginJobProgress();
             onBatchSubmitNext(dock);
         });
         return;
@@ -453,7 +453,7 @@ void onGenerate(ComfyUIRemoteDock *dock)
             dock->m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
         dock->m_d->labelStatus->setText(ComfyTr::tr("Submitting…"));
-        dock->m_d->progressBar->setValue(0);
+        dock->beginJobProgress();
         dock->m_d->generate.btnGenerate->setEnabled(false);
         onBatchSubmitNext(dock);
         return;
@@ -665,7 +665,7 @@ void onGenerate(ComfyUIRemoteDock *dock)
         dock->m_d->clientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     dock->m_d->labelStatus->setText(ComfyTr::tr("Submitting…"));
-    dock->m_d->progressBar->setValue(0);
+    dock->beginJobProgress();
     dock->m_d->generate.btnGenerate->setEnabled(false);
     onBatchSubmitNext(dock);
 }

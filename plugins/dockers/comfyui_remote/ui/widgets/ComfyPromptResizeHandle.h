@@ -22,6 +22,8 @@ public:
                                      int minHeightPx = 40,
                                      QWidget *parent = nullptr);
 
+    void syncGeometry();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;

@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyStyleLoraListWidget.h"
 #include "ComfyStyleLoraItemWidget.h"
 #include "ComfyFileLibrary.h"
 #include "ComfyLocalization.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
 
 #include <QComboBox>
@@ -40,27 +42,29 @@ ComfyStyleLoraListWidget::ComfyStyleLoraListWidget(QWidget *parent)
 
     auto *headerTextLayout = new QVBoxLayout();
     QLabel *titleLabel = new QLabel(ComfyTr::tr("LoRA"), this);
-    QFont titleFont = titleLabel->font();
-    titleFont.setBold(true);
-    titleLabel->setFont(titleFont);
+    ComfyUiStyle::styleFormRowTitle(titleLabel);
     QLabel *descLabel = new QLabel(
         ComfyTr::tr("Extensions to the checkpoint which expand its range based on additional training."), this);
     descLabel->setWordWrap(true);
+    ComfyUiStyle::styleDescription(descLabel);
     headerTextLayout->addWidget(titleLabel);
     headerTextLayout->addWidget(descLabel);
     headerLayout->addLayout(headerTextLayout, 5);
 
     m_addButton = new QPushButton(ComfyTr::tr("Add"), this);
     m_addButton->setMinimumWidth(100);
+    ComfyUiStyle::applySecondaryButton(m_addButton);
     connect(m_addButton, &QPushButton::clicked, this, [this]() { addItem(); });
 
-    m_filterCombo = new QComboBox(this);
+    m_filterCombo = new ComfyComboBox(this);
+    ComfyUiStyle::applyComboBox(m_filterCombo);
     connect(m_filterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { applyFilter(); });
 
     m_refreshButton = new QToolButton(this);
     m_refreshButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     m_refreshButton->setIcon(ComfyTheme::icon(QStringLiteral("reset")));
     m_refreshButton->setToolTip(ComfyTr::tr("Look for new LoRA files"));
+    ComfyUiStyle::applyIconToolButton(m_refreshButton);
     connect(m_refreshButton, &QToolButton::clicked, this, [this]() {
         ComfyFileLibrary::instance().init();
         ComfyFileLibrary::instance().loras().load();

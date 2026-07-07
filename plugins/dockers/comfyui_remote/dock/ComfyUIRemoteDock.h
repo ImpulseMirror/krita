@@ -112,6 +112,11 @@ public:
     // §13.18: ProgressKind — upload = amber (progress_alt), generation = default
     void setProgressBarKind(bool isUpload);
     void resetProgressBarToIdle();
+    /// FAITHFUL_PORT: generation.py ProgressBar — max 1000, buffer +2/tick while progress unknown.
+    void beginJobProgress();
+    void setJobProgressFraction(double fraction);
+    void tickJobProgressBuffer();
+    void finishJobProgress();
     void loadRegionsFromConfig();
     void saveRegionsToConfig();
     void setupRootControlLayersUi(QWidget *parent, QVBoxLayout *layout);
@@ -120,6 +125,7 @@ public:
                               QList<ComfyControlLayerEntry> *layers,
                               bool forRegion);
     void refreshRootControlLayersList();
+    void refreshInlineControlLayersList();
 
     // §13.44: Persist preview layer ID to document annotation (call when user sets preview layer)
     void clearHistoryPreviewState();
@@ -219,8 +225,6 @@ public:
     void startNewsFetch();
     // §5.4 / §13.209: Persist fixed seed and seed value to KConfig.
     void persistSeedToConfig();
-    // §5.4: Copy dock seed row into queue popup duplicates (avoids reparenting shared widgets).
-    void syncQueueSeedWidgetsFromMain();
     /// §5.7 / §13.92: Hide batch + enqueue mode in queue popup on Animation (supports_batch=False).
     void refreshQueuePopupSupportsBatch();
     /// §13.81 / §13.198: Auto-connect on startup when a server URL is saved in settings.
@@ -324,6 +328,9 @@ private Q_SLOTS:
     void stopLiveSpinner();
     /// FAITHFUL_PORT: reparent shared widgets + show/hide live-only chrome (ai_diffusion/ui/live.py)
     void updateLiveWorkspaceUi();
+    void syncLivePromptRowHeights();
+    /// Restore strength slider + icon buttons on the Generate strength row (after Live / compact collapse).
+    void ensureGenerateStrengthRowLayout();
     void updateLiveToolbarState();
     void slotAddRegion();
     void slotRemoveRegion();
@@ -455,7 +462,7 @@ public:
     void refreshWelcomeAutoUpdatePanel();
     void syncPluginUpdateUi();
     /// Zero-height hidden rows so scroll sizeHint matches visible Generate stack only.
-    void syncCompactGenerateLayoutRows(bool compactGenerate);
+    void syncCompactGenerateLayoutRows(bool compactGenerate, bool reapplyPromptLayout = true);
     /// FAITHFUL_PORT: HistoryWidget lives only on Generation workspace (upstream stacked pages).
     void syncHistoryPanelWorkspaceVisibility();
     QScopedPointer<Private> m_d;

@@ -128,7 +128,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
             if (layerId.isEmpty()) {
                 dock->setStatusMessage(ComfyTr::tr("Select an animation target layer for img2img batch."), true);
                 dock->m_d->generate.btnGenerate->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 clearAnimationBatchState(dock->m_d.data());
                 return;
             }
@@ -136,7 +136,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
             if (refImg.isNull()) {
                 dock->setStatusMessage(ComfyTr::tr("Could not read animation target layer pixels."), true);
                 dock->m_d->generate.btnGenerate->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 clearAnimationBatchState(dock->m_d.data());
                 return;
             }
@@ -150,7 +150,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
                                      : docCapture.errorMessage,
                                  true);
                 dock->m_d->generate.btnGenerate->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 clearAnimationBatchState(dock->m_d.data());
                 return;
             }
@@ -163,7 +163,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
         if (!refImg.save(tmp->fileName())) {
             dock->setStatusMessage(ComfyTr::tr("Could not save temp image."), true);
             dock->m_d->generate.btnGenerate->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             clearAnimationBatchState(dock->m_d.data());
             return;
         }
@@ -196,7 +196,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
             dock->setProgressBarKind(false);
             auto abortAnimBatch = [dock]() {
                 dock->m_d->generate.btnGenerate->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 clearAnimationBatchState(dock->m_d.data());
             };
             if (replyUp->error() != QNetworkReply::NoError) {
@@ -245,7 +245,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
                                  : docCapture.errorMessage,
                              true);
             dock->m_d->generate.btnGenerate->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             dock->m_d->batchCountTarget = 0;
             dock->m_d->isFullAnimationBatch = false;
             dock->m_d->animationBatchPromptIdToIndex.clear();
@@ -263,7 +263,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
         if (!refImg.save(tmp->fileName())) {
             dock->setStatusMessage(ComfyTr::tr("Could not save temp image."), true);
             dock->m_d->generate.btnGenerate->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             dock->m_d->batchCountTarget = 0;
             dock->m_d->isFullAnimationBatch = false;
             dock->m_d->animationBatchPromptIdToIndex.clear();
@@ -299,7 +299,7 @@ void onBatchSubmitNext(ComfyUIRemoteDock *dock)
             dock->setProgressBarKind(false);
             auto abortAnimBatch = [dock]() {
                 dock->m_d->generate.btnGenerate->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 dock->m_d->batchCountTarget = 0;
                 dock->m_d->isFullAnimationBatch = false;
                 dock->m_d->animationBatchPromptIdToIndex.clear();
@@ -454,7 +454,7 @@ void dispatchBatchPromptRequest(ComfyUIRemoteDock *dock, QJsonObject workflow, i
                     dock->m_d->customGraphLiveTimer->stop();
             }
             dock->m_d->generate.btnGenerate->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             dock->m_d->batchCountTarget = 0;
             dock->m_d->isFullAnimationBatch = false;
             dock->m_d->animationBatchPromptIdToIndex.clear();

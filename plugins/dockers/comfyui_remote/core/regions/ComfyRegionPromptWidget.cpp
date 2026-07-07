@@ -413,7 +413,6 @@ bool ComfyRegionPromptWidget::eventFilter(QObject *obj, QEvent *event)
 void ComfyRegionPromptWidget::setViewManager(KisViewManager *viewManager)
 {
     m_viewManager = viewManager;
-    m_lastActiveLayerUuid = QUuid();
     refresh();
 }
 
@@ -481,24 +480,11 @@ void ComfyRegionPromptWidget::refresh()
         return;
     if (m_regions->isEmpty()) {
         *m_activeIndex = ComfyRegionLink::kRootRegionIndex;
-    } else if (*m_activeIndex >= m_regions->size()
-               || (*m_activeIndex < ComfyRegionLink::kUnlinkedRegionIndex
-                   && *m_activeIndex != ComfyRegionLink::kRootRegionIndex)) {
-        if (m_viewManager && m_viewManager->image()) {
-            const int linked = ComfyRegionLink::findRegionIndexForLayer(
-                *m_regions, m_viewManager->image(), m_viewManager->activeLayer(), ComfyRegionLink::LinkMode::Any);
-            *m_activeIndex = linked >= 0 ? linked : ComfyRegionLink::kUnlinkedRegionIndex;
-        } else {
-            *m_activeIndex = 0;
-        }
-    } else if (m_liveSingleRegionMode && *m_activeIndex != ComfyRegionLink::kRootRegionIndex && m_viewManager
-               && m_viewManager->image()) {
-        const int linked = ComfyRegionLink::findRegionIndexForLayer(
-            *m_regions, m_viewManager->image(), m_viewManager->activeLayer(), ComfyRegionLink::LinkMode::Any);
-        if (linked >= 0)
-            *m_activeIndex = linked;
-        else if (*m_activeIndex >= 0)
-            *m_activeIndex = ComfyRegionLink::kUnlinkedRegionIndex;
+    } else if (*m_activeIndex >= m_regions->size()) {
+        *m_activeIndex = 0;
+    } else if (*m_activeIndex < ComfyRegionLink::kUnlinkedRegionIndex
+               && *m_activeIndex != ComfyRegionLink::kRootRegionIndex) {
+        *m_activeIndex = 0;
     }
     rebuildInactiveChips();
     rebuildActiveEditor();
@@ -508,24 +494,10 @@ void ComfyRegionPromptWidget::refresh()
 
 void ComfyRegionPromptWidget::onActiveLayerChanged()
 {
+    // FAITHFUL_PORT: upstream ActiveRegionWidget — layer changes refresh link affordances
+    // only (_update_links / _update_actions). Region prompt selection stays user-driven.
     if (!m_regions || !m_activeIndex || !m_viewManager)
         return;
-    KisLayerSP layer = m_viewManager->activeLayer();
-    const QUuid id = layer ? layer->uuid() : QUuid();
-    if (id == m_lastActiveLayerUuid)
-        return;
-    m_lastActiveLayerUuid = id;
-
-    if (m_regions->isEmpty())
-        return;
-
-    KisImageSP image = m_viewManager->image();
-    const int idx = ComfyRegionLink::findRegionIndexForLayer(*m_regions, image, layer, ComfyRegionLink::LinkMode::Any);
-    if (idx >= 0)
-        setActiveIndex(idx);
-    else if (*m_activeIndex >= 0)
-        setActiveIndex(ComfyRegionLink::kUnlinkedRegionIndex);
-
     updateLinkButton();
     updateNoRegionStrip();
 }

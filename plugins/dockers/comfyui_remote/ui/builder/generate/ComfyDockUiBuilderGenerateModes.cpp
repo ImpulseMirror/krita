@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
+#include "ComfyGrid.h"
+#include "ComfyUiStyle.h"
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilderGenerateInternal.h"
 
 #include "ComfyLiveRunner.h"
@@ -49,7 +53,7 @@
 #include <QScrollArea>
 #include <QSize>
 #include <QSlider>
-#include <QSpinBox>
+#include "ComfySpinBox.h"
 #include <QStackedWidget>
 #include <QStringListModel>
 #include <QTimer>
@@ -79,16 +83,11 @@ void buildModeWorkspaceSection(Workspace &ws)
     DockShell &shell = *ws.shell;
     QVBoxLayout *genContentLayout = ws.genContentLayout;
 
-    d->upscale.btnUpscale = new QPushButton(ComfyTr::tr("Upscale"));
-    d->upscale.btnUpscale->setToolTip(ComfyTr::tr(
-        "Upscale the canvas at the scale factor above (ComfyUI ImageScale). With \"Refine upscaled image\" enabled, runs a diffusion pass after scaling."));
-    QObject::connect(d->upscale.btnUpscale, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotUpscale);
-    // btnUpscale is placed on upscaleActionRowWidget in buildUpscaleWidgetsSection (runs earlier).
+    // btnUpscale is created in buildUpscaleWidgetsSection (runs earlier).
 
     // §5.6 Live / §5.7 Animation: Full Animation / Single Frame radio (batch_mode); visible when workspace is Live or Animation
-    d->batchModeRow = new QWidget(shell.genGroup);
-    QHBoxLayout *batchModeLayout = new QHBoxLayout(d->batchModeRow);
-    d->batchModeRow->setContentsMargins(0, 0, 0, 0);
+    d->batchModeRow = new ComfyGridRow(shell.genGroup);
+    auto *batchModeGrid = static_cast<ComfyGridRow *>(d->batchModeRow);
     d->radioSingleFrame = new QRadioButton(ComfyTr::tr("Single Frame"), d->batchModeRow);
     d->radioFullAnimation = new QRadioButton(ComfyTr::tr("Full Animation"), d->batchModeRow);
     d->radioSingleFrame->setToolTip(ComfyTr::tr("Generate a single image at current time."));
@@ -99,18 +98,16 @@ void buildModeWorkspaceSection(Workspace &ws)
     bool fullAnimation = KSharedConfig::openConfig()->group("ComfyUIRemote").readEntry("FullAnimation", false);
     d->radioFullAnimation->setChecked(fullAnimation);
     d->radioSingleFrame->setChecked(!fullAnimation);
-    batchModeLayout->addWidget(d->radioSingleFrame);
-    batchModeLayout->addWidget(d->radioFullAnimation);
-    batchModeLayout->addStretch();
+    batchModeGrid->addWidget(d->radioSingleFrame, 6);
+    batchModeGrid->addWidget(d->radioFullAnimation, 6);
     genContentLayout->addWidget(d->batchModeRow);
     d->batchModeRow->setVisible(false);
 
     // §13.74: Single Frame — choose paint layer that receives output (persisted in ui.json animation.target_layer)
-    d->animationTargetRow = new QWidget(shell.genGroup);
-    QHBoxLayout *animTargetLayout = new QHBoxLayout(d->animationTargetRow);
-    d->animationTargetRow->setContentsMargins(0, 0, 0, 0);
+    d->animationTargetRow = new ComfyGridRow(shell.genGroup);
+    auto *animTargetGrid = static_cast<ComfyGridRow *>(d->animationTargetRow);
     // §5.7: dropdown lists each paint layer as "Target layer: {name}" (no separate label — text is per item)
-    d->comboAnimationTargetLayer = new QComboBox(d->animationTargetRow);
+    d->comboAnimationTargetLayer = new ComfyComboBox(d->animationTargetRow);
     d->comboAnimationTargetLayer->setAccessibleName(ComfyTr::tr("Target layer"));
     d->comboAnimationTargetLayer->setToolTip(
         ComfyTr::tr("Paint layer that receives Single Frame generation output (Animation workspace)."));
@@ -122,14 +119,14 @@ void buildModeWorkspaceSection(Workspace &ws)
             d->animationPreviewDebounce->start();
         }
     });
-    animTargetLayout->addWidget(d->comboAnimationTargetLayer, 1);
+    animTargetGrid->addWidget(d->comboAnimationTargetLayer, 12, 1);
     genContentLayout->addWidget(d->animationTargetRow);
     d->animationTargetRow->setVisible(false);
 
     // §13.74: preview of last Single Frame result (Animation workspace)
     d->animationPreviewRow = new QWidget(shell.genGroup);
     QVBoxLayout *animPreviewLayout = new QVBoxLayout(d->animationPreviewRow);
-    d->animationPreviewRow->setContentsMargins(0, 0, 0, 0);
+    ComfyUiStyle::applyTightRowLayout(animPreviewLayout);
     animPreviewLayout->addWidget(new QLabel(ComfyTr::tr("Frame preview:"), d->animationPreviewRow));
     d->labelAnimationPreview = new QLabel(d->animationPreviewRow);
     d->labelAnimationPreview->setAlignment(Qt::AlignCenter);
@@ -154,19 +151,18 @@ void buildModeWorkspaceSection(Workspace &ws)
     // FAITHFUL_PORT: wrap the Animation Frames row in a QWidget so the orphan
     // "Frames:" label hides as a unit alongside btnGenerateAnimation; the row
     // only appears in the Animation workspace.
-    d->animFramesRowWidget = new QWidget(d->generate.genContentContainer);
-    QHBoxLayout *animRow = new QHBoxLayout(d->animFramesRowWidget);
-    animRow->setContentsMargins(0, 0, 0, 0);
-    d->spinAnimationFrames = new QSpinBox(d->animFramesRowWidget);
+    d->animFramesRowWidget = new ComfyGridRow(d->generate.genContentContainer);
+    auto *animGrid = static_cast<ComfyGridRow *>(d->animFramesRowWidget);
+    d->spinAnimationFrames = new ComfySpinBox(d->animFramesRowWidget);
     d->spinAnimationFrames->setRange(2, 16);
     d->spinAnimationFrames->setValue(4);
     d->spinAnimationFrames->setToolTip(ComfyTr::tr("Number of frames (seeds: seed, seed+1, …)"));
     d->generate.btnGenerateAnimation = new QPushButton(ComfyTr::tr("Generate animation"), d->animFramesRowWidget);
     d->generate.btnGenerateAnimation->setToolTip(ComfyTr::tr("Generate N images with sequential seeds as new layers."));
     QObject::connect(d->generate.btnGenerateAnimation, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotGenerateAnimation);
-    animRow->addWidget(new QLabel(ComfyTr::tr("Frames:"), d->animFramesRowWidget));
-    animRow->addWidget(d->spinAnimationFrames);
-    animRow->addWidget(d->generate.btnGenerateAnimation);
+    animGrid->addWidget(new QLabel(ComfyTr::tr("Frames:"), d->animFramesRowWidget), 2);
+    animGrid->addWidget(d->spinAnimationFrames, 2);
+    animGrid->addWidget(d->generate.btnGenerateAnimation, 8, 1);
     genContentLayout->addWidget(d->animFramesRowWidget);
     d->animFramesRowWidget->setVisible(false);
 
@@ -177,7 +173,7 @@ void buildModeWorkspaceSection(Workspace &ws)
     genContentLayout->addWidget(d->btnImportAnimation);
     d->btnImportAnimation->setVisible(false);
 
-    d->live.checkLiveMode = new QCheckBox(ComfyTr::tr("Live (periodic img2img from canvas)"));
+    d->live.checkLiveMode = new ComfyCheckBox(ComfyTr::tr("Live (periodic img2img from canvas)"));
     d->live.checkLiveMode->setToolTip(ComfyTr::tr("Continuously watches the canvas and runs img2img when you paint or change prompts."));
     QObject::connect(d->live.checkLiveMode, &QCheckBox::toggled, dock, [dock, d](bool checked) {
         if (checked)
@@ -193,7 +189,7 @@ void buildModeWorkspaceSection(Workspace &ws)
     // Generate compact view (workspace lambda re-enables when switching to Live).
     d->live.checkLiveMode->setVisible(false);
     // §13.45: Record — save each live result to .live-frames/frame-N.webp for later Import Animation
-    d->live.checkLiveRecord = new QCheckBox(ComfyTr::tr("Record (save frames to .live-frames)"));
+    d->live.checkLiveRecord = new ComfyCheckBox(ComfyTr::tr("Record (save frames to .live-frames)"));
     d->live.checkLiveRecord->setToolTip(ComfyTr::tr("When enabled, each live result is saved to the document's .live-frames folder as frame-N.webp. Use Import Animation to add them to the document."));
     QObject::connect(d->live.checkLiveRecord, &QCheckBox::toggled, dock, [dock, d](bool checked) {
         if (checked) {

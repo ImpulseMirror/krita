@@ -5,8 +5,11 @@
 
 #include "ComfyQueueButton.h"
 
+#include "ComfySpinPaint.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 
+#include <QColor>
 #include <QFontMetrics>
 #include <QPainter>
 #include <QStyle>
@@ -47,10 +50,15 @@ void ComfyQueueButton::setDisplayState(DisplayState state, int displayCount, con
 
 QSize ComfyQueueButton::sizeHint() const
 {
-    const QSize original = QToolButton::sizeHint();
-    const int textW = fontMetrics().horizontalAdvance(QStringLiteral("99")) + 8;
-    const int w = static_cast<int>(original.height() * 0.75) + textW;
-    return QSize(w, original.height());
+    const QFontMetrics fm(font());
+    const int pad = ComfyUiStyle::Spacing::iconPadding;
+    const int iconSide = ComfyUiStyle::Spacing::iconSmall;
+    const int arrowW = ComfyUiStyle::Spacing::comboArrowWidth;
+    const QString label = text().isEmpty() ? QStringLiteral("0") : text();
+    const int textW = fm.horizontalAdvance(label);
+    const int h = qMax(ComfyUiStyle::Spacing::primaryButtonHeight - 2, ComfyUiStyle::Spacing::comboHeight);
+    const int w = pad + iconSide + pad + textW + pad + arrowW + pad;
+    return QSize(w, h);
 }
 
 void ComfyQueueButton::paintEvent(QPaintEvent *event)
@@ -59,17 +67,31 @@ void ComfyQueueButton::paintEvent(QPaintEvent *event)
     QStyleOption opt;
     opt.initFrom(this);
     QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
     QStyle *style = this->style();
-    const Qt::Alignment align = Qt::AlignLeft | Qt::AlignVCenter | Qt::AlignAbsolute;
     const QRect rect = this->rect();
-    const QPixmap pixmap = icon().pixmap(static_cast<int>(rect.height() * 0.75));
     QStyle::PrimitiveElement element = QStyle::PE_Widget;
     if (opt.state & QStyle::State_MouseOver)
         element = QStyle::PE_PanelButtonCommand;
     style->drawPrimitive(element, &opt, &painter, this);
-    style->drawItemPixmap(&painter, rect.adjusted(4, 0, 0, 0), static_cast<int>(align), pixmap);
-    const QRect textRect = rect.adjusted(pixmap.width() + 4, 0, -18, 0);
-    style->drawItemText(&painter, textRect, static_cast<int>(align), palette(), true, text());
-    painter.translate(static_cast<int>(0.5 * rect.width() - 10), 0);
-    style->drawPrimitive(QStyle::PE_IndicatorArrowDown, &opt, &painter, this);
+
+    const int pad = ComfyUiStyle::Spacing::iconPadding;
+    const int iconSide = qMax(12, static_cast<int>(rect.height() * 0.72));
+    const QRect arrowColumn = ComfySpinPaint::buttonColumnRect(rect);
+
+    const QPixmap pixmap = icon().pixmap(iconSide, iconSide);
+    const QRect iconRect(pad, (rect.height() - iconSide) / 2, iconSide, iconSide);
+    if (!pixmap.isNull())
+        painter.drawPixmap(iconRect, pixmap);
+
+    const QString label = text().isEmpty() ? QStringLiteral("0") : text();
+    const QRect countRect(iconRect.right() + pad,
+                          rect.top(),
+                          qMax(1, arrowColumn.left() - iconRect.right() - pad * 2),
+                          rect.height());
+    painter.setPen(QColor(ComfyUiStyle::colors().primaryText));
+    painter.drawText(countRect, Qt::AlignLeft | Qt::AlignVCenter, label);
+
+    const QColor arrowColor(ComfyUiStyle::colors().secondaryText);
+    ComfySpinPaint::paintTriangle(painter, arrowColumn.center(), false, arrowColor);
 }

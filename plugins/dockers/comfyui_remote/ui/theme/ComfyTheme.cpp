@@ -4,6 +4,7 @@
  */
 
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
@@ -108,56 +109,27 @@ Palette palette()
 
 QString flatComboStyleSheet()
 {
-    const Palette p = palette();
-    return QStringLiteral(
-               "QComboBox { border: none; background-color: transparent; padding: 1px 12px 1px 2px; }"
-               "QComboBox QAbstractItemView { selection-color: %1; }")
-        .arg(p.highlight);
+    return ComfyUiStyle::flatComboStyleSheet();
 }
 
 void applyFlatComboStyle(QComboBox *combo)
 {
-    if (combo)
-        combo->setStyleSheet(flatComboStyleSheet());
+    ComfyUiStyle::applyComboBox(combo);
 }
 
 QString toolbarComboStyleSheet()
 {
-    const Palette p = palette();
-    return QStringLiteral(
-               "QComboBox {"
-               "  border: 1px solid %1;"
-               "  border-radius: 3px;"
-               "  background-color: palette(button);"
-               "  padding: 2px 22px 2px 6px;"
-               "  min-height: 20px;"
-               "}"
-               "QComboBox:hover, QComboBox:focus {"
-               "  border-color: palette(highlight);"
-               "}"
-               "QComboBox::drop-down {"
-               "  subcontrol-origin: padding;"
-               "  subcontrol-position: center right;"
-               "  width: 18px;"
-               "  border: none;"
-               "  background: transparent;"
-               "}"
-               "QComboBox QAbstractItemView {"
-               "  selection-color: %2;"
-               "}")
-        .arg(p.line, p.highlight);
+    return ComfyUiStyle::comboBoxStyleSheet();
 }
 
 void applyToolbarComboStyle(QComboBox *combo)
 {
-    if (combo)
-        combo->setStyleSheet(toolbarComboStyleSheet());
+    ComfyUiStyle::applyComboBox(combo);
 }
 
 void applyFlatComboStyle(QWidget *widget)
 {
-    if (widget)
-        widget->setStyleSheet(flatComboStyleSheet());
+    ComfyUiStyle::applyComboBox(widget);
 }
 
 QString kritaIconNameForThemeStem(const QString &stem)

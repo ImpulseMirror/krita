@@ -3,7 +3,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
 #include "ComfyDockUiBuilderGenerateInternal.h"
+
+#include "ComfySlider.h"
+#include "ComfyFormUi.h"
+#include "ComfyUiLayoutDiagnostics.h"
+#include "ComfyUiStyle.h"
 
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
@@ -47,8 +53,8 @@
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSize>
-#include <QSlider>
-#include <QSpinBox>
+#include <QAbstractSlider>
+#include "ComfySpinBox.h"
 #include <QStackedWidget>
 #include <QStringListModel>
 #include <QTimer>
@@ -85,14 +91,24 @@ void buildStrengthSection(Workspace &ws)
     d->generate.spinStrength->setSuffix(QStringLiteral("%"));
     d->generate.spinStrength->setToolTip(ComfyTr::tr("Strength: 100% = full generation, lower = more preserved (refine)."));
     d->inpaint.strengthRowWidget = new QWidget(d->generate.genContentContainer);
+    d->inpaint.strengthRowWidget->setObjectName(QStringLiteral("ComfyStrengthRow"));
     QHBoxLayout *strengthRow = new QHBoxLayout(d->inpaint.strengthRowWidget);
-    strengthRow->setContentsMargins(0, 0, 0, 0);
-    d->inpaint.sliderStrength = new QSlider(Qt::Horizontal, d->inpaint.strengthRowWidget);
-    d->inpaint.sliderStrength->setRange(1, 100);
+    ComfyUiStyle::applyTightRowLayout(strengthRow);
+    strengthRow->setAlignment(Qt::AlignVCenter);
+    d->inpaint.strengthSliderWidget = ComfyFormUi::makeExpandingSlider(
+        1, 100, QString(), d->inpaint.strengthRowWidget, false);
+    d->inpaint.sliderStrength = static_cast<ComfySlider *>(d->inpaint.strengthSliderWidget)->slider();
     d->inpaint.sliderStrength->setSingleStep(5);
     d->inpaint.sliderStrength->setValue(d->generate.spinStrength->value());
     d->generate.spinStrength->setPrefix(ComfyTr::tr("Strength") + QStringLiteral(": "));
-    strengthRow->addWidget(d->inpaint.sliderStrength, 1);
+    ComfyUiStyle::applySpinBox(d->generate.spinStrength);
+    {
+        const QFontMetrics fm(d->generate.spinStrength->font());
+        d->generate.spinStrength->setMinimumWidth(
+            fm.horizontalAdvance(d->generate.spinStrength->prefix() + QStringLiteral("100") + d->generate.spinStrength->suffix())
+            + ComfyUiStyle::Spacing::spinButtonWidth + ComfyUiStyle::Spacing::nestedPanel);
+    }
+    strengthRow->addWidget(d->inpaint.strengthSliderWidget, 1);
     strengthRow->addWidget(d->generate.spinStrength);
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -102,12 +118,12 @@ void buildStrengthSection(Workspace &ws)
         if (d->inpaint.sliderStrength)
             d->inpaint.sliderStrength->setValue(storedStrength);
     }
-    QObject::connect(d->inpaint.sliderStrength, &QSlider::valueChanged, dock, &ComfyUIRemoteDock::onGenerateStrengthChanged);
+    QObject::connect(d->inpaint.sliderStrength, &QAbstractSlider::valueChanged, dock, &ComfyUIRemoteDock::onGenerateStrengthChanged);
     QObject::connect(d->generate.spinStrength, QOverload<int>::of(&QSpinBox::valueChanged), dock,
             &ComfyUIRemoteDock::onGenerateStrengthChanged);
 
     // §5.4: Region-only toggle; when set, only active region mask and prompt are used
-    d->generate.checkRegionOnly = new QCheckBox(ComfyTr::tr("Region-only"));
+    d->generate.checkRegionOnly = new ComfyCheckBox(ComfyTr::tr("Region-only"));
     d->generate.checkRegionOnly->setToolTip(ComfyTr::tr("Limit generation to the active region only."));
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -125,7 +141,7 @@ void buildStrengthSection(Workspace &ws)
     d->generate.checkRegionOnly->setVisible(false);
 
     // §5.4: Edit mode toggle (instruction-based editing; uses linked_edit_style when set)
-    d->generate.checkEditMode = new QCheckBox(ComfyTr::tr("Edit"));
+    d->generate.checkEditMode = new ComfyCheckBox(ComfyTr::tr("Edit"));
     d->generate.checkEditMode->setToolTip(
         ComfyTr::tr("Use instruction-based editing (alternative style when set). On Generate, the Regions list switches to a separate set while Edit is checked, so normal and edit workflows do not share the same regions."));
     {
@@ -144,13 +160,13 @@ void buildStrengthSection(Workspace &ws)
     d->generate.checkEditMode->setVisible(false);
 
     // §5.4: Layer count (1–8); visible only when style architecture is Qwen Layered (Arch.qwen_l)
-    d->generate.layerCountRow = new QWidget(shell.genGroup);
-    QHBoxLayout *layerCountLayout = new QHBoxLayout(d->generate.layerCountRow);
-    layerCountLayout->setContentsMargins(0, 0, 0, 0);
-    d->generate.spinLayerCount = new QSpinBox(d->generate.layerCountRow);
+    d->generate.spinLayerCount = new ComfySpinBox(d->inpaint.strengthRowWidget);
     d->generate.spinLayerCount->setRange(1, 8);
     d->generate.spinLayerCount->setValue(1);
     d->generate.spinLayerCount->setToolTip(ComfyTr::tr("Number of output layers for Qwen Layered generation."));
+    d->generate.layerCountRow = new QWidget(d->inpaint.strengthRowWidget);
+    QHBoxLayout *layerCountLayout = new QHBoxLayout(d->generate.layerCountRow);
+    ComfyUiStyle::applyTightRowLayout(layerCountLayout);
     layerCountLayout->addWidget(new QLabel(ComfyTr::tr("Layer count:"), d->generate.layerCountRow));
     layerCountLayout->addWidget(d->generate.spinLayerCount);
     layerCountLayout->addStretch();
@@ -169,6 +185,7 @@ void buildStrengthSection(Workspace &ws)
     d->generate.btnAddControlIcon->setIcon(ComfyTheme::icon(QStringLiteral("control-add")));
     d->generate.btnAddControlIcon->setToolTip(ComfyTr::tr("Add Control Layer"));
     d->generate.btnAddControlIcon->setAutoRaise(true);
+    ComfyUiStyle::applyIconToolButton(d->generate.btnAddControlIcon);
     QObject::connect(d->generate.btnAddControlIcon, &QToolButton::clicked, dock, [dock, d]() {
         if (d->activeRegionIndex >= 0
             && d->activeRegionIndex < comfyActiveRegionEntries(d).size())
@@ -181,11 +198,13 @@ void buildStrengthSection(Workspace &ws)
     d->generate.btnAddRegionIcon->setIcon(ComfyTheme::icon(QStringLiteral("region-add")));
     d->generate.btnAddRegionIcon->setToolTip(ComfyTr::tr("Add Region"));
     d->generate.btnAddRegionIcon->setAutoRaise(true);
+    ComfyUiStyle::applyIconToolButton(d->generate.btnAddRegionIcon);
     QObject::connect(d->generate.btnAddRegionIcon, &QToolButton::clicked, dock, &ComfyUIRemoteDock::slotAddRegion);
     strengthRow->addWidget(d->generate.btnAddControlIcon);
     strengthRow->addWidget(d->generate.btnAddRegionIcon);
     genContentLayout->addWidget(d->inpaint.strengthRowWidget);
 
+    QTimer::singleShot(0, dock, [d]() { ComfyUiLayoutDiagnostics::logStrengthRowMetrics(d); });
 }
 
 } // namespace ComfyDockUiBuilderGenerateInternal

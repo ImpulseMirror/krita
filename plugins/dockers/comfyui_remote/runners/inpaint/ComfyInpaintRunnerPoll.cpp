@@ -59,7 +59,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
     if (urlStr.isEmpty()) {
         dock->m_d->inpaintRt.inpaintPromptId.clear();
         dock->reEnableGenerateUi();
-        dock->m_d->progressBar->setValue(0);
+        dock->resetProgressBarToIdle();
         return;
     }
     const QString promptId = dock->m_d->inpaintRt.inpaintPromptId;
@@ -68,12 +68,13 @@ void onPollTimer(ComfyUIRemoteDock *dock)
         const auto failInpaint = [dock]() {
             dock->m_d->inpaintRt.inpaintPromptId.clear();
             dock->reEnableGenerateUi();
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
         };
         ComfyPollRunnerCommon::PollRunningConfig running;
         running.pollCount = &dock->m_d->inpaintRt.inpaintPollCount;
         running.maxPollCount = InpaintRuntime::inpaintMaxPollCount;
         running.pollTimer = dock->m_d->inpaintRt.inpaintPollTimer;
+        running.onTick = [dock]() { dock->tickJobProgressBuffer(); };
         running.onTimeout = [dock, failInpaint]() {
             dock->setStatusMessage(ComfyTr::tr("Inpaint timed out."), true);
             failInpaint();
@@ -107,7 +108,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                 qCWarning(KIS_COMFYUI_REMOTE) << "slotInpaintPoll: download failed:" << errorMessage;
                 dock->m_d->inpaintRt.inpaintPromptId.clear();
                 dock->reEnableGenerateUi();
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             QImage resultImg;
@@ -197,7 +198,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                 dock->m_d->inpaintRt.inpaintPromptId.clear();
                 dock->m_d->inpaintRt.inpaintPendingEntry = ComfyUIRemoteDock::Private::HistoryEntry();
                 dock->reEnableGenerateUi();
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             {
@@ -268,7 +269,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             dock->m_d->inpaintRt.inpaintPreprocessBlend = 0;
             dock->m_d->inpaintRt.inpaintFromRegionLayer = false;
             dock->m_d->labelStatus->setText(ComfyTr::tr("Inpaint done."));
-            dock->m_d->progressBar->setValue(100);
+            dock->finishJobProgress();
             dock->m_d->inpaintRt.inpaintPromptId.clear();
             dock->reEnableGenerateUi();
         });

@@ -77,15 +77,64 @@ void applyLiveRegionPromptLayout(ComfyUIRemoteDock::Private *d)
     if (!d || !d->generate.regionPromptWidget)
         return;
     QJsonObject s = ComfyUIUtils::loadSettingsJson();
-    const int lines = qBound(1, s.value(QStringLiteral("prompt_line_count")).toInt(3), 10);
     const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(false);
-    const int posLines = ComfyPromptLayoutMetrics::positiveLinesForGenerateWorkspace(showNeg, lines);
+    const int lines = qBound(1,
+                              s.value(QStringLiteral("prompt_line_count_live"))
+                                  .toInt(ComfyPromptLayoutMetrics::kLivePositiveLinesDefault),
+                              10);
+    const int posLines = showNeg ? qMax(lines - ComfyPromptLayoutMetrics::kNegativeLineCount, 1) : lines;
+    d->generate.regionPromptWidget->setLiveSingleRegionMode(true);
     d->generate.regionPromptWidget->setPromptHeaderMode(2);
     d->generate.regionPromptWidget->setShowNegativePrompt(showNeg);
     d->generate.regionPromptWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     d->generate.regionPromptWidget->setMinimumSize(0, 0);
     d->generate.regionPromptWidget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     d->generate.regionPromptWidget->applyCompactLayout(posLines, showNeg, true, true);
+    d->generate.regionPromptWidget->refresh();
+}
+
+void applyLivePromptRowHeights(ComfyUIRemoteDock::Private *d)
+{
+    if (!d || !d->generate.regionPromptWidget || !d->live.livePromptHostWidget || !d->live.livePromptRowWidget)
+        return;
+
+    const int promptH = d->generate.regionPromptWidget->height();
+    if (promptH <= 0)
+        return;
+
+    int hostH = promptH;
+    if (QLayout *hostLay = d->live.livePromptHostWidget->layout()) {
+        const QMargins mg = hostLay->contentsMargins();
+        hostH += mg.top() + mg.bottom();
+        if (auto *box = qobject_cast<QVBoxLayout *>(hostLay))
+            box->setAlignment(Qt::AlignTop);
+    }
+
+    int rowH = hostH;
+    if (QLayout *rowLay = d->live.livePromptRowWidget->layout()) {
+        const QMargins mg = rowLay->contentsMargins();
+        rowH += mg.top() + mg.bottom();
+        if (auto *box = qobject_cast<QHBoxLayout *>(rowLay))
+            box->setAlignment(Qt::AlignTop);
+    }
+    if (d->live.livePromptButtonsWidget) {
+        int buttonsH = d->live.livePromptButtonsWidget->sizeHint().height();
+        if (QLayout *btnLay = d->live.livePromptButtonsWidget->layout()) {
+            const QMargins mg = btnLay->contentsMargins();
+            buttonsH += mg.top() + mg.bottom();
+        }
+        if (QLayout *rowLay = d->live.livePromptRowWidget->layout()) {
+            const QMargins mg = rowLay->contentsMargins();
+            rowH = qMax(rowH, buttonsH + mg.top() + mg.bottom());
+        }
+    }
+
+    d->live.livePromptHostWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d->live.livePromptHostWidget->setFixedHeight(hostH);
+    d->live.livePromptRowWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    d->live.livePromptRowWidget->setFixedHeight(rowH);
+    d->live.livePromptHostWidget->updateGeometry();
+    d->live.livePromptRowWidget->updateGeometry();
 }
 
 } // namespace
@@ -196,6 +245,22 @@ void ComfyUIRemoteDock::updateLiveToolbarState()
         << QStringLiteral("editMode=") << editMode;
 }
 
+void ComfyUIRemoteDock::ensureGenerateStrengthRowLayout()
+{
+    if (!m_d || !m_d->comboWorkspace || m_d->comboWorkspace->currentIndex() != 0)
+        return;
+    ComfyUiLayoutDiagnostics::ensureGenerateStrengthRowLayout(m_d.data());
+}
+
+void ComfyUIRemoteDock::syncLivePromptRowHeights()
+{
+    if (!m_d || !m_d->comboWorkspace || m_d->comboWorkspace->currentIndex() != 2)
+        return;
+    applyLivePromptRowHeights(m_d.data());
+    if (m_d->generate.genContentContainer)
+        m_d->generate.genContentContainer->updateGeometry();
+}
+
 void ComfyUIRemoteDock::updateLiveWorkspaceUi()
 {
     const bool live = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2;
@@ -227,7 +292,7 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
         if (m_d->live.liveParamsRowWidget)
             m_d->live.liveParamsRowWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         if (m_d->live.livePromptRowWidget)
-            m_d->live.livePromptRowWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            m_d->live.livePromptRowWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         if (m_d->live.livePromptHostWidget)
             m_d->live.livePromptHostWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
@@ -246,7 +311,7 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
         if (m_d->live.livePromptHostWidget && m_d->generate.regionPromptWidget) {
             if (auto *hostLay = qobject_cast<QVBoxLayout *>(m_d->live.livePromptHostWidget->layout())) {
                 removeFromParentLayout(m_d->generate.regionPromptWidget);
-                hostLay->addWidget(m_d->generate.regionPromptWidget);
+                hostLay->addWidget(m_d->generate.regionPromptWidget, 0, Qt::AlignTop);
                 m_d->generate.regionPromptWidget->show();
                 m_d->generate.regionPromptWidget->updateGeometry();
             }
@@ -267,14 +332,14 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
                                   ? qobject_cast<QHBoxLayout *>(m_d->live.liveParamsRowWidget->layout())
                                   : nullptr) {
             clearHBox(paramsLay);
-            removeFromParentLayout(m_d->inpaint.sliderStrength);
+            removeFromParentLayout(m_d->inpaint.strengthSliderWidget);
             removeFromParentLayout(m_d->generate.spinStrength);
             removeFromParentLayout(m_d->generate.spinSeed);
             if (m_d->generate.spinStrength)
                 m_d->generate.spinStrength->setPrefix(ComfyTr::tr("Strength") + QStringLiteral(": "));
-            if (m_d->inpaint.sliderStrength) {
-                m_d->inpaint.sliderStrength->setVisible(true);
-                paramsLay->addWidget(m_d->inpaint.sliderStrength, 1);
+            if (m_d->inpaint.strengthSliderWidget) {
+                m_d->inpaint.strengthSliderWidget->setVisible(true);
+                paramsLay->addWidget(m_d->inpaint.strengthSliderWidget, 1);
             }
             if (m_d->generate.spinStrength) {
                 m_d->generate.spinStrength->setVisible(true);
@@ -293,8 +358,8 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
             int minH = 28;
             if (m_d->generate.spinStrength)
                 minH = qMax(minH, m_d->generate.spinStrength->sizeHint().height());
-            if (m_d->inpaint.sliderStrength)
-                minH = qMax(minH, m_d->inpaint.sliderStrength->sizeHint().height());
+            if (m_d->inpaint.strengthSliderWidget)
+                minH = qMax(minH, m_d->inpaint.strengthSliderWidget->sizeHint().height());
             m_d->live.liveParamsRowWidget->setMinimumHeight(minH);
             m_d->live.liveParamsRowWidget->updateGeometry();
         }
@@ -302,13 +367,7 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
             m_d->live.livePromptRowWidget->updateGeometry();
 
         applyLiveRegionPromptLayout(m_d.data());
-        if (m_d->generate.regionPromptWidget && m_d->live.livePromptHostWidget) {
-            const int promptH = m_d->generate.regionPromptWidget->height();
-            if (promptH > 0) {
-                m_d->live.livePromptHostWidget->setMinimumHeight(promptH);
-                m_d->live.livePromptRowWidget->setMinimumHeight(promptH);
-            }
-        }
+        applyLivePromptRowHeights(m_d.data());
 
         QWidget *contentPage = nullptr;
         if (m_d->history.histGroupBox)
@@ -330,24 +389,7 @@ void ComfyUIRemoteDock::updateLiveWorkspaceUi()
                 genLay->insertWidget(0, m_d->generate.regionPromptWidget);
         }
 
-        if (auto *strengthLay = m_d->inpaint.strengthRowWidget
-                                    ? qobject_cast<QHBoxLayout *>(m_d->inpaint.strengthRowWidget->layout())
-                                    : nullptr) {
-            removeFromParentLayout(m_d->inpaint.sliderStrength);
-            removeFromParentLayout(m_d->generate.spinStrength);
-            removeFromParentLayout(m_d->generate.btnAddControlIcon);
-            removeFromParentLayout(m_d->generate.btnAddRegionIcon);
-            if (m_d->inpaint.sliderStrength)
-                strengthLay->insertWidget(0, m_d->inpaint.sliderStrength, 1);
-            if (m_d->generate.spinStrength)
-                strengthLay->insertWidget(1, m_d->generate.spinStrength);
-            if (m_d->generate.layerCountRow)
-                strengthLay->addWidget(m_d->generate.layerCountRow);
-            if (m_d->generate.btnAddControlIcon)
-                strengthLay->addWidget(m_d->generate.btnAddControlIcon);
-            if (m_d->generate.btnAddRegionIcon)
-                strengthLay->addWidget(m_d->generate.btnAddRegionIcon);
-        }
+        ComfyUiLayoutDiagnostics::ensureGenerateStrengthRowLayout(m_d.data());
 
         if (auto *seedLay = m_d->generate.seedRowWidget
                                 ? qobject_cast<QHBoxLayout *>(m_d->generate.seedRowWidget->layout())

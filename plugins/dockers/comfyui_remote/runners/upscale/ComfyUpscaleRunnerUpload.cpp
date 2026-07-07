@@ -187,7 +187,7 @@ void finalizeWorkflowAndSubmit(ComfyUIRemoteDock *dock)
     if (workflow.isEmpty()) {
         dock->setStatusMessage(ComfyTr::tr("Tiled upscale workflow error."), true);
         dock->m_d->upscale.btnUpscale->setEnabled(true);
-        dock->m_d->progressBar->setValue(0);
+        dock->resetProgressBarToIdle();
         dock->m_d->upscaleRt.upscalePendingIsTiled = false;
         dock->m_d->upscaleRt.upscaleRegionalInputs.clear();
         dock->m_d->upscaleRt.upscaleProcessedRegions.clear();
@@ -221,13 +221,13 @@ void submitWorkflow(ComfyUIRemoteDock *dock, const QJsonObject &workflow, bool w
         if (!result.ok) {
             dock->setStatusMessage(ComfyTr::tr("Submit error: %1", result.errorMessage), true);
             dock->m_d->upscale.btnUpscale->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         if (result.promptId != expectedPromptId) {
             dock->setStatusMessage(ComfyTr::tr("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
             dock->m_d->upscale.btnUpscale->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         dock->m_d->upscaleRt.upscalePromptId = result.promptId;

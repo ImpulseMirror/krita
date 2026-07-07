@@ -6,6 +6,8 @@
 #include "ComfyPromptResizeHandle.h"
 #include "ComfyLocalization.h"
 
+#include "ComfyUiStyle.h"
+
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -21,7 +23,6 @@ ComfyPromptResizeHandle::ComfyPromptResizeHandle(QPlainTextEdit *editor,
     , m_persistLines(std::move(persistLines))
     , m_minHeightPx(minHeightPx)
 {
-    setAttribute(Qt::WA_TranslucentBackground, true);
     setAutoFillBackground(false);
     setFixedHeight(12);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -34,12 +35,23 @@ ComfyPromptResizeHandle::ComfyPromptResizeHandle(QPlainTextEdit *editor,
     }
 }
 
+void ComfyPromptResizeHandle::syncGeometry()
+{
+    reposition();
+}
+
 void ComfyPromptResizeHandle::reposition()
 {
     if (!m_editor)
         return;
     const int h = height();
-    setGeometry(0, qMax(0, m_editor->height() - h), m_editor->width(), h);
+    QWidget *host = parentWidget();
+    if (!host || host == m_editor) {
+        setGeometry(0, qMax(0, m_editor->height() - h), m_editor->width(), h);
+    } else {
+        const QPoint topLeft = m_editor->mapTo(host, QPoint(0, 0));
+        setGeometry(topLeft.x(), topLeft.y() + qMax(0, m_editor->height() - h), m_editor->width(), h);
+    }
     raise();
 }
 
@@ -55,8 +67,9 @@ bool ComfyPromptResizeHandle::eventFilter(QObject *watched, QEvent *event)
 void ComfyPromptResizeHandle::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
+    p.fillRect(rect(), QColor(0, 0, 0, 1));
     p.setRenderHint(QPainter::Antialiasing, true);
-    const QColor c = palette().color(QPalette::Mid);
+    const QColor c(ComfyUiStyle::colors().highlight);
     p.setBrush(c);
     p.setPen(Qt::NoPen);
 

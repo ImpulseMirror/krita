@@ -4,12 +4,14 @@
  */
 
 #include "ComfySettingsDialogBuilder.h"
+#include "ComfyFormUi.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIUtils.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyStyleLoraListWidget.h"
 #include "ComfyStyleSamplerWidget.h"
@@ -30,7 +32,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSlider>
+#include <QAbstractSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QToolButton>
@@ -51,141 +53,15 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
     ComfyUIRemoteDock::Private *d = ctx.d;
     QDialog *dlg = ctx.dialog;
     PerformanceTabResult result;
-        // Performance tab (index 4) — Python PerformanceSettings (settings.py L826–937)
-        QWidget *perfPage = new QWidget(dlg);
-        QVBoxLayout *perfOuter = new QVBoxLayout(perfPage);
-        perfOuter->setContentsMargins(0, 0, 0, 0);
-        QScrollArea *perfScroll = new QScrollArea(perfPage);
-        perfScroll->setWidgetResizable(true);
-        perfScroll->setFrameShape(QFrame::NoFrame);
-        perfScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        QWidget *perfInner = new QWidget();
-        QVBoxLayout *perfLayout = new QVBoxLayout(perfInner);
-        QLabel *perfHeading = new QLabel(ComfyTr::tr("Performance Settings"), perfInner);
-        QFont perfHeadingFont = perfHeading->font();
-        perfHeadingFont.setBold(true);
-        perfHeadingFont.setPointSize(perfHeadingFont.pointSize() + 2);
-        perfHeading->setFont(perfHeadingFont);
-        perfLayout->addWidget(perfHeading);
-        perfLayout->addSpacing(6);
-
-        auto makePerfLabelColumn = [](QWidget *parent, const QString &title, const QString &description) -> QWidget * {
-            auto *col = new QWidget(parent);
-            auto *colLayout = new QVBoxLayout(col);
-            colLayout->setContentsMargins(0, 0, 0, 0);
-            colLayout->setSpacing(2);
-            auto *titleLabel = new QLabel(title, col);
-            QFont titleFont = titleLabel->font();
-            titleFont.setBold(true);
-            titleLabel->setFont(titleFont);
-            colLayout->addWidget(titleLabel);
-            if (!description.isEmpty()) {
-                auto *descLabel = new QLabel(description, col);
-                descLabel->setWordWrap(true);
-                colLayout->addWidget(descLabel);
-            }
-            col->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-            return col;
-        };
-        auto addPerfHistoryBlock = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                         QSpinBox **outSpin, QLabel **outUsageLabel, int min, int max,
-                                                         int step) -> QWidget * {
-            auto *block = new QWidget(parent);
-            auto *blockLayout = new QVBoxLayout(block);
-            blockLayout->setContentsMargins(0, 4, 0, 4);
-            blockLayout->setSpacing(4);
-            blockLayout->addWidget(makePerfLabelColumn(block, title, description));
-            auto *usageRow = new QWidget(block);
-            auto *usageLayout = new QHBoxLayout(usageRow);
-            usageLayout->setContentsMargins(0, 0, 0, 0);
-            auto *spin = new QSpinBox(usageRow);
-            spin->setRange(min, max);
-            spin->setSingleStep(step);
-            spin->setSuffix(ComfyTr::tr(" MB"));
-            auto *usageLabel = new QLabel(ComfyTr::tr("Currently using %1 MB", QStringLiteral("0.0")), usageRow);
-            usageLabel->setStyleSheet(QStringLiteral("color: green; font-style: italic;"));
-            usageLayout->addWidget(spin);
-            usageLayout->addWidget(usageLabel, 1);
-            blockLayout->addWidget(usageRow);
-            *outSpin = spin;
-            *outUsageLabel = usageLabel;
-            return block;
-        };
-        auto addPerfSliderRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                    QSlider **outSlider, QLabel **outValueLabel, int min, int max,
-                                                    const QString &valueFormat) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
-            auto *sliderBox = new QWidget(row);
-            auto *sliderLayout = new QHBoxLayout(sliderBox);
-            sliderLayout->setContentsMargins(0, 0, 0, 0);
-            auto *slider = new QSlider(Qt::Horizontal, sliderBox);
-            slider->setMinimumWidth(200);
-            slider->setMaximumWidth(300);
-            slider->setRange(min, max);
-            auto *valueLabel = new QLabel(sliderBox);
-            const QFontMetrics fm(valueLabel->font());
-            valueLabel->setMinimumWidth(fm.horizontalAdvance(QStringLiteral("1.5×")));
-            valueLabel->setText(valueFormat);
-            sliderLayout->addWidget(slider);
-            sliderLayout->addWidget(valueLabel);
-            rowLayout->addWidget(sliderBox, 0, Qt::AlignRight | Qt::AlignVCenter);
-            *outSlider = slider;
-            *outValueLabel = valueLabel;
-            return row;
-        };
-        auto addPerfSpinRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                    QSpinBox **outSpin, int min, int max, const QString &suffix) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
-            auto *spin = new QSpinBox(row);
-            spin->setMinimumWidth(100);
-            spin->setRange(min, max);
-            if (!suffix.isEmpty())
-                spin->setSuffix(suffix);
-            rowLayout->addWidget(spin, 0, Qt::AlignRight | Qt::AlignVCenter);
-            *outSpin = spin;
-            return row;
-        };
-        auto addPerfSwitchRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                      const QString &onLabel, const QString &offLabel,
-                                                      ComfySwitchWidget **outSwitch, QLabel **outStateLabel) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
-            auto *stateLabel = new QLabel(onLabel, row);
-            auto *sw = new ComfySwitchWidget(row);
-            rowLayout->addWidget(stateLabel, 0, Qt::AlignRight | Qt::AlignVCenter);
-            rowLayout->addWidget(sw, 0, Qt::AlignRight | Qt::AlignVCenter);
-            QObject::connect(sw, &QAbstractButton::toggled, row, [stateLabel, onLabel, offLabel](bool on) {
-                stateLabel->setText(on ? onLabel : offLabel);
-            });
-            *outSwitch = sw;
-            *outStateLabel = stateLabel;
-            return row;
-        };
-        auto addPerfComboRow = [makePerfLabelColumn](QWidget *parent, const QString &title, const QString &description,
-                                                     QComboBox **outCombo) -> QWidget * {
-            auto *row = new QWidget(parent);
-            auto *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            rowLayout->addWidget(makePerfLabelColumn(row, title, description), 1);
-            auto *combo = new QComboBox(row);
-            combo->setMinimumWidth(230);
-            rowLayout->addWidget(combo, 0, Qt::AlignRight | Qt::AlignVCenter);
-            *outCombo = combo;
-            return row;
-        };
+        ComfyFormUi::ScrollTab perfTab =
+            ComfyFormUi::createScrollTab(dlg, ComfyTr::tr("Performance Settings"));
+        QWidget *perfInner = perfTab.inner;
+        QVBoxLayout *perfLayout = perfTab.innerLayout;
 
         QJsonObject perfSettings = ComfyUIUtils::loadSettingsJson();
         QSpinBox *spinActiveHistoryMb = nullptr;
         QSpinBox *spinStoredHistoryMb = nullptr;
-        perfLayout->addWidget(addPerfHistoryBlock(
+        perfLayout->addWidget(ComfyFormUi::addHistorySizeBlock(
             perfInner,
             ComfyTr::tr("Active History Size"),
             ComfyTr::tr("Main memory (RAM) used for the history of generated images."),
@@ -203,7 +79,7 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
             spinActiveHistoryMb->setValue(qBound(5, amb, 20000));
             spinActiveHistoryMb->setToolTip(ComfyTr::tr("Oldest history entries are removed when over dock limit."));
         }
-        perfLayout->addWidget(addPerfHistoryBlock(
+        perfLayout->addWidget(ComfyFormUi::addHistorySizeBlock(
             perfInner,
             ComfyTr::tr("Stored History Size"),
             ComfyTr::tr("Memory used to store generated images in .kra files on disk."),
@@ -220,15 +96,15 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
             spinStoredHistoryMb->setToolTip(ComfyTr::tr("Reserved for document-embedded history quota."));
         }
 
-        QComboBox *comboPerfPreset = new QComboBox(perfInner);
-        comboPerfPreset->setMinimumWidth(230);
-        perfLayout->addWidget(makePerfLabelColumn(
+        QComboBox *comboPerfPreset = nullptr;
+        perfLayout->addWidget(ComfyFormUi::addComboRow(
             perfInner,
             ComfyTr::tr("Performance Preset"),
-            ComfyTr::tr("Configures performance settings to match available hardware.")));
+            ComfyTr::tr("Configures performance settings to match available hardware."),
+            &comboPerfPreset));
         d->labelPerfDevice = new QLabel(perfInner);
         d->labelPerfDevice->setWordWrap(true);
-        d->labelPerfDevice->setStyleSheet(QStringLiteral("font-style: italic;"));
+        ComfyUiStyle::styleHint(d->labelPerfDevice);
         d->labelPerfDevice->setText(d->comfyDeviceSummary.isEmpty()
                                           ? ComfyTr::tr("Device: (connect to server)")
                                           : d->comfyDeviceSummary);
@@ -248,42 +124,47 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
             comboPerfPreset->setCurrentIndex(ppi >= 0 ? ppi : 0);
         }
         comboPerfPreset->setToolTip(ComfyTr::tr("Configures performance settings to match available hardware."));
-        perfLayout->addWidget(comboPerfPreset, 0, Qt::AlignLeft);
 
         QWidget *customPerfWidget = new QWidget(perfInner);
         auto *customPerfLayout = new QVBoxLayout(customPerfWidget);
         customPerfLayout->setContentsMargins(8, 0, 0, 4);
         customPerfLayout->setSpacing(0);
 
-        QSlider *sliderPerfBatch = nullptr;
+        QAbstractSlider *sliderPerfBatch = nullptr;
         QLabel *labelPerfBatchVal = nullptr;
-        customPerfLayout->addWidget(addPerfSliderRow(
-            customPerfWidget,
-            ComfyTr::tr("Maximum Batch Size"),
-            ComfyTr::tr("Increase efficiency by generating multiple images at once."),
-            &sliderPerfBatch,
-            &labelPerfBatchVal,
-            1,
-            16,
-            QStringLiteral("1")));
+        {
+            const ComfyFormUi::SliderSetting batchRow = ComfyFormUi::addSliderRow(
+                customPerfWidget,
+                ComfyTr::tr("Maximum Batch Size"),
+                ComfyTr::tr("Increase efficiency by generating multiple images at once."),
+                1,
+                16,
+                QStringLiteral("1"));
+            sliderPerfBatch = batchRow.qtSlider();
+            labelPerfBatchVal = batchRow.valueLabel();
+            customPerfLayout->addWidget(batchRow.row);
+        }
         sliderPerfBatch->setToolTip(ComfyTr::tr("Increase efficiency by generating multiple images at once."));
 
-        QSlider *sliderPerfRes = nullptr;
+        QAbstractSlider *sliderPerfRes = nullptr;
         QLabel *labelPerfResVal = nullptr;
-        customPerfLayout->addWidget(addPerfSliderRow(
-            customPerfWidget,
-            ComfyTr::tr("Resolution Multiplier"),
-            ComfyTr::tr("Scaling factor for generation. Values below 1.0 improve performance for high resolution canvas."),
-            &sliderPerfRes,
-            &labelPerfResVal,
-            3,
-            15,
-            QStringLiteral("1.0×")));
+        {
+            const ComfyFormUi::SliderSetting resRow = ComfyFormUi::addSliderRow(
+                customPerfWidget,
+                ComfyTr::tr("Resolution Multiplier"),
+                ComfyTr::tr("Scaling factor for generation. Values below 1.0 improve performance for high resolution canvas."),
+                3,
+                15,
+                QStringLiteral("1.0×"));
+            sliderPerfRes = resRow.qtSlider();
+            labelPerfResVal = resRow.valueLabel();
+            customPerfLayout->addWidget(resRow.row);
+        }
         sliderPerfRes->setToolTip(
             ComfyTr::tr("Scaling factor for generation. Values below 1.0 improve performance for high resolution canvas."));
 
         QSpinBox *spinMaxMp = nullptr;
-        customPerfLayout->addWidget(addPerfSpinRow(
+        customPerfLayout->addWidget(ComfyFormUi::addSpinRow(
             customPerfWidget,
             ComfyTr::tr("Maximum Pixel Count"),
             ComfyTr::tr("Maximum resolution to generate images at, in megapixels (FullHD ~ 2MP, 4k ~ 8MP)."),
@@ -300,14 +181,17 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
 
         ComfySwitchWidget *switchTiledVae = nullptr;
         QLabel *labelTiledVaeState = nullptr;
-        customPerfLayout->addWidget(addPerfSwitchRow(
-            customPerfWidget,
-            ComfyTr::tr("Tiled VAE"),
-            ComfyTr::tr("Conserve memory by processing output images in smaller tiles."),
-            ComfyTr::tr("Always"),
-            ComfyTr::tr("Automatic"),
-            &switchTiledVae,
-            &labelTiledVaeState));
+        {
+            const ComfyFormUi::SwitchSetting tiledRow = ComfyFormUi::addSwitchRow(
+                customPerfWidget,
+                ComfyTr::tr("Tiled VAE"),
+                ComfyTr::tr("Conserve memory by processing output images in smaller tiles."),
+                ComfyTr::tr("Always"),
+                ComfyTr::tr("Automatic"));
+            switchTiledVae = tiledRow.switchWidget;
+            labelTiledVaeState = tiledRow.stateLabel;
+            customPerfLayout->addWidget(tiledRow.row);
+        }
         {
             bool tiledAlways = perfSettings.value(QStringLiteral("tiled_vae")).toBool(false);
             if (!perfSettings.contains(QStringLiteral("tiled_vae"))) {
@@ -326,14 +210,17 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
 
         ComfySwitchWidget *switchDynCache = nullptr;
         QLabel *labelDynCacheState = nullptr;
-        perfLayout->addWidget(addPerfSwitchRow(
-            perfInner,
-            ComfyTr::tr("Dynamic Caching"),
-            ComfyTr::tr("Re-use outputs of previous steps (First Block Cache) to speed up generation."),
-            ComfyTr::tr("On"),
-            ComfyTr::tr("Off"),
-            &switchDynCache,
-            &labelDynCacheState));
+        {
+            const ComfyFormUi::SwitchSetting dynRow = ComfyFormUi::addSwitchRow(
+                perfInner,
+                ComfyTr::tr("Dynamic Caching"),
+                ComfyTr::tr("Re-use outputs of previous steps (First Block Cache) to speed up generation."),
+                ComfyTr::tr("On"),
+                ComfyTr::tr("Off"));
+            switchDynCache = dynRow.switchWidget;
+            labelDynCacheState = dynRow.stateLabel;
+            perfLayout->addWidget(dynRow.row);
+        }
         switchDynCache->setChecked(perfSettings.value(QStringLiteral("dynamic_caching")).toBool(false));
         labelDynCacheState->setText(switchDynCache->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
         switchDynCache->setToolTip(
@@ -343,14 +230,17 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
 
         ComfySwitchWidget *switchMultiThread = nullptr;
         QLabel *labelMultiThreadState = nullptr;
-        perfLayout->addWidget(addPerfSwitchRow(
-            perfInner,
-            ComfyTr::tr("Multi-Threading"),
-            ComfyTr::tr("Perform certain plugin operations in background threads."),
-            ComfyTr::tr("On"),
-            ComfyTr::tr("Off"),
-            &switchMultiThread,
-            &labelMultiThreadState));
+        {
+            const ComfyFormUi::SwitchSetting threadRow = ComfyFormUi::addSwitchRow(
+                perfInner,
+                ComfyTr::tr("Multi-Threading"),
+                ComfyTr::tr("Perform certain plugin operations in background threads."),
+                ComfyTr::tr("On"),
+                ComfyTr::tr("Off"));
+            switchMultiThread = threadRow.switchWidget;
+            labelMultiThreadState = threadRow.stateLabel;
+            perfLayout->addWidget(threadRow.row);
+        }
         switchMultiThread->setChecked(perfSettings.value(QStringLiteral("multi_threading")).toBool(true));
         labelMultiThreadState->setText(switchMultiThread->isChecked() ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
         switchMultiThread->setToolTip(
@@ -516,13 +406,13 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
         QObject::connect(switchTiledVae, &QAbstractButton::toggled, dlg, savePerfSettings);
         QObject::connect(switchDynCache, &QAbstractButton::toggled, dlg, savePerfSettings);
         QObject::connect(switchMultiThread, &QAbstractButton::toggled, dlg, savePerfSettings);
-        QObject::connect(sliderPerfBatch, &QSlider::valueChanged, dock, [dock, d, labelPerfBatchVal, savePerfSettings](int v) {
+        QObject::connect(sliderPerfBatch, &QAbstractSlider::valueChanged, dock, [dock, d, labelPerfBatchVal, savePerfSettings](int v) {
             labelPerfBatchVal->setText(QString::number(v));
             if (d->generate.spinBatchCount)
                 d->generate.spinBatchCount->setValue(v);
             savePerfSettings();
         });
-        QObject::connect(sliderPerfRes, &QSlider::valueChanged, dock, [dock, d, labelPerfResVal, savePerfSettings](int v) {
+        QObject::connect(sliderPerfRes, &QAbstractSlider::valueChanged, dock, [dock, d, labelPerfResVal, savePerfSettings](int v) {
             const double mul = qMax(0.3, v / 10.0);
             labelPerfResVal->setText(QString::number(mul, 'f', 1) + QLatin1String("×"));
             d->generate.resolutionMultiplier = mul;
@@ -538,9 +428,7 @@ PerformanceTabResult buildPerformanceTab(const Context &ctx, QStackedWidget *sta
         });
 
         perfLayout->addStretch();
-        perfScroll->setWidget(perfInner);
-        perfOuter->addWidget(perfScroll);
-        stack->addWidget(perfPage);
+        stack->addWidget(perfTab.page);
 
     result.syncSlidersFromDock = syncPerfSlidersFromDock;
     return result;

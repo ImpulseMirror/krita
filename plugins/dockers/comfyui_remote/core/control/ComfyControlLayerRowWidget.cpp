@@ -3,12 +3,16 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
+#include "ComfyComboBox.h"
 #include "ComfyControlLayerRowWidget.h"
 #include "ComfyLocalization.h"
 
 #include "ComfyControlLayer.h"
+#include "ComfyGrid.h"
 #include "ComfyResources.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIIntervalSlider.h"
 
 #include <QCheckBox>
@@ -16,7 +20,7 @@
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
-#include <QSlider>
+#include "ComfyTrackSlider.h"
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -58,11 +62,12 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     , m_viewManager(viewManager)
     , m_archKeyProvider(std::move(archKeyProvider))
 {
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     auto *mainLay = new QVBoxLayout(this);
-    mainLay->setContentsMargins(0, 0, 0, 4);
+    mainLay->setContentsMargins(0, 0, 0, 0);
+    mainLay->setSpacing(0);
 
-    auto *bar = new QHBoxLayout();
-    m_modeCombo = new QComboBox(this);
+    m_modeCombo = new ComfyComboBox(this);
     for (const QString &key : ComfyControlLayer::uiModeKeys()) {
         const QString iconStem = QStringLiteral("control-") + key;
         m_modeCombo->addItem(ComfyTheme::icon(iconStem), ComfyControlLayer::modeLabel(key), key);
@@ -71,15 +76,15 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     if (modeIx >= 0)
         m_modeCombo->setCurrentIndex(modeIx);
 
-    m_layerCombo = new QComboBox(this);
+    m_layerCombo = new ComfyComboBox(this);
     m_layerCombo->setMinimumContentsLength(16);
     m_layerCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLength);
 
-    m_presetSlider = new QSlider(Qt::Horizontal, this);
+    m_presetSlider = new ComfyTrackSlider(Qt::Horizontal, this);
     m_presetSlider->setRange(0, ComfyControlLayer::maxPresetValue);
     m_presetSlider->setValue(m_entry->presetValue);
     m_presetSlider->setTickInterval(2);
-    m_presetSlider->setTickPosition(QSlider::TicksBothSides);
+    m_presetSlider->setTicksVisible(true);
     m_presetSlider->setToolTip(ComfyTr::tr("Control strength: how much the layer affects the image"));
 
     m_btnGenerate = new QToolButton(this);
@@ -105,14 +110,33 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     m_btnRemove->setAutoRaise(true);
     m_btnRemove->setToolTip(ComfyTr::tr("Remove control layer"));
 
-    bar->addWidget(m_modeCombo);
-    bar->addWidget(m_layerCombo, 3);
-    bar->addWidget(m_btnGenerate);
-    bar->addWidget(m_btnAddPose);
-    bar->addWidget(m_presetSlider, 1);
-    bar->addWidget(m_btnExpand);
-    bar->addWidget(m_btnRemove);
-    mainLay->addLayout(bar);
+    m_middleControls = new QWidget(this);
+    auto *middleLay = new QHBoxLayout(m_middleControls);
+    ComfyUiStyle::applyTightRowLayout(middleLay);
+    middleLay->addWidget(m_layerCombo, 1);
+    middleLay->addWidget(m_btnGenerate);
+    middleLay->addWidget(m_btnAddPose);
+    middleLay->addWidget(m_presetSlider, 1);
+    middleLay->addWidget(m_btnExpand);
+
+    m_errorLabel = new QLabel(this);
+    m_errorLabel->setWordWrap(true);
+    ComfyUiStyle::styleStatusLabel(m_errorLabel, ComfyUiStyle::StatusTone::Warning);
+    m_errorLabel->hide();
+
+    auto *middleHost = new QWidget(this);
+    auto *middleHostLay = new QVBoxLayout(middleHost);
+    middleHostLay->setContentsMargins(0, 0, 0, 0);
+    middleHostLay->setSpacing(0);
+    middleHostLay->addWidget(m_middleControls);
+    middleHostLay->addWidget(m_errorLabel);
+
+    auto *bar = new ComfyGridRow(this);
+    bar->setMinimumHeight(ComfyUiStyle::Spacing::rowHeight);
+    bar->addWidget(m_modeCombo, 3);
+    bar->addWidget(middleHost, 8, 1);
+    bar->addWidget(m_btnRemove, 1, Qt::AlignRight | Qt::AlignVCenter);
+    mainLay->addWidget(bar);
 
     m_extended = new QWidget(this);
     auto *padLay = new QHBoxLayout(m_extended);
@@ -125,7 +149,7 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     extInner->setContentsMargins(8, 2, 4, 6);
     padLay->addLayout(extInner);
 
-    m_customStrength = new QCheckBox(ComfyTr::tr("Use custom values"), m_extended);
+    m_customStrength = new ComfyCheckBox(ComfyTr::tr("Use custom values"), m_extended);
     m_customStrength->setChecked(m_entry->useCustomStrength);
     auto *actRow = new QHBoxLayout();
     actRow->addWidget(m_customStrength, 1);
@@ -133,7 +157,7 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
 
     auto *grid = new QGridLayout();
     grid->setSpacing(8);
-    m_strengthSlider = new QSlider(Qt::Horizontal, m_extended);
+    m_strengthSlider = new ComfyTrackSlider(Qt::Horizontal, m_extended);
     m_strengthSlider->setRange(0, 75);
     m_strengthSlider->setValue(m_entry->strength);
     m_strengthLabel = new QLabel(m_extended);
@@ -155,11 +179,19 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     m_extended->setVisible(false);
     mainLay->addWidget(m_extended);
 
+    ComfyUiStyle::applyComboBox(m_modeCombo);
+    ComfyUiStyle::applyComboBox(m_layerCombo);
+    ComfyUiStyle::applyCheckbox(m_customStrength);
+    ComfyUiStyle::applyIconToolButton(m_btnGenerate);
+    ComfyUiStyle::applyIconToolButton(m_btnAddPose);
+    ComfyUiStyle::applyIconToolButton(m_btnExpand);
+    ComfyUiStyle::applyIconToolButton(m_btnRemove);
+
     connect(m_modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &ComfyControlLayerRowWidget::onModeChanged);
     connect(m_layerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &ComfyControlLayerRowWidget::onLayerChanged);
-    connect(m_presetSlider, &QSlider::valueChanged, this, [this](int v) {
+    connect(m_presetSlider, &QAbstractSlider::valueChanged, this, [this](int v) {
         if (!m_entry)
             return;
         m_entry->presetValue = v;
@@ -178,7 +210,7 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
             applyPresetFromSlider();
         Q_EMIT entryEdited();
     });
-    connect(m_strengthSlider, &QSlider::valueChanged, this, [this](int v) {
+    connect(m_strengthSlider, &QAbstractSlider::valueChanged, this, [this](int v) {
         if (!m_entry)
             return;
         m_entry->strength = v;
@@ -206,7 +238,21 @@ ComfyControlLayerRowWidget::ComfyControlLayerRowWidget(ComfyControlLayerEntry *e
     m_presetSlider->setEnabled(!m_entry->useCustomStrength);
     m_strengthSlider->setEnabled(m_entry->useCustomStrength);
     m_rangeSlider->setEnabled(m_entry->useCustomStrength);
+    updateSupportState();
     updateVisibility();
+}
+
+void ComfyControlLayerRowWidget::updateSupportState()
+{
+    if (!m_entry || !m_errorLabel || !m_middleControls)
+        return;
+    const QString archKey = m_archKeyProvider ? m_archKeyProvider() : QString();
+    const bool supported = ComfyControlLayer::isModeSupported(m_entry->mode, archKey);
+    m_errorLabel->setText(ComfyControlLayer::unsupportedModeMessage(m_entry->mode, archKey));
+    m_errorLabel->setVisible(!supported);
+    m_middleControls->setVisible(supported);
+    if (!supported && m_btnExpand)
+        m_btnExpand->setChecked(false);
 }
 
 void ComfyControlLayerRowWidget::applyPresetFromSlider()
@@ -239,6 +285,7 @@ void ComfyControlLayerRowWidget::onModeChanged(int comboIndex)
     m_entry->mode = m_modeCombo->itemData(comboIndex).toString();
     if (!m_entry->useCustomStrength)
         applyPresetFromSlider();
+    updateSupportState();
     updateVisibility();
     Q_EMIT entryEdited();
 }
@@ -296,6 +343,7 @@ void ComfyControlLayerRowWidget::updateVisibility()
 {
     if (!m_entry)
         return;
+    updateSupportState();
     const QString archKey = m_archKeyProvider ? m_archKeyProvider() : QString();
     const ComfyResources::Arch arch = ComfyResources::archFromKey(archKey);
     const bool isEdit = ComfyResources::isEditArch(arch);

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
+#include "ComfyComboBox.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
@@ -10,7 +12,8 @@
 
 #include "ComfyWorkflowEngine.h"
 #include "ComfyTheme.h"
-#include "ComfyGenerateUi.h"
+#include "ComfySpinBox.h"
+#include "ComfyUiStyle.h"
 #include "ComfyDockUiBuilder.h"
 
 #include <QTimer>
@@ -171,7 +174,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
 
         switch (sl.kind) {
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterInt: {
-            auto *sp = new QSpinBox(m_d->customWorkflowParamsGroup);
+            auto *sp = new ComfySpinBox(m_d->customWorkflowParamsGroup);
             int lo = static_cast<int>(qBound(-2147483648.0, sl.minV, 2147483647.0));
             int hi = static_cast<int>(qBound(-2147483648.0, sl.maxV, 2147483647.0));
             if (lo > hi)
@@ -208,7 +211,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             break;
         }
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterBool: {
-            auto *cb = new QCheckBox(m_d->customWorkflowParamsGroup);
+            auto *cb = new ComfyCheckBox(m_d->customWorkflowParamsGroup);
             bool chk = sl.defaultValue.toBool();
             if (!cur.isNull())
                 chk = cur.toBool();
@@ -237,7 +240,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::ParameterChoice: {
             const QString sk = storageKey;
             if (!sl.choices.isEmpty()) {
-                auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
+                auto *cb = new ComfyComboBox(m_d->customWorkflowParamsGroup);
                 for (const QString &ch : sl.choices)
                     cb->addItem(ch, ch);
                 const QString pick = cur.isNull() ? sl.defaultValue.toString() : cur.toString();
@@ -262,7 +265,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
             break;
         }
         case ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaStylePicker: {
-            auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
+            auto *cb = new ComfyComboBox(m_d->customWorkflowParamsGroup);
             cb->setMinimumContentsLength(22);
             cb->addItem(ComfyTr::tr("(Dock style)"), QString());
             for (const ComfyStyleEntry &st : ComfyStyleCollection::instance().all())
@@ -289,7 +292,7 @@ void ComfyUIRemoteDock::refreshCustomWorkflowParameterPanel()
                 sl.kind == ComfyUIUtils::CustomWorkflowParamSlot::Kind::KritaMaskLayer
                     ? QStringLiteral("mask layer")
                     : QStringLiteral("image layer"));
-            auto *cb = new QComboBox(m_d->customWorkflowParamsGroup);
+            auto *cb = new ComfyComboBox(m_d->customWorkflowParamsGroup);
             cb->setMinimumContentsLength(18);
             cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLength);
             QVector<QPair<QString, QString>> items;

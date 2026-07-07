@@ -367,7 +367,7 @@ void finalizeWorkflowAndSubmit(ComfyUIRemoteDock *dock, QJsonObject workflow)
     dock->m_d->generateRt.generatePendingRefineHeight = 0;
 
     dock->m_d->labelStatus->setText(ComfyTr::tr("Submitting…"));
-    dock->m_d->progressBar->setValue(0);
+    dock->beginJobProgress();
     dock->m_d->generate.btnGenerate->setEnabled(false);
     onBatchSubmitNext(dock);
 
@@ -489,7 +489,7 @@ void uploadCanvasForRefine(ComfyUIRemoteDock *dock)
     }
 
     dock->m_d->generate.btnGenerate->setEnabled(false);
-    dock->m_d->progressBar->setValue(0);
+    dock->beginJobProgress();
     tmp->open();
     QHttpMultiPart *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
     QHttpPart part;

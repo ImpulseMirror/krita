@@ -3,7 +3,12 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilderGenerateInternal.h"
+
+#include "ComfyFormUi.h"
+#include "ComfyGrid.h"
+#include "ComfyUiStyle.h"
 
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
@@ -47,8 +52,8 @@
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSize>
-#include <QSlider>
-#include <QSpinBox>
+#include <QAbstractSlider>
+#include "ComfySpinBox.h"
 #include <QStackedWidget>
 #include <QStringListModel>
 #include <QTimer>
@@ -68,25 +73,6 @@ using ComfyDockShellInternal::LiveSpinnerWidget;
 using ComfyDockShellInternal::StrengthSpinBox;
 using ComfyDockShellInternal::setComboCurrentItemData;
 
-
-namespace {
-
-constexpr int kGenerateProgressBarHeightPx = 2;
-
-QString progressBarBaseStyle()
-{
-    const ComfyTheme::Palette theme = ComfyTheme::palette();
-    return QStringLiteral(
-        "QProgressBar { border: none; margin: 0; padding: 0; min-height: %1px; max-height: %1px;"
-        " background: %2; }"
-        "QProgressBar::chunk { margin: 0; border-radius: 1px; background: %3; }")
-        .arg(kGenerateProgressBarHeightPx)
-        .arg(theme.line)
-        .arg(theme.active);
-}
-
-} // namespace
-
 namespace ComfyDockUiBuilderGenerateInternal {
 
 void buildQueueActionsSection(Workspace &ws)
@@ -98,12 +84,12 @@ void buildQueueActionsSection(Workspace &ws)
 
     // Queue popup (similar to krita-ai Queue button)
     d->generate.labelQueueCount = new QLabel(ComfyTr::tr("Queue: 0"));
-    d->generate.comboQueueMode = new QComboBox();
+    d->generate.comboQueueMode = new ComfyComboBox();
     d->generate.comboQueueMode->addItem(ComfyTr::tr("at the Back"), 0);
     d->generate.comboQueueMode->addItem(ComfyTr::tr("in Front (new jobs first)"), 1);
     d->generate.comboQueueMode->addItem(ComfyTr::tr("Replace Queue"), 2);
     d->generate.comboQueueMode->setToolTip(ComfyTr::tr("at the Back: add after current jobs. in Front: new jobs run first. Replace Queue: clear queue then add."));
-    d->generate.spinBatchCount = new QSpinBox();
+    d->generate.spinBatchCount = new ComfySpinBox();
     d->generate.spinBatchCount->setRange(1, 10);
     d->generate.spinBatchCount->setToolTip(ComfyTr::tr("Number of images to generate per click"));
     d->generate.spinBatchCount->setValue(1);
@@ -116,22 +102,27 @@ void buildQueueActionsSection(Workspace &ws)
     QVBoxLayout *queueLayout = new QVBoxLayout(queueWidget);
     queueLayout->setContentsMargins(8, 8, 8, 8);
 
-    QHBoxLayout *countsLayout = new QHBoxLayout();
-    countsLayout->addWidget(new QLabel(ComfyTr::tr("Jobs:"), queueWidget));
-    countsLayout->addWidget(d->generate.labelQueueCount, 1);
-    queueLayout->addLayout(countsLayout);
+    auto *countsGrid = new ComfyGridRow(queueWidget);
+    countsGrid->addWidget(new QLabel(ComfyTr::tr("Jobs:"), queueWidget), 3);
+    countsGrid->addWidget(d->generate.labelQueueCount, 9, 1);
+    queueLayout->addWidget(countsGrid);
 
-    d->generate.queueBatchOptionsRow = new QWidget(queueWidget);
-    QHBoxLayout *batchLayout = new QHBoxLayout(d->generate.queueBatchOptionsRow);
-    batchLayout->setContentsMargins(0, 0, 0, 0);
-    batchLayout->addWidget(new QLabel(ComfyTr::tr("Batch:"), d->generate.queueBatchOptionsRow));
-    batchLayout->addWidget(d->generate.spinBatchCount, 1);
+    d->generate.queueBatchOptionsRow = new ComfyGridRow(queueWidget);
+    auto *batchGrid = static_cast<ComfyGridRow *>(d->generate.queueBatchOptionsRow);
+    batchGrid->addWidget(new QLabel(ComfyTr::tr("Batch:"), d->generate.queueBatchOptionsRow), 3);
+    batchGrid->addWidget(d->generate.spinBatchCount, 9, 1);
     queueLayout->addWidget(d->generate.queueBatchOptionsRow);
 
     // Resolution multiplier (similar to krita-ai)
-    d->generate.sliderResolutionMultiplier = new QSlider(Qt::Horizontal, queueWidget);
-    d->generate.sliderResolutionMultiplier->setRange(3, 15); // §13.213: 3–15 → 0.3–1.5
-    d->generate.labelResolutionMultiplier = new QLabel(queueWidget);
+    const ComfyFormUi::DockerSlider resolutionSlider = ComfyFormUi::addLabeledSliderRow(
+        queueWidget,
+        ComfyTr::tr("Resolution:"),
+        3,
+        15,
+        QStringLiteral("1.0×"));
+    d->generate.queueResolutionRow = resolutionSlider.row;
+    d->generate.sliderResolutionMultiplier = resolutionSlider.qtSlider();
+    d->generate.labelResolutionMultiplier = resolutionSlider.valueLabel();
     d->generate.labelResolutionMultiplier->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     {
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -152,7 +143,7 @@ void buildQueueActionsSection(Workspace &ws)
         d->generate.checkFixedSeed->setChecked(fixedSeed);
         d->generate.spinSeed->setValue(static_cast<int>(seedValue));
     }
-    QObject::connect(d->generate.sliderResolutionMultiplier, &QSlider::valueChanged, dock, [dock, d](int v) {
+    QObject::connect(d->generate.sliderResolutionMultiplier, &QAbstractSlider::valueChanged, dock, [dock, d](int v) {
         d->generate.resolutionMultiplier = qMax(0.3, v / 10.0);
         d->generate.labelResolutionMultiplier->setText(QString::number(d->generate.resolutionMultiplier, 'f', 1) + QLatin1String("×"));
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -166,67 +157,25 @@ void buildQueueActionsSection(Workspace &ws)
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
         cfg.writeEntry("QueueMode", index);
     });
-    QObject::connect(d->generate.checkFixedSeed, &QCheckBox::toggled, dock, [dock, d](bool) {
+    QObject::connect(d->generate.checkFixedSeed, &QCheckBox::toggled, dock, [dock](bool) {
         dock->persistSeedToConfig();
-        dock->syncQueueSeedWidgetsFromMain();
     });
-    QObject::connect(d->generate.spinSeed, QOverload<int>::of(&QSpinBox::valueChanged), dock, [dock, d](int) {
+    QObject::connect(d->generate.spinSeed, QOverload<int>::of(&QSpinBox::valueChanged), dock, [dock](int) {
         dock->persistSeedToConfig();
-        dock->syncQueueSeedWidgetsFromMain();
     });
-    d->generate.queueResolutionRow = new QWidget(queueWidget);
-    QHBoxLayout *resLayout = new QHBoxLayout(d->generate.queueResolutionRow);
-    resLayout->setContentsMargins(0, 0, 0, 0);
-    resLayout->addWidget(new QLabel(ComfyTr::tr("Resolution:"), d->generate.queueResolutionRow));
-    resLayout->addWidget(d->generate.sliderResolutionMultiplier, 1);
-    resLayout->addWidget(d->generate.labelResolutionMultiplier);
     queueLayout->addWidget(d->generate.queueResolutionRow);
 
-    d->generate.queueCheckFixedSeed = new QCheckBox(ComfyTr::tr("Fixed seed"), queueWidget);
-    d->generate.queueSpinSeed = new QSpinBox(queueWidget);
-    d->generate.queueSpinSeed->setRange(0, 2147483647);
-    d->generate.queueSpinSeed->setValue(d->generate.spinSeed->value());
-    d->generate.queueCheckFixedSeed->setChecked(d->generate.checkFixedSeed->isChecked());
-    d->generate.queueBtnRandomSeed = new QPushButton(queueWidget);
-    d->generate.queueBtnRandomSeed->setIcon(
-        ComfyTheme::icon(QStringLiteral("random")));
-    d->generate.queueBtnRandomSeed->setToolTip(ComfyTr::tr("Pick a new random seed."));
-    d->generate.queueBtnRandomSeed->setAccessibleName(ComfyTr::tr("Random seed"));
-    QObject::connect(d->generate.queueBtnRandomSeed, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotRandomSeed);
-    auto copyQueueSeedToMain = [dock, d]() {
-        if (!d->generate.queueSpinSeed || !d->generate.spinSeed || !d->generate.checkFixedSeed || !d->generate.queueCheckFixedSeed)
-            return;
-        d->generate.checkFixedSeed->blockSignals(true);
-        d->generate.spinSeed->blockSignals(true);
-        d->generate.checkFixedSeed->setChecked(d->generate.queueCheckFixedSeed->isChecked());
-        d->generate.spinSeed->setValue(d->generate.queueSpinSeed->value());
-        d->generate.checkFixedSeed->blockSignals(false);
-        d->generate.spinSeed->blockSignals(false);
-        dock->persistSeedToConfig();
-    };
-    QObject::connect(d->generate.queueSpinSeed, QOverload<int>::of(&QSpinBox::valueChanged), dock, [copyQueueSeedToMain](int) {
-        copyQueueSeedToMain();
-    });
-    QObject::connect(d->generate.queueCheckFixedSeed, &QCheckBox::toggled, dock, [copyQueueSeedToMain](bool) {
-        copyQueueSeedToMain();
-    });
+    if (d->generate.seedControlRow)
+        queueLayout->addWidget(d->generate.seedControlRow);
 
-    QHBoxLayout *seedLayout = new QHBoxLayout();
-    seedLayout->addWidget(d->generate.queueCheckFixedSeed);
-    seedLayout->addWidget(d->generate.queueSpinSeed, 1);
-    seedLayout->addWidget(d->generate.queueBtnRandomSeed);
-    queueLayout->addLayout(seedLayout);
-
-    QObject::connect(queueMenu, &QMenu::aboutToShow, dock, [dock, d]() {
-        dock->syncQueueSeedWidgetsFromMain();
+    QObject::connect(queueMenu, &QMenu::aboutToShow, dock, [dock]() {
         dock->refreshQueuePopupSupportsBatch();
     });
 
-    d->generate.queueEnqueueModeRow = new QWidget(queueWidget);
-    QHBoxLayout *modeLayout = new QHBoxLayout(d->generate.queueEnqueueModeRow);
-    modeLayout->setContentsMargins(0, 0, 0, 0);
-    modeLayout->addWidget(new QLabel(ComfyTr::tr("Enqueue:"), d->generate.queueEnqueueModeRow));
-    modeLayout->addWidget(d->generate.comboQueueMode, 1);
+    d->generate.queueEnqueueModeRow = new ComfyGridRow(queueWidget);
+    auto *modeGrid = static_cast<ComfyGridRow *>(d->generate.queueEnqueueModeRow);
+    modeGrid->addWidget(new QLabel(ComfyTr::tr("Enqueue:"), d->generate.queueEnqueueModeRow), 3);
+    modeGrid->addWidget(d->generate.comboQueueMode, 9, 1);
     queueLayout->addWidget(d->generate.queueEnqueueModeRow);
 
     QPushButton *popupCancel = new QPushButton(ComfyTr::tr("Cancel all"), queueWidget);
@@ -244,13 +193,11 @@ void buildQueueActionsSection(Workspace &ws)
 
     d->generate.generateActionRowWidget = new QWidget(d->generate.genContentContainer);
     QHBoxLayout *actionRow = new QHBoxLayout(d->generate.generateActionRowWidget);
-    actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->setSpacing(4);
+    ComfyUiStyle::applyTightRowLayout(actionRow);
 
     QWidget *genCluster = new QWidget(d->generate.generateActionRowWidget);
     QHBoxLayout *genClusterLay = new QHBoxLayout(genCluster);
-    genClusterLay->setContentsMargins(0, 0, 0, 0);
-    genClusterLay->setSpacing(0);
+    ComfyUiStyle::applyTightRowLayout(genClusterLay, 0); // Generate button cluster
     if (d->generate.btnGenerate)
         genClusterLay->addWidget(d->generate.btnGenerate);
 
@@ -273,8 +220,10 @@ void buildQueueActionsSection(Workspace &ws)
     genClusterLay->addWidget(d->inpaint.btnRegionMask);
     actionRow->addWidget(genCluster, 1);
     actionRow->addWidget(d->generate.btnQueuePopup);
-    if (d->generate.btnQueuePopup && d->generate.btnGenerate)
-        d->generate.btnQueuePopup->setFixedHeight(qMax(28, d->generate.btnGenerate->sizeHint().height() - 2));
+    if (d->generate.btnQueuePopup && d->generate.btnGenerate) {
+        d->generate.btnQueuePopup->setFixedHeight(ComfyUiStyle::Spacing::primaryButtonHeight - 2);
+        d->generate.btnQueuePopup->setMinimumWidth(d->generate.btnQueuePopup->sizeHint().width());
+    }
     genContentLayout->addWidget(d->generate.generateActionRowWidget);
     d->generate.queueButtonRowWidget = d->generate.generateActionRowWidget;
 
@@ -284,14 +233,12 @@ void buildQueueActionsSection(Workspace &ws)
     d->progressBar = new QProgressBar();
     d->progressBar->setObjectName(QStringLiteral("ComfyGenerateProgressBar"));
     d->progressBar->setMinimum(0);
-    d->progressBar->setMaximum(100);
+    d->progressBar->setMaximum(1000);
     d->progressBar->setTextVisible(false);
     d->progressBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    d->progressBar->setFixedHeight(kGenerateProgressBarHeightPx);
-    d->progressBar->setStyleSheet(progressBarBaseStyle());
+    ComfyUiStyle::applyProgressBar(d->progressBar, false);
     dock->setProgressBarKind(false);  // §13.18: default = generation
     dock->resetProgressBarToIdle();
-    genContentLayout->addSpacing(4);
     genContentLayout->addWidget(d->progressBar);
 
     dock->setupRootControlLayersUi(d->generate.genContentContainer, genContentLayout);

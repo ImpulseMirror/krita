@@ -181,13 +181,13 @@ void submitWorkflow(ComfyUIRemoteDock *dock, QJsonObject workflow)
                                                : result.errorMessage),
                               true);
             dock->reEnableGenerateUi();
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         if (result.promptId != expectedPromptId) {
             dock->setStatusMessage(ComfyTr::tr("Prompt ID mismatch - Please update ComfyUI to 0.3.45 or later!"), true);
             dock->reEnableGenerateUi();
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         dock->m_d->inpaintRt.inpaintPromptId = result.promptId;

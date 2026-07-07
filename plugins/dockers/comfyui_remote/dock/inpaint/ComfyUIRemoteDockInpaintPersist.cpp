@@ -89,6 +89,7 @@ void ComfyUIRemoteDock::updateInpaintControlsForArch()
         m_d->inpaint.comboFillMode->setEnabled(strengthFull && !editUi);
     }
     updateGenerateOptions();
+    refreshInlineControlLayersList();
 }
 void ComfyUIRemoteDock::syncInpaintContextComboSelection()
 {

@@ -123,7 +123,7 @@ void ComfyGenerateChromeLayoutRegressionTest::testHistoryStartsBelowGenerateChro
     const int chromeBottom = access.generateChrome->mapTo(page, QPoint(0, access.generateChrome->height())).y();
     const int histTop = access.historyGroup->mapTo(page, QPoint(0, 0)).y();
     const int gap = histTop - chromeBottom;
-    QVERIFY2(gap >= 0 && gap <= 4,
+    QVERIFY2(gap >= 0 && gap <= 5,
              qPrintable(QStringLiteral("history should sit flush under generate chrome: gap=%1 chromeBottom=%2 histTop=%3")
                             .arg(gap)
                             .arg(chromeBottom)

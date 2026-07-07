@@ -9,6 +9,7 @@
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
 
 #include <QComboBox>
@@ -51,7 +52,7 @@ void ComfyUIRemoteDock::refreshConnectionTabUi()
     if (m_d->isConnected) {
         if (m_d->labelConnectionStatus) {
             m_d->labelConnectionStatus->setText(ComfyTr::tr("Connected"));
-            m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: green;"));
+            ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Success);
         }
         syncDetectedModelsLabel(m_d.data());
         return;
@@ -70,14 +71,14 @@ void ComfyUIRemoteDock::refreshConnectionTabUi()
                 statusText = ComfyTr::tr("Connecting");
             }
             m_d->labelConnectionStatus->setText(statusText);
-            m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+            ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
         }
         return;
     }
 
     if (m_d->labelConnectionStatus) {
         m_d->labelConnectionStatus->setText(ComfyTr::tr("Disconnected"));
-        m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
     }
     syncDetectedModelsLabel(m_d.data());
 }
@@ -120,11 +121,11 @@ void ComfyUIRemoteDock::slotDisconnect()
         m_d->labelPerfDevice->setText(ComfyTr::tr("Device: (connect to server)"));
     if (m_d->labelConnectionStatus) {
         m_d->labelConnectionStatus->setText(ComfyTr::tr("Disconnected"));
-        m_d->labelConnectionStatus->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelConnectionStatus, ComfyUiStyle::StatusTone::Neutral);
     }
     if (m_d->labelDetectedModels) {
         m_d->labelDetectedModels->setText(ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
-        m_d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleCaption(m_d->labelDetectedModels);
         m_d->labelDetectedModels->setTextFormat(Qt::PlainText);
     }
     clearObjectInfoDerivedServerCaches();

@@ -208,7 +208,7 @@ void onInpaint(ComfyUIRemoteDock *dock)
         dock->m_d->inpaint.btnInpaint->setEnabled(false);
     if (dock->m_d->generate.btnGenerate)
         dock->m_d->generate.btnGenerate->setEnabled(false);
-    dock->m_d->progressBar->setValue(0);
+    dock->beginJobProgress();
     QString path = baseUrl.path();
     if (path.isEmpty() || path == "/") baseUrl.setPath("/upload/image");
     else if (!path.endsWith('/')) baseUrl.setPath(path + "/upload/image");
@@ -244,7 +244,7 @@ void onInpaint(ComfyUIRemoteDock *dock)
         if (reply->error() != QNetworkReply::NoError) {
             dock->setStatusMessage(ComfyTr::tr("Upload error: %1", reply->errorString()), true);
             dock->reEnableGenerateUi();
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
@@ -253,7 +253,7 @@ void onInpaint(ComfyUIRemoteDock *dock)
         if (dock->m_d->inpaintRt.inpaintUploadedImageName.isEmpty()) {
             dock->setStatusMessage(ComfyTr::tr("Server did not return image name."), true);
             dock->reEnableGenerateUi();
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         QUrl uploadUrl(dock->m_d->editServerUrl->text().trimmed());
@@ -288,7 +288,7 @@ void onInpaint(ComfyUIRemoteDock *dock)
             if (replyMask->error() != QNetworkReply::NoError) {
                 dock->setStatusMessage(ComfyTr::tr("Mask upload error: %1", replyMask->errorString()), true);
                 dock->reEnableGenerateUi();
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             QJsonObject obj = QJsonDocument::fromJson(replyMask->readAll()).object();
@@ -297,7 +297,7 @@ void onInpaint(ComfyUIRemoteDock *dock)
             if (dock->m_d->inpaintRt.inpaintUploadedMaskName.isEmpty()) {
                 dock->setStatusMessage(ComfyTr::tr("Server did not return mask name."), true);
                 dock->reEnableGenerateUi();
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             const ComfyPrepareGenerateWorkflow::Result &prepared = dock->m_d->inpaintRt.inpaintPrepared;
@@ -469,7 +469,7 @@ void onInpaint(ComfyUIRemoteDock *dock)
             if (workflow.isEmpty()) {
                 dock->setStatusMessage(ComfyTr::tr("Inpainting workflow error."), true);
                 dock->reEnableGenerateUi();
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             ComfyUIUtils::applyPerformancePreferencesToWorkflow(workflow);

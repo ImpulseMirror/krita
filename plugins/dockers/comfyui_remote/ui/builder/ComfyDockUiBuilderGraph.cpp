@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
 #include "ComfyDockUiBuilder.h"
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
@@ -85,7 +86,7 @@ void buildGraphWorkspace(const Context &ctx, DockShell &shell)
     QObject::connect(btnGraphLoadWorkflow, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
     d->graphWorkflowEditorLayout->addWidget(btnGraphLoadWorkflow);
     d->graphWorkflowEditorLayout->addWidget(d->editCustomWorkflow);
-    d->checkCustomGraphLive = new QCheckBox(ComfyTr::tr("Continuous preview (re-capture each result)"), d->graphPlaceholderWidget);
+    d->checkCustomGraphLive = new ComfyCheckBox(ComfyTr::tr("Continuous preview (re-capture each result)"), d->graphPlaceholderWidget);
     d->checkCustomGraphLive->setToolTip(ComfyTr::tr("Graph workspace live mode: re-export canvas and re-submit after each result."));
     QObject::connect(d->checkCustomGraphLive, &QCheckBox::toggled, dock, [dock, d](bool on) {
         d->customGraphLiveActive = on;

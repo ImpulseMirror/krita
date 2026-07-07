@@ -4,13 +4,11 @@
  */
 
 #include "ComfyUIIntervalSlider.h"
+#include "ComfySliderPaint.h"
+#include "ComfyUiStyle.h"
 
 #include <QMouseEvent>
 #include <QPainter>
-#include <QStyle>
-#include <QStyleOption>
-#include <QtGlobal>
-
 #include <algorithm>
 
 namespace
@@ -26,6 +24,7 @@ ComfyUIIntervalSlider::ComfyUIIntervalSlider(QWidget *parent)
 {
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    setFixedHeight(ComfyUiStyle::Spacing::sliderWidgetHeight);
 }
 
 int ComfyUIIntervalSlider::minimum() const
@@ -96,37 +95,24 @@ void ComfyUIIntervalSlider::setInterval(int low, int high)
 
 QRect ComfyUIIntervalSlider::trackRect() const
 {
-    const int margin = m_handleRadius + 2;
-    const int h = 4;
-    return QRect(margin, (height() - h) / 2, std::max(1, width() - margin * 2), h);
+    return ComfySliderPaint::horizontalTrackRect(rect());
 }
 
 int ComfyUIIntervalSlider::valueFromX(int x) const
 {
-    const QRect tr = trackRect();
-    if (tr.width() <= 1 || m_max <= m_min) {
-        return m_min;
-    }
-    const double t = clampInt(x, tr.left(), tr.right()) - tr.left();
-    const double ratio = t / static_cast<double>(tr.width());
-    return clampInt(qRound(m_min + ratio * static_cast<double>(m_max - m_min)), m_min, m_max);
+    return ComfySliderPaint::valueFromX(x, m_min, m_max, trackRect());
 }
 
 int ComfyUIIntervalSlider::xFromValue(int value) const
 {
-    const QRect tr = trackRect();
-    if (m_max <= m_min || tr.width() <= 1) {
-        return tr.left();
-    }
-    const double ratio = (value - m_min) / static_cast<double>(m_max - m_min);
-    return tr.left() + qRound(ratio * tr.width());
+    return ComfySliderPaint::xFromValue(value, m_min, m_max, trackRect());
 }
 
 QRect ComfyUIIntervalSlider::handleRectForValue(int value) const
 {
     const int cx = xFromValue(value);
     const int cy = height() / 2;
-    return QRect(cx - m_handleRadius, cy - m_handleRadius, m_handleRadius * 2, m_handleRadius * 2);
+    return ComfySliderPaint::squareHandleRect(cx, cy, ComfyUiStyle::Spacing::sliderHandle);
 }
 
 int ComfyUIIntervalSlider::pickHandle(int x) const
@@ -164,32 +150,26 @@ void ComfyUIIntervalSlider::applyDraggedHandle(int x)
 void ComfyUIIntervalSlider::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
-    QStyleOption opt;
-    opt.initFrom(this);
-
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-
-    style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 
     const QRect tr = trackRect();
     const int lowX = xFromValue(m_low);
     const int highX = xFromValue(m_high);
-    const QColor trackBase = palette().color(QPalette::Mid);
-    const QColor trackFill = palette().color(QPalette::Highlight);
-    const QColor handleColor = palette().color(QPalette::ButtonText);
+    const ComfyUiStyle::Colors style = ComfyUiStyle::colors();
 
-    p.setPen(Qt::NoPen);
-    p.setBrush(trackBase);
-    p.drawRoundedRect(tr, 2, 2);
+    ComfySliderPaint::paintHorizontalTrack(p,
+                                           tr,
+                                           QColor(style.sliderTrack),
+                                           QColor(style.highlight),
+                                           std::max(lowX, highX));
 
-    const QRect selected(QPoint(std::min(lowX, highX), tr.top()), QPoint(std::max(lowX, highX), tr.bottom()));
-    p.setBrush(trackFill);
-    p.drawRoundedRect(selected, 2, 2);
-
-    p.setBrush(handleColor);
-    p.drawEllipse(handleRectForValue(m_low));
-    p.drawEllipse(handleRectForValue(m_high));
+    const QRect lowHandle = handleRectForValue(m_low);
+    const QRect highHandle = handleRectForValue(m_high);
+    const QColor handleFill = QColor(style.secondaryPanel);
+    const QColor handleBorder = QColor(m_activeHandle >= 0 ? style.highlight : style.border);
+    ComfySliderPaint::paintSquareHandle(p, lowHandle, handleFill, handleBorder, m_activeHandle == LowHandle);
+    ComfySliderPaint::paintSquareHandle(p, highHandle, handleFill, handleBorder, m_activeHandle == HighHandle);
 }
 
 void ComfyUIIntervalSlider::mousePressEvent(QMouseEvent *event)
@@ -229,10 +209,10 @@ void ComfyUIIntervalSlider::mouseReleaseEvent(QMouseEvent *event)
 
 QSize ComfyUIIntervalSlider::sizeHint() const
 {
-    return QSize(180, 24);
+    return QSize(180, ComfyUiStyle::Spacing::sliderWidgetHeight);
 }
 
 QSize ComfyUIIntervalSlider::minimumSizeHint() const
 {
-    return QSize(90, 24);
+    return QSize(90, ComfyUiStyle::Spacing::sliderWidgetHeight);
 }

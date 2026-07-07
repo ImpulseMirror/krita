@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilderGenerateInternal.h"
+#include "ComfyGrid.h"
 
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
@@ -48,7 +50,7 @@
 #include <QScrollArea>
 #include <QSize>
 #include <QSlider>
-#include <QSpinBox>
+#include "ComfySpinBox.h"
 #include <QStackedWidget>
 #include <QStringListModel>
 #include <QTimer>
@@ -81,7 +83,7 @@ void buildControlPreviewSection(Workspace &ws)
     // §13.49 / §13.53: Control-layer timing range + server preprocessor preview (Generate workspace only)
     d->generate.controlPreviewGroupBox = new QGroupBox(ComfyTr::tr("Control preprocessor preview"), d->generate.genContentContainer);
     QVBoxLayout *cpLay = new QVBoxLayout(d->generate.controlPreviewGroupBox);
-    d->generate.comboControlPreviewMode = new QComboBox(d->generate.controlPreviewGroupBox);
+    d->generate.comboControlPreviewMode = new ComfyComboBox(d->generate.controlPreviewGroupBox);
     d->generate.comboControlPreviewMode->setToolTip(
         ComfyTr::tr("Preprocessor applied to the current canvas image on the ComfyUI server (control.json modes)."));
     d->generate.comboControlPreviewMode->addItem(ComfyTr::tr("Depth"), QStringLiteral("depth"));
@@ -112,9 +114,9 @@ void buildControlPreviewSection(Workspace &ws)
     QObject::connect(d->generate.btnControlPreviewRun, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotControlPreviewRun);
     cpLay->addWidget(d->generate.btnControlPreviewRun);
     {
-        QHBoxLayout *poseRow = new QHBoxLayout();
-        poseRow->addWidget(new QLabel(ComfyTr::tr("Pose guide people:"), d->generate.controlPreviewGroupBox));
-        d->generate.spinPoseGuidePeopleCount = new QSpinBox(d->generate.controlPreviewGroupBox);
+        auto *poseGrid = new ComfyGridRow(d->generate.controlPreviewGroupBox);
+        poseGrid->addWidget(new QLabel(ComfyTr::tr("Pose guide people:"), d->generate.controlPreviewGroupBox), 3);
+        d->generate.spinPoseGuidePeopleCount = new ComfySpinBox(d->generate.controlPreviewGroupBox);
         d->generate.spinPoseGuidePeopleCount->setRange(1, 3);
         d->generate.spinPoseGuidePeopleCount->setToolTip(
             ComfyTr::tr("Number of default stick figures to add (Pose.create_default people_count)."));
@@ -122,14 +124,13 @@ void buildControlPreviewSection(Workspace &ws)
             KConfigGroup g = KSharedConfig::openConfig()->group(QStringLiteral("ComfyUIRemote"));
             g.writeEntry(QStringLiteral("pose_guide_people_count"), v);
         });
-        poseRow->addWidget(d->generate.spinPoseGuidePeopleCount);
+        poseGrid->addWidget(d->generate.spinPoseGuidePeopleCount, 2);
         d->generate.btnAddPoseGuide = new QPushButton(ComfyTr::tr("Add pose guide (vector layer)"), d->generate.controlPreviewGroupBox);
         d->generate.btnAddPoseGuide->setToolTip(
             ComfyTr::tr("Adds default stick-figure skeleton(s) to the selected vector layer and refreshes pose data from its SVG every 500 ms."));
         QObject::connect(d->generate.btnAddPoseGuide, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotAddPoseGuideToVectorLayer);
-        poseRow->addWidget(d->generate.btnAddPoseGuide);
-        poseRow->addStretch();
-        cpLay->addLayout(poseRow);
+        poseGrid->addWidget(d->generate.btnAddPoseGuide, 7, 1);
+        cpLay->addWidget(poseGrid);
     }
     d->generate.labelControlPreviewImage = new QLabel(d->generate.controlPreviewGroupBox);
     d->generate.labelControlPreviewImage->setMinimumSize(160, 160);

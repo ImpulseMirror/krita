@@ -12,7 +12,6 @@ class KisViewManager;
 class QFrame;
 class QLabel;
 class QPlainTextEdit;
-class QComboBox;
 class QPushButton;
 class QVBoxLayout;
 class QMenu;
@@ -27,6 +26,7 @@ public:
 
     void setViewManager(KisViewManager *viewManager);
     void setPromptHeaderMode(int mode);
+    void setLiveSingleRegionMode(bool liveSingleRegion);
     void setShowNegativePrompt(bool show);
     void setNegativePromptWarningVisible(bool visible);
     void setPromptTranslationCode(const QString &code);
@@ -45,6 +45,8 @@ public:
                             bool showNegative,
                             bool showResizeHandle,
                             bool liveLineCounts = false);
+    void syncCompactHeightFromLayout();
+    int currentPositiveLineCount() const;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
 protected:
@@ -69,7 +71,6 @@ private:
     void rebuildActiveEditor();
     void setActiveIndex(int index, bool emitSignal = true);
     EditorMode currentMode() const;
-    void populateMaskCombo();
     void syncActiveEditorFromRegion();
     void commitActiveEditorToRegion();
     void syncRootPromptsFromDock();
@@ -84,6 +85,7 @@ private:
     QList<ComfyUIRemoteDock::Private::RegionEntry> *m_regions = nullptr;
     int *m_activeIndex = nullptr;
     int m_promptHeaderMode = 0;
+    bool m_liveSingleRegionMode = false;
     bool m_showNegativePrompt = true;
     QString m_promptTranslationCode;
 
@@ -97,22 +99,22 @@ private:
 
     QLabel *m_headerIcon = nullptr;
     QLabel *m_headerLabel = nullptr;
+    QWidget *m_headerHost = nullptr;
     QPushButton *m_btnLink = nullptr;
     QPushButton *m_btnRemove = nullptr;
     class ComfyPromptStackWidget *m_promptStack = nullptr;
     QPlainTextEdit *m_editPrompt = nullptr;
     QPlainTextEdit *m_editNegative = nullptr;
-    QComboBox *m_comboMask = nullptr;
+
     QLabel *m_emptyHint = nullptr;
 
     QWidget *m_noRegionStrip = nullptr;
     QLabel *m_noRegionLabel = nullptr;
     QPushButton *m_btnNewRegion = nullptr;
     QPushButton *m_btnLinkRegionMenu = nullptr;
-    QPushButton *m_btnTranslation = nullptr;
     bool m_showResizeHandle = true;
+    bool m_liveLineCounts = false;
 
-    QUuid m_lastActiveLayerUuid;
     bool m_syncingEditor = false;
 };
 

@@ -8,6 +8,8 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyRegionPromptWidget.h"
+#include "ComfyControlLayerListWidget.h"
+#include "ComfyUiStyle.h"
 
 #include <QLabel>
 #include <QAbstractScrollArea>
@@ -108,6 +110,9 @@ void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell)
         ComfyUiLayoutDiagnostics::restoreLivePreviewPanelLayout(d, shell.contentPage);
     }
 
+    if (d->generate.regionPromptWidget && d->generate.rootControlLayerList)
+        d->generate.regionPromptWidget->embedRegionControlPanel(d->generate.rootControlLayerList);
+
     if (d->generate.regionsGroupBox)
         d->generate.regionsGroupBox->setVisible(false);
 
@@ -123,9 +128,11 @@ void attachContentPage(const Context &ctx, DockShell &shell)
     ComfyUIRemoteDock::Private *d = ctx.d;
     d->labelStatus = new QLabel(ComfyTr::tr("Use Settings to configure server URL and advanced options."));
     d->labelStatus->setWordWrap(true);
+    ComfyUiStyle::styleDescription(d->labelStatus);
     shell.contentLayout->addWidget(d->labelStatus);
     d->mainStack->addWidget(shell.contentPage);
     shell.rootLayout->addWidget(d->mainStack);
+    ComfyUiStyle::applyWidgetTree(shell.rootWidget);
     dock->setWidget(shell.rootWidget);
 }
 

@@ -3,14 +3,18 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilder.h"
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyWorkspaceSelectButton.h"
-#include "ComfyPromptResizeHandle.h"
+#include "ComfyFormUi.h"
+#include "ComfyTextArea.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyQueueButton.h"
 #include "ComfyUIIntervalSlider.h"
@@ -80,7 +84,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     shell.contentPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     shell.contentLayout = new QVBoxLayout(shell.contentPage);
     shell.contentLayout->setContentsMargins(0, 0, 0, 0);
-    shell.contentLayout->setSpacing(0);
+    shell.contentLayout->setSpacing(ComfyUiStyle::Spacing::rowGap);
     shell.contentLayout->setAlignment(Qt::AlignTop);
     shell.scroll = new QScrollArea();
     shell.scroll->setWidgetResizable(true);
@@ -88,8 +92,12 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     shell.scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     shell.scrollContent = new QWidget();
     shell.scrollLayout = new QVBoxLayout(shell.scrollContent);
-    shell.scrollLayout->setContentsMargins(0, 0, 0, 0);
-    shell.scrollLayout->setSpacing(0);
+    shell.scrollLayout->setContentsMargins(ComfyUiStyle::Spacing::panel,
+                                           ComfyUiStyle::Spacing::panel,
+                                           ComfyUiStyle::Spacing::panel,
+                                           ComfyUiStyle::Spacing::panel);
+    shell.scrollLayout->setSpacing(ComfyUiStyle::Spacing::sectionGap);
+    ComfyUiStyle::applyScrollArea(shell.scroll);
     shell.scrollLayout->setAlignment(Qt::AlignTop);
 
     QGroupBox *connGroup = new QGroupBox(ComfyTr::tr("Connection"));
@@ -98,6 +106,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     d->editServerUrl->setText(ComfyUIUtils::savedServerUrl());
     d->editServerUrl->setPlaceholderText(ComfyTr::tr("e.g. 127.0.0.1:8188"));
     d->editServerUrl->setClearButtonEnabled(true);
+    ComfyUiStyle::applyLineEdit(d->editServerUrl);
     QObject::connect(d->editServerUrl, &QLineEdit::editingFinished, dock, [dock, d]() {
         QString url = d->editServerUrl->text().trimmed();
         KConfigGroup cfg = KSharedConfig::openConfig()->group("ComfyUIRemote");
@@ -108,11 +117,13 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         ComfyUIUtils::saveSettingsJson(settings);
     });
 
-    d->generate.comboCheckpoint = new QComboBox();
+    d->generate.comboCheckpoint = new ComfyComboBox();
     d->generate.comboCheckpoint->setEditable(true);
     d->generate.comboCheckpoint->setInsertPolicy(QComboBox::NoInsert);
+    ComfyUiStyle::applyComboBox(d->generate.comboCheckpoint);
     d->generate.comboCheckpoint->addItem("v1-5-pruned-emaonly.safetensors");
     d->generate.btnRefreshCheckpoints = new QPushButton(ComfyTr::tr("Refresh"));
+    ComfyUiStyle::applySecondaryButton(d->generate.btnRefreshCheckpoints);
     d->generate.btnRefreshCheckpoints->setToolTip(ComfyTr::tr("Load checkpoint list from server"));
     QObject::connect(d->generate.btnRefreshCheckpoints, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotRefreshCheckpoints);
     QObject::connect(d->generate.comboCheckpoint, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, [dock, d](int) {
@@ -124,10 +135,12 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         });
     }
 
-    d->generate.comboPreset = new QComboBox();
+    d->generate.comboPreset = new ComfyComboBox();
+    ComfyUiStyle::applyComboBox(d->generate.comboPreset);
     dock->rebuildPresetComboItems();
     QObject::connect(d->generate.comboPreset, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, &ComfyUIRemoteDock::slotPresetChanged);
-    d->upscale.comboUpscaleModel = new QComboBox();
+    d->upscale.comboUpscaleModel = new ComfyComboBox();
+    ComfyUiStyle::applyComboBox(d->upscale.comboUpscaleModel);
     d->upscale.comboUpscaleModel->setVisible(false);
     dock->refreshUpscaleModelCombo();
     QObject::connect(d->upscale.comboUpscaleModel, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, [dock, d](int) {
@@ -138,14 +151,17 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     });
     d->generate.btnSaveAsPreset = new QPushButton(ComfyTr::tr("Save as preset"));
     d->generate.btnDeletePreset = new QPushButton(ComfyTr::tr("Delete preset"));
+    ComfyUiStyle::applySecondaryButton(d->generate.btnSaveAsPreset);
+    ComfyUiStyle::applySecondaryButton(d->generate.btnDeletePreset);
     QObject::connect(d->generate.btnSaveAsPreset, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotSaveAsPreset);
     QObject::connect(d->generate.btnDeletePreset, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotDeletePreset);
     // §13.34: SamplingQuality (fast/quality) — affects steps; animation uses same spinSteps via slotGenerate
-    d->generate.comboQuality = new QComboBox();
+    d->generate.comboQuality = new ComfyComboBox();
     d->generate.comboQuality->addItem(ComfyTr::tr("Fast"));
     d->generate.comboQuality->addItem(ComfyTr::tr("Quality"));
     d->generate.comboQuality->setCurrentIndex(1);
     d->generate.comboQuality->setToolTip(ComfyTr::tr("Fast: fewer steps, quicker results. Quality: more steps, better details."));
+    ComfyUiStyle::applyComboBox(d->generate.comboQuality);
     QObject::connect(d->generate.comboQuality, QOverload<int>::of(&QComboBox::currentIndexChanged), dock, [dock, d](int idx) {
         if (!d->generate.spinSteps) return;
         if (idx == 0) { // Fast
@@ -167,9 +183,9 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     d->generate.btnDeletePreset->setEnabled(false);
 
     // Widgets for advanced configuration (shown in settings dialog instead of main dock)
-    d->live.checkUseReferenceImage = new QCheckBox(ComfyTr::tr("Use current layer as reference (replace REFERENCE_IMAGE in workflow)"));
+    d->live.checkUseReferenceImage = new ComfyCheckBox(ComfyTr::tr("Use current layer as reference (replace REFERENCE_IMAGE in workflow)"));
     d->live.checkUseReferenceImage->setToolTip(ComfyTr::tr("Export current layer, upload to server, and replace REFERENCE_IMAGE in your workflow JSON with the uploaded filename."));
-    d->editCustomWorkflow = new QPlainTextEdit();
+    d->editCustomWorkflow = new ComfyTextArea(nullptr, dock);
     d->editCustomWorkflow->setPlaceholderText(
         ComfyTr::tr("Paste ComfyUI workflow: API export (File → Export), or saved UI JSON (nodes/links) after connecting to the server."));
     d->editCustomWorkflow->setMaximumHeight(80);
@@ -195,6 +211,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     // Open settings dialog (connection + workflow) instead of exposing config directly
     QPushButton *btnSettings = new QPushButton(ComfyTr::tr("Settings…"));
     btnSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
+    ComfyUiStyle::applySecondaryButton(btnSettings);
     QObject::connect(btnSettings, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotConfigureHelp);
     connLayout->addWidget(btnSettings);
     connGroup->setParent(shell.rootWidget);
@@ -208,7 +225,7 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     shell.genGroup->setObjectName(QStringLiteral("ComfyGenerateGroupBox"));
     d->generate.genGroupBox = shell.genGroup;
     shell.genGroup->setFlat(true);
-    shell.genGroup->setStyleSheet(QStringLiteral("QGroupBox{border:0;margin:0;padding:0;}"));
+    shell.genGroup->setStyleSheet(ComfyUiStyle::flatGroupBoxStyleSheet());
     shell.genLayout = new QVBoxLayout(shell.genGroup);
     shell.genLayout->setContentsMargins(0, 0, 0, 0);
     shell.genLayout->setSpacing(0);
@@ -303,15 +320,18 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
             if (auto *row = qobject_cast<QHBoxLayout *>(d->upscale.upscaleActionRowWidget->layout()))
                 row->addWidget(d->generate.btnQueuePopup);
             if (d->upscale.btnUpscale && d->generate.btnQueuePopup) {
-                d->generate.btnQueuePopup->setFixedHeight(qMax(28, d->upscale.btnUpscale->sizeHint().height() - 2));
+                d->generate.btnQueuePopup->setFixedHeight(ComfyUiStyle::Spacing::primaryButtonHeight - 2);
                 d->generate.btnQueuePopup->setMinimumWidth(d->generate.btnQueuePopup->sizeHint().width());
             }
             dock->updateQueueStatus();
         } else if (d->generate.generateActionRowWidget && d->generate.btnQueuePopup) {
             if (auto *row = qobject_cast<QHBoxLayout *>(d->generate.generateActionRowWidget->layout()))
                 row->addWidget(d->generate.btnQueuePopup);
-            if (d->generate.btnGenerate && d->generate.btnQueuePopup)
-                d->generate.btnQueuePopup->setFixedHeight(qMax(28, d->generate.btnGenerate->sizeHint().height() - 2));
+            if (d->generate.btnGenerate && d->generate.btnQueuePopup) {
+                d->generate.btnQueuePopup->setFixedHeight(ComfyUiStyle::Spacing::primaryButtonHeight - 2);
+                d->generate.btnQueuePopup->setMinimumWidth(d->generate.btnQueuePopup->sizeHint().width());
+            }
+            dock->updateQueueStatus();
         }
         if (d->generate.btnGenerateAnimation) d->generate.btnGenerateAnimation->setVisible(isAnimation);
         if (d->animFramesRowWidget) d->animFramesRowWidget->setVisible(isAnimation);
@@ -363,18 +383,20 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
     // removed the only previous entry point).
     {
         QHBoxLayout *topRow = new QHBoxLayout();
-        topRow->setContentsMargins(0, 0, 0, 0);
+        ComfyUiStyle::applyTightRowLayout(topRow);
         d->workspaceTopRowLayout = topRow;
         topRow->addWidget(d->comboWorkspace);
+        d->live.liveTopToolbarWidget = new QWidget(shell.genGroup);
+        auto *liveToolbarLay = new QHBoxLayout(d->live.liveTopToolbarWidget);
+        ComfyUiStyle::applyTightRowLayout(liveToolbarLay, 0);
+        topRow->addWidget(d->live.liveTopToolbarWidget);
         topRow->addWidget(d->generate.comboPreset, 1);
-        ComfyTheme::applyToolbarComboStyle(d->generate.comboPreset);
-        if (d->comboWorkspace && d->generate.comboPreset)
-            d->generate.comboPreset->setMinimumHeight(d->comboWorkspace->sizeHint().height());
         topRow->addWidget(d->upscale.comboUpscaleModel, 1);
         QToolButton *btnTopSettings = new QToolButton(shell.genGroup);
         btnTopSettings->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
         btnTopSettings->setToolTip(ComfyTr::tr("Settings…"));
         btnTopSettings->setAutoRaise(true);
+        ComfyUiStyle::applyIconToolButton(btnTopSettings);
         QObject::connect(btnTopSettings, &QToolButton::clicked,
                 dock, &ComfyUIRemoteDock::slotConfigureHelp);
         topRow->addWidget(btnTopSettings);

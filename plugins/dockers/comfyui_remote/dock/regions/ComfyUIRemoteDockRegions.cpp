@@ -33,10 +33,24 @@ void ComfyUIRemoteDock::slotAddRegion()
     maskSources << QStringLiteral("selection");
     QString createdLayerName;
     KisLayerSP createdLayer;
+    bool linkedExistingLayer = false;
     if (m_d->viewManager && m_d->viewManager->image()) {
         KisImageSP image = m_d->viewManager->image();
         KisGroupLayerSP root = image->rootLayer();
-        if (root && image->colorSpace()) {
+        KisLayerSP activeLayer = m_d->viewManager->activeLayer();
+        if (root && image->colorSpace() && activeLayer) {
+            KisLayerSP linkTarget = ComfyRegionLink::linkTarget(activeLayer);
+            const bool canLinkLayer = linkTarget
+                && (dynamic_cast<KisPaintLayer *>(linkTarget.data()) || dynamic_cast<KisGroupLayer *>(linkTarget.data()))
+                && !ComfyRegionLink::isLayerLinkedToAnyRegion(regs, image, activeLayer, -1, ComfyRegionLink::LinkMode::Direct);
+            if (canLinkLayer) {
+                createdLayerName = linkTarget->name();
+                createdLayer = linkTarget;
+                linkedExistingLayer = true;
+                maskSources << QStringLiteral("layer:") + createdLayerName;
+            }
+        }
+        if (!linkedExistingLayer && root && image->colorSpace()) {
             const int n = regs.size() + 1;
             const QString baseName = ComfyTr::tr("Region %1", n);
             const bool isLive = (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 2);
@@ -71,6 +85,8 @@ void ComfyUIRemoteDock::slotAddRegion()
     m_d->activeRegionIndex = regs.size() - 1;
     saveRegionsToConfig();
     refreshRegionsList();
+    if (m_d->generate.regionPromptWidget)
+        m_d->generate.regionPromptWidget->focusPromptEditor();
     m_d->labelStatus->setText(ComfyTr::tr("Added region \"%1\".", e.name));
 }
 

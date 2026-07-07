@@ -1,147 +1,147 @@
 {
-  "1": {
-    "class_type": "BasicScheduler",
-    "inputs": {
-      "denoise": 1.0,
-      "model": [
-        "5",
-        0
-      ],
-      "scheduler": "normal",
-      "steps": 20
+    "1": {
+        "class_type": "LoadImage",
+        "inputs": {
+            "image": "golden_canvas.png"
+        }
+    },
+    "2": {
+        "class_type": "VAEEncode",
+        "inputs": {
+            "pixels": [
+                "1",
+                0
+            ],
+            "vae": [
+                "3",
+                2
+            ]
+        }
+    },
+    "3": {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {
+            "ckpt_name": "v1-5-pruned-emaonly.safetensors"
+        }
+    },
+    "4": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": [
+                "3",
+                1
+            ],
+            "text": "golden positive"
+        }
+    },
+    "5": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": [
+                "3",
+                1
+            ],
+            "text": "golden negative"
+        }
+    },
+    "500": {
+        "class_type": "CFGGuider",
+        "inputs": {
+            "cfg": 7,
+            "model": [
+                "3",
+                0
+            ],
+            "negative": [
+                "5",
+                0
+            ],
+            "positive": [
+                "4",
+                0
+            ]
+        }
+    },
+    "501": {
+        "class_type": "BasicScheduler",
+        "inputs": {
+            "denoise": 1,
+            "model": [
+                "3",
+                0
+            ],
+            "scheduler": "normal",
+            "steps": 20
+        }
+    },
+    "502": {
+        "class_type": "SplitSigmas",
+        "inputs": {
+            "sigmas": [
+                "501",
+                0
+            ],
+            "step": 12
+        }
+    },
+    "503": {
+        "class_type": "RandomNoise",
+        "inputs": {
+            "noise_seed": 1234
+        }
+    },
+    "504": {
+        "class_type": "KSamplerSelect",
+        "inputs": {
+            "sampler_name": "euler"
+        }
+    },
+    "505": {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {
+            "guider": [
+                "500",
+                0
+            ],
+            "latent_image": [
+                "2",
+                0
+            ],
+            "noise": [
+                "503",
+                0
+            ],
+            "sampler": [
+                "504",
+                0
+            ],
+            "sigmas": [
+                "502",
+                1
+            ]
+        }
+    },
+    "7": {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": [
+                "505",
+                1
+            ],
+            "vae": [
+                "3",
+                2
+            ]
+        }
+    },
+    "8": {
+        "class_type": "SaveImage",
+        "inputs": {
+            "filename_prefix": "ComfyUI_live",
+            "images": [
+                "7",
+                0
+            ]
+        }
     }
-  },
-  "10": {
-    "class_type": "SaveImage",
-    "inputs": {
-      "filename_prefix": "ComfyUI_live",
-      "images": [
-        "12",
-        0
-      ]
-    }
-  },
-  "11": {
-    "class_type": "SplitSigmas",
-    "inputs": {
-      "sigmas": [
-        "1",
-        0
-      ],
-      "step": 12
-    }
-  },
-  "12": {
-    "class_type": "VAEDecode",
-    "inputs": {
-      "samples": [
-        "9",
-        1
-      ],
-      "vae": [
-        "5",
-        2
-      ]
-    }
-  },
-  "13": {
-    "class_type": "VAEEncode",
-    "inputs": {
-      "pixels": [
-        "7",
-        0
-      ],
-      "vae": [
-        "5",
-        2
-      ]
-    }
-  },
-  "2": {
-    "class_type": "CFGGuider",
-    "inputs": {
-      "cfg": 7.0,
-      "model": [
-        "5",
-        0
-      ],
-      "negative": [
-        "3",
-        0
-      ],
-      "positive": [
-        "4",
-        0
-      ]
-    }
-  },
-  "3": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": [
-        "5",
-        1
-      ],
-      "text": "golden negative"
-    }
-  },
-  "4": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": [
-        "5",
-        1
-      ],
-      "text": "golden positive"
-    }
-  },
-  "5": {
-    "class_type": "CheckpointLoaderSimple",
-    "inputs": {
-      "ckpt_name": "v1-5-pruned-emaonly.safetensors"
-    }
-  },
-  "6": {
-    "class_type": "KSamplerSelect",
-    "inputs": {
-      "sampler_name": "euler"
-    }
-  },
-  "7": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "golden_canvas.png"
-    }
-  },
-  "8": {
-    "class_type": "RandomNoise",
-    "inputs": {
-      "noise_seed": 1234
-    }
-  },
-  "9": {
-    "class_type": "SamplerCustomAdvanced",
-    "inputs": {
-      "guider": [
-        "2",
-        0
-      ],
-      "latent_image": [
-        "13",
-        0
-      ],
-      "noise": [
-        "8",
-        0
-      ],
-      "sampler": [
-        "6",
-        0
-      ],
-      "sigmas": [
-        "11",
-        1
-      ]
-    }
-  }
 }

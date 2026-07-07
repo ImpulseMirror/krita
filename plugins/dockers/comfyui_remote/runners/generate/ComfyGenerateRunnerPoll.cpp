@@ -111,7 +111,10 @@ void onPollTimer(ComfyUIRemoteDock *dock)
             running.pollCount = &dock->m_d->pollCount;
             running.maxPollCount = ComfyUIRemoteDock::Private::maxPollCount;
             running.pollTimer = dock->m_d->pollTimer;
-            running.onTick = [dock]() { dock->updateQueueStatus(); };
+            running.onTick = [dock]() {
+                dock->tickJobProgressBuffer();
+                dock->updateQueueStatus();
+            };
             running.onTimeout = [dock, promptId]() {
                 failGeneratePoll(dock, promptId, ComfyTr::tr("Generation timed out."));
             };
@@ -191,7 +194,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                                 e.resultImagePaths.append(pathsByIndex->value(j));
                             e.resultImagePath = e.resultImagePaths.isEmpty() ? QString() : e.resultImagePaths.first();
                             e.finishedAt = QDateTime::currentDateTime();
-                            dock->m_d->progressBar->setValue(100);
+                            dock->finishJobProgress();
                             dock->m_d->history.historyEntries.append(e);
                             while (dock->m_d->history.historyEntries.size() > HistoryState::maxHistoryEntries) {
                                 ComfyUIRemoteDock::Private::HistoryEntry old = dock->m_d->history.historyEntries.takeFirst();
@@ -266,7 +269,7 @@ void onPollTimer(ComfyUIRemoteDock *dock)
                     failGenerateDownload(dock, ComfyTr::tr("No document open."));
                     return;
                 }
-                dock->m_d->progressBar->setValue(100);
+                dock->finishJobProgress();
                 if (dock->m_d->history.pendingHistoryByPromptId.contains(completedId)) {
                     ComfyUIRemoteDock::Private::HistoryEntry entry = dock->m_d->history.pendingHistoryByPromptId.take(completedId);
                     entry.jobId = completedId;

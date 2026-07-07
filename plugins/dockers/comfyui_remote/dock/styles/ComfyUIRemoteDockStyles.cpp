@@ -18,6 +18,7 @@
 #include "ComfyPromptLayoutMetrics.h"
 #include "ComfyUiLayoutDiagnostics.h"
 #include "ComfySwitchWidget.h"
+#include "ComfyUiStyle.h"
 
 #include <QComboBox>
 #include <QLoggingCategory>
@@ -54,6 +55,7 @@ void restoreCompactLayoutRow(QWidget *widget)
     const bool promptRow = widget->objectName() == QLatin1String("RegionPromptWidget");
     const bool progressRow = widget->objectName() == QLatin1String("ComfyGenerateProgressBar");
     const bool genGroupRow = widget->objectName() == QLatin1String("ComfyGenerateGroupBox");
+    const bool strengthRow = widget->objectName() == QLatin1String("ComfyStrengthRow");
     if (promptRow) {
         widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         widget->setMinimumSize(0, 0);
@@ -67,11 +69,19 @@ void restoreCompactLayoutRow(QWidget *widget)
         widget->setMinimumSize(0, 0);
         widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
         widget->setFixedHeight(2);
+    } else if (strengthRow) {
+        widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        widget->setMinimumHeight(ComfyUiStyle::Spacing::rowHeight);
+        widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     } else {
         widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         widget->setMinimumSize(0, 0);
         widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     }
+    if (QLayout *lay = widget->layout())
+        widget->resize(lay->sizeHint());
+    else
+        widget->adjustSize();
     widget->updateGeometry();
 }
 
@@ -147,6 +157,7 @@ void restoreTopRowWidget(QWidget *widget, QSizePolicy::Policy horizontalPolicy)
     widget->setMinimumSize(0, 0);
     widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     widget->show();
+    widget->adjustSize();
     widget->updateGeometry();
 }
 
@@ -189,6 +200,12 @@ void syncWorkspaceTopRowLayout(ComfyUIRemoteDock::Private *d)
             restoreTopRowWidget(btn, QSizePolicy::Fixed);
         else
             collapseTopRowWidget(btn);
+    }
+    if (d->live.liveTopToolbarWidget) {
+        if (isLive)
+            restoreTopRowWidget(d->live.liveTopToolbarWidget, QSizePolicy::Preferred);
+        else
+            collapseTopRowWidget(d->live.liveTopToolbarWidget);
     }
     d->workspaceTopRowLayout->activate();
 }
@@ -234,8 +251,10 @@ void ComfyUIRemoteDock::syncHistoryPanelWorkspaceVisibility()
     applyHistoryPanelWorkspaceVisibility(m_d.data(), contentPage);
 }
 
-void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
+void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool reapplyPromptLayout)
 {
+    if (!m_d->shellLayoutReady)
+        return;
     const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;
     const bool upscaleWs = (ws == 1);
     const bool liveWs = (ws == 2);
@@ -304,6 +323,7 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
                 m_d->generate.regionPromptWidget->show();
             if (m_d->inpaint.strengthRowWidget)
                 m_d->inpaint.strengthRowWidget->show();
+            ensureGenerateStrengthRowLayout();
             if (m_d->generate.generateActionRowWidget)
                 m_d->generate.generateActionRowWidget->show();
             if (m_d->progressBar)
@@ -337,7 +357,7 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
             collapseCompactLayoutRow(m_d->graphPlaceholderWidget);
     }
 
-    if (generateWs || liveWs)
+    if ((generateWs || liveWs) && reapplyPromptLayout)
         reapplyRegionPromptCompactLayout(m_d.data());
 
     QWidget *contentPage = nullptr;
@@ -350,19 +370,28 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate)
         if (compactMode) {
             clearCompactFixedHeight(m_d->generate.genContentContainer);
             clearCompactFixedHeight(m_d->generate.genGroupBox);
-            if (m_d->live.livePreviewGroupBox && !liveWs) {
-                if (contentPage->layout())
-                    contentPage->layout()->removeWidget(m_d->live.livePreviewGroupBox);
-                m_d->live.livePreviewGroupBox->setParent(m_d->generate.genGroupBox);
-                m_d->live.livePreviewGroupBox->hide();
-                collapseCompactLayoutRow(m_d->live.livePreviewGroupBox);
+            if (m_d->live.livePreviewGroupBox && !liveWs && m_d->generate.genGroupBox) {
+                QWidget *preview = m_d->live.livePreviewGroupBox;
+                if (preview->parentWidget() != m_d->generate.genGroupBox) {
+                    if (contentPage->layout())
+                        contentPage->layout()->removeWidget(preview);
+                    if (QWidget *oldParent = preview->parentWidget()) {
+                        if (QLayout *oldLay = oldParent->layout())
+                            oldLay->removeWidget(preview);
+                    }
+                    preview->setParent(m_d->generate.genGroupBox);
+                }
+                preview->hide();
+                collapseCompactLayoutRow(preview);
             } else if (m_d->live.livePreviewGroupBox && liveWs) {
                 restoreLivePreviewPanelLayout(m_d.data(), contentPage);
             }
-            if (m_d->labelStatus) {
-                if (contentPage->layout())
-                    contentPage->layout()->removeWidget(m_d->labelStatus);
-                m_d->labelStatus->setParent(contentPage);
+            if (m_d->labelStatus && contentPage) {
+                if (m_d->labelStatus->parentWidget() != contentPage) {
+                    if (contentPage->layout())
+                        contentPage->layout()->removeWidget(m_d->labelStatus);
+                    m_d->labelStatus->setParent(contentPage);
+                }
                 m_d->labelStatus->hide();
                 m_d->labelStatus->setFixedHeight(0);
             }
@@ -458,7 +487,9 @@ void ComfyUIRemoteDock::applyInterfaceAppearanceSettings()
     const bool onGenerate = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0;
     const bool onUpscale = m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 1;
     if (m_d->generate.regionPromptWidget) {
-        m_d->generate.regionPromptWidget->setPromptHeaderMode(2);
+        m_d->generate.regionPromptWidget->setLiveSingleRegionMode(liveWs);
+        if (!liveWs)
+            m_d->generate.regionPromptWidget->setPromptHeaderMode(0);
         m_d->generate.regionPromptWidget->setShowNegativePrompt(showNeg);
         if (!(onGenerate || liveWs))
             collapseCompactLayoutRow(m_d->generate.regionPromptWidget);

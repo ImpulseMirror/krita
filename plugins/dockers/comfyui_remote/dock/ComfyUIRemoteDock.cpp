@@ -10,6 +10,7 @@
 #include "ComfyUiLayoutDiagnostics.h"
 
 #include <QProgressBar>
+#include <QPointer>
 #include <QScrollArea>
 #include "ComfyStyleCollection.h"
 #include "ComfyStyleLoraListWidget.h"
@@ -19,6 +20,7 @@
 #include "ComfyUIUtils.h"
 #include "ComfyResources.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyQueueButton.h"
 #include "ComfyUIIntervalSlider.h"
@@ -70,7 +72,7 @@ Q_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE, "krita.comfyui_remote")
 #include <QTimer>
 #include <QDateTime>
 #include <QRandomGenerator>
-#include <QPointer>
+#include <QProgressBar>
 #include <QInputDialog>
 #include <QListView>
 #include <QListWidget>
@@ -266,6 +268,8 @@ ComfyUIRemoteDock::ComfyUIRemoteDock()
 
     updateWelcomeVisibility();
     updateLiveWorkspaceUi();
+    m_d->shellLayoutReady = true;
+    refreshInlineControlLayersList();
     applyInterfaceAppearanceSettings();
     updateGenerateOptions();
     applyQualitySamplerPresetFromSettings();
@@ -560,28 +564,64 @@ void ComfyUIRemoteDock::unsetCanvas()
 }
 void ComfyUIRemoteDock::setProgressBarKind(bool isUpload)
 {
-    if (!m_d->progressBar) return;
-    const ComfyTheme::Palette theme = ComfyTheme::palette();
-    const QString base = QStringLiteral(
-        "QProgressBar { border: none; margin: 0; padding: 0; min-height: 2px; max-height: 2px;"
-        " background: %1; }"
-        "QProgressBar::chunk { margin: 0; border-radius: 1px; }")
-                             .arg(theme.line);
-    // §13.18: upload = theme.progress_alt (amber); generation = default highlight
-    if (isUpload) {
-        m_d->progressBar->setStyleSheet(base + QStringLiteral(
-            "QProgressBar::chunk { background: %1; }").arg(theme.progressAlt));
+    if (!m_d->progressBar)
+        return;
+    ComfyUiStyle::applyProgressBar(m_d->progressBar, isUpload);
+}
+
+namespace {
+
+constexpr int kJobProgressScale = 1000;
+
+void applyJobProgressToBar(QProgressBar *bar, double jobProgressFraction)
+{
+    if (!bar)
+        return;
+    if (jobProgressFraction >= 0.0) {
+        bar->setValue(qBound(0, int(jobProgressFraction * kJobProgressScale), kJobProgressScale));
     } else {
-        m_d->progressBar->setStyleSheet(base + QStringLiteral(
-            "QProgressBar::chunk { background: %1; }").arg(theme.active));
+        int v = bar->value();
+        if (v >= 100)
+            bar->setValue(0);
+        bar->setValue(qMin(99, v + 2));
     }
-    m_d->progressBar->setFixedHeight(2);
+}
+
+} // namespace
+
+void ComfyUIRemoteDock::beginJobProgress()
+{
+    m_d->jobProgressFraction = -1.0;
+    if (!m_d->progressBar)
+        return;
+    m_d->progressBar->setMaximum(kJobProgressScale);
+    m_d->progressBar->setValue(0);
+}
+
+void ComfyUIRemoteDock::setJobProgressFraction(double fraction)
+{
+    m_d->jobProgressFraction = qBound(0.0, fraction, 1.0);
+    applyJobProgressToBar(m_d->progressBar, m_d->jobProgressFraction);
+}
+
+void ComfyUIRemoteDock::tickJobProgressBuffer()
+{
+    applyJobProgressToBar(m_d->progressBar, m_d->jobProgressFraction);
+}
+
+void ComfyUIRemoteDock::finishJobProgress()
+{
+    m_d->jobProgressFraction = 1.0;
+    if (m_d->progressBar)
+        m_d->progressBar->setValue(kJobProgressScale);
 }
 
 void ComfyUIRemoteDock::resetProgressBarToIdle()
 {
+    m_d->jobProgressFraction = -1.0;
     if (!m_d->progressBar)
         return;
+    m_d->progressBar->setMaximum(kJobProgressScale);
     m_d->progressBar->setValue(m_d->progressBar->maximum());
 }
 
@@ -641,7 +681,7 @@ void ComfyUIRemoteDock::setStatusMessage(const QString &msg, bool isError, bool 
     m_d->labelStatus->setText(msg);
     // §13.27: theme colors — red for error, yellow for warning
     if (isError) {
-        m_d->labelStatus->setStyleSheet(QStringLiteral("color: #dc2626;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelStatus, ComfyUiStyle::StatusTone::Error);
         // FAITHFUL_PORT: on Android the dock's status label is at the bottom
         // of a scroll area and frequently sits below the visible viewport, so
         // error-class messages were invisible — the user would click Generate,
@@ -654,14 +694,15 @@ void ComfyUIRemoteDock::setStatusMessage(const QString &msg, bool isError, bool 
         }
         QToolTip::showText(QCursor::pos(), msg, m_d->labelStatus, QRect(), 4000);
     } else if (isWarning) {
-        m_d->labelStatus->setStyleSheet(QStringLiteral("color: #b58900;"));
+        ComfyUiStyle::styleStatusLabel(m_d->labelStatus, ComfyUiStyle::StatusTone::Warning);
     } else {
-        m_d->labelStatus->setStyleSheet(QString());
+        ComfyUiStyle::resetLabelStyle(m_d->labelStatus);
     }
 }
 void ComfyUIRemoteDock::startPolling()
 {
     setProgressBarKind(false);  // §13.18: generation progress
+    beginJobProgress();
     setStatusMessage(ComfyTr::tr("Generating… %1", m_d->pollCount));
     m_d->pollTimer->start(1000);
 }
@@ -709,6 +750,7 @@ void ComfyUIRemoteDock::updateQueueStatus()
 void ComfyUIRemoteDock::showEvent(QShowEvent *event)
 {
     QDockWidget::showEvent(event);
+    updateQueueStatus();
     if (m_d->comboWorkspace) {
         const int ws = m_d->comboWorkspace->currentIndex();
         syncCompactGenerateLayoutRows(ws == 0 || ws == 1 || ws == 2);

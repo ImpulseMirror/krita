@@ -55,6 +55,10 @@ QList<ComfyControlLayerEntry> referenceLayersFromPromptTags(const QStringList &l
 /// Python ControlLayer.can_generate — preprocessor modes with a named target layer.
 bool canGenerateJob(const ComfyControlLayerEntry &entry);
 
+/// Python ControlLayer.is_supported for the active checkpoint architecture.
+bool isModeSupported(const QString &mode, const QString &archKey);
+QString unsupportedModeMessage(const QString &mode, const QString &archKey);
+
 bool hasStructuralControlAmong(const QList<ComfyControlLayerEntry> &layers);
 bool anyNeedsGenerateUpload(const QList<ComfyControlLayerEntry> &layers);
 

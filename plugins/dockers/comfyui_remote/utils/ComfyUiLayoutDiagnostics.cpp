@@ -7,7 +7,14 @@
 
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyRegionPromptWidget.h"
+#include "ComfyLocalization.h"
+#include "ComfySliderPaint.h"
+#include "ComfyTrackSlider.h"
+#include "ComfyUiStyle.h"
 
+#include <QAbstractSlider>
+#include <QBoxLayout>
+#include <QHBoxLayout>
 #include <QBoxLayout>
 #include <QImage>
 #include <QLayout>
@@ -131,7 +138,17 @@ int essentialGenContentHeight(ComfyUIRemoteDock::Private *d, int contentWidth)
         }
     } else {
         add(d->generate.regionPromptWidget);
-        add(d->inpaint.strengthRowWidget);
+        if (d->inpaint.strengthRowWidget) {
+            int strengthH = 0;
+            if (auto *row = qobject_cast<QHBoxLayout *>(d->inpaint.strengthRowWidget->layout()))
+                strengthH = boxLayoutVisibleHeight(row, contentWidth);
+            if (strengthH <= 0)
+                strengthH = widgetLayoutHeight(d->inpaint.strengthRowWidget, contentWidth);
+            if (strengthH <= 0)
+                strengthH = ComfyUiStyle::Spacing::rowHeight;
+            h += strengthH;
+            ++visibleItems;
+        }
         add(d->generate.generateActionRowWidget);
         add(d->progressBar);
     }
@@ -186,6 +203,110 @@ int measureGenGroupHeight(ComfyUIRemoteDock::Private *d, int contentWidth)
 }
 
 } // namespace
+
+void removeWidgetFromParentLayout(QWidget *widget)
+{
+    if (!widget || !widget->parentWidget())
+        return;
+    if (auto *lay = qobject_cast<QBoxLayout *>(widget->parentWidget()->layout()))
+        lay->removeWidget(widget);
+}
+
+void ensureGenerateStrengthRowLayout(void *dockPrivate)
+{
+    auto *d = static_cast<ComfyUIRemoteDock::Private *>(dockPrivate);
+    if (!d || !d->inpaint.strengthRowWidget)
+        return;
+    auto *strengthLay = qobject_cast<QHBoxLayout *>(d->inpaint.strengthRowWidget->layout());
+    if (!strengthLay)
+        return;
+
+    removeWidgetFromParentLayout(d->inpaint.strengthSliderWidget);
+    removeWidgetFromParentLayout(d->generate.spinStrength);
+    removeWidgetFromParentLayout(d->generate.btnAddControlIcon);
+    removeWidgetFromParentLayout(d->generate.btnAddRegionIcon);
+
+    if (d->inpaint.strengthSliderWidget) {
+        d->inpaint.strengthSliderWidget->setVisible(true);
+        strengthLay->insertWidget(0, d->inpaint.strengthSliderWidget, 1);
+    }
+    if (d->generate.spinStrength) {
+        d->generate.spinStrength->setPrefix(ComfyTr::tr("Strength") + QStringLiteral(": "));
+        d->generate.spinStrength->setVisible(true);
+        strengthLay->insertWidget(1, d->generate.spinStrength);
+    }
+    if (d->generate.layerCountRow && strengthLay->indexOf(d->generate.layerCountRow) < 0)
+        strengthLay->addWidget(d->generate.layerCountRow);
+    if (d->generate.btnAddControlIcon) {
+        d->generate.btnAddControlIcon->setVisible(true);
+        strengthLay->addWidget(d->generate.btnAddControlIcon);
+    }
+    if (d->generate.btnAddRegionIcon) {
+        d->generate.btnAddRegionIcon->setVisible(true);
+        strengthLay->addWidget(d->generate.btnAddRegionIcon);
+    }
+
+    d->inpaint.strengthRowWidget->setVisible(true);
+    d->inpaint.strengthRowWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    const int rowH =
+        qMax(ComfyUiStyle::Spacing::rowHeight, d->inpaint.strengthRowWidget->sizeHint().height());
+    d->inpaint.strengthRowWidget->setMinimumHeight(rowH);
+    d->inpaint.strengthRowWidget->updateGeometry();
+}
+
+void logSliderMetrics(const char *reason, QWidget *widget)
+{
+    if (!widget)
+        return;
+    widget->ensurePolished();
+    const QSizePolicy sp = widget->sizePolicy();
+    QString parentChain;
+    for (QWidget *p = widget->parentWidget(); p; p = p->parentWidget()) {
+        if (!parentChain.isEmpty())
+            parentChain += QStringLiteral(" <- ");
+        parentChain += QString::fromUtf8(p->metaObject()->className());
+        if (p->objectName().size())
+            parentChain += QLatin1Char('#') + p->objectName();
+        parentChain += QStringLiteral(" h=%1").arg(p->height());
+    }
+  qCWarning(KIS_COMFYUI_REMOTE).noquote()
+        << QStringLiteral("COMFY_UI_DIAG SLIDER") << reason
+        << QStringLiteral("class=") << widget->metaObject()->className()
+        << QStringLiteral("geom=") << rectStr(widget->geometry())
+        << QStringLiteral("sizeHint=") << widget->sizeHint()
+        << QStringLiteral("minSizeHint=") << widget->minimumSizeHint()
+        << QStringLiteral("policy=") << static_cast<int>(sp.horizontalPolicy()) << static_cast<int>(sp.verticalPolicy())
+        << QStringLiteral("minH=") << widget->minimumHeight() << QStringLiteral("maxH=") << widget->maximumHeight()
+        << QStringLiteral("fixed=") << (widget->minimumHeight() == widget->maximumHeight() && widget->maximumHeight() > 0)
+        << QStringLiteral("styleSheetBytes=") << widget->styleSheet().size()
+        << QStringLiteral("parents=") << parentChain;
+    if (auto *track = qobject_cast<ComfyTrackSlider *>(widget)) {
+        const QRect tr = ComfySliderPaint::horizontalTrackRect(widget->rect());
+        qCWarning(KIS_COMFYUI_REMOTE).noquote()
+            << QStringLiteral("COMFY_UI_DIAG SLIDER track") << reason
+            << QStringLiteral("track=") << rectStr(tr)
+            << QStringLiteral("value=") << track->value() << QStringLiteral("range=") << track->minimum()
+            << track->maximum();
+    } else if (auto *legacy = qobject_cast<QSlider *>(widget)) {
+        qCWarning(KIS_COMFYUI_REMOTE).noquote()
+            << QStringLiteral("COMFY_UI_DIAG SLIDER LEGACY_QSLIDER") << reason
+            << QStringLiteral("value=") << legacy->value();
+    }
+}
+
+void logStrengthRowMetrics(void *dockPrivate)
+{
+    auto *d = static_cast<ComfyUIRemoteDock::Private *>(dockPrivate);
+    if (!d || !d->inpaint.strengthRowWidget)
+        return;
+    logSliderMetrics("strengthRow", d->inpaint.strengthRowWidget);
+    if (d->inpaint.strengthSliderWidget)
+        logSliderMetrics("strengthSliderWidget", d->inpaint.strengthSliderWidget);
+    if (d->inpaint.sliderStrength)
+        logSliderMetrics("sliderStrength", d->inpaint.sliderStrength);
+    if (d->generate.spinStrength)
+        logSliderMetrics("spinStrength", d->generate.spinStrength);
+}
 
 int measureEssentialGenerateChromeHeight(void *dockPrivate, int contentWidth)
 {

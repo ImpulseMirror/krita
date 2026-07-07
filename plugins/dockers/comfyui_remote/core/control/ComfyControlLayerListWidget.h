@@ -32,6 +32,11 @@ public:
     void refresh();
     void refreshLayerCombos();
     void setGenerateEnabled(bool enabled);
+    void setCompactChrome(bool compact);
+    void setLayoutNotificationsEnabled(bool enabled);
+
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
 
 Q_SIGNALS:
     void entryEdited();
@@ -39,6 +44,7 @@ Q_SIGNALS:
     void generateRequested(int index);
     void addPoseCharacterRequested(int index);
     void removeRequested(int index);
+    void layoutChanged();
 
 private:
     void rebuildRows();
@@ -49,6 +55,7 @@ private:
     QVBoxLayout *m_rowsLayout = nullptr;
     QPushButton *m_btnAdd = nullptr;
     QVector<ComfyControlLayerRowWidget *> m_rows;
+    bool m_layoutNotificationsEnabled = false;
 };
 
 #endif

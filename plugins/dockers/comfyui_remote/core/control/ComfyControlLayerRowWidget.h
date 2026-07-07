@@ -11,12 +11,12 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
-#include <QSlider>
 #include <QToolButton>
 #include <QWidget>
 #include <functional>
 
 class KisViewManager;
+class ComfyTrackSlider;
 class ComfyUIIntervalSlider;
 
 class ComfyControlLayerRowWidget : public QWidget
@@ -45,6 +45,7 @@ private:
     void syncRangeLabels();
     void onModeChanged(int comboIndex);
     void onLayerChanged(int comboIndex);
+    void updateSupportState();
     bool isPoseVectorLayer() const;
 
     ComfyControlLayerEntry *m_entry = nullptr;
@@ -53,15 +54,17 @@ private:
     std::function<QString()> m_archKeyProvider;
 
     QComboBox *m_modeCombo = nullptr;
+    QWidget *m_middleControls = nullptr;
+    QLabel *m_errorLabel = nullptr;
     QComboBox *m_layerCombo = nullptr;
-    QSlider *m_presetSlider = nullptr;
+    ComfyTrackSlider *m_presetSlider = nullptr;
     QToolButton *m_btnGenerate = nullptr;
     QToolButton *m_btnAddPose = nullptr;
     QToolButton *m_btnExpand = nullptr;
     QToolButton *m_btnRemove = nullptr;
     QWidget *m_extended = nullptr;
     QCheckBox *m_customStrength = nullptr;
-    QSlider *m_strengthSlider = nullptr;
+    ComfyTrackSlider *m_strengthSlider = nullptr;
     QLabel *m_strengthLabel = nullptr;
     QLabel *m_rangeLabel = nullptr;
     ComfyUIIntervalSlider *m_rangeSlider = nullptr;

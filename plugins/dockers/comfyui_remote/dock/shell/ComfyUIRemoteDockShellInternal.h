@@ -5,8 +5,11 @@
 
 #pragma once
 
+#include "ComfyTextArea.h"
+
+#include "ComfySpinBox.h"
+
 #include <QComboBox>
-#include <QPlainTextEdit>
 #include <QSpinBox>
 #include <QString>
 #include <QUuid>
@@ -28,21 +31,10 @@ KisPaintLayer *findPaintLayerByUuidInTree(KisNodeSP node, const QString &uuidWit
 void collectPaintLayerNodes(KisNodeSP node, QVector<QPair<QString, QString>> *out);
 void collectInpaintContextMaskLayerNodes(KisNodeSP node, QVector<QPair<QString, QString>> *out);
 
-/// §13.196: while tag completer popup is visible, Tab must not move focus away from the prompt.
-class ComfyPromptPlainTextEdit : public QPlainTextEdit
-{
-public:
-    explicit ComfyPromptPlainTextEdit(QCompleter *completer, QWidget *parent = nullptr);
-
-protected:
-    bool focusNextPrevChild(bool next) override;
-
-private:
-    QPointer<QCompleter> m_completer;
-};
+using ComfyPromptPlainTextEdit = ComfyTextArea;
 
 /// §13.32: Strength spinbox snaps to valid step boundaries (arrow keys / scroll).
-class StrengthSpinBox : public QSpinBox
+class StrengthSpinBox : public ComfySpinBox
 {
 public:
     explicit StrengthSpinBox(QSpinBox *stepsSpinBox, QWidget *parent = nullptr);

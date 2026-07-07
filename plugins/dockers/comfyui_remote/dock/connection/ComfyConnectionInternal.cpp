@@ -6,6 +6,7 @@
 #include "ComfyConnectionInternal.h"
 
 #include "ComfyLocalization.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
 
 #include <QLabel>
@@ -94,7 +95,7 @@ void syncDetectedModelsLabel(ComfyUIRemoteDock::Private *d)
     if (!d->isConnected || d->lastObjectInfoRoot.isEmpty()) {
         d->labelDetectedModels->setText(
             ComfyTr::tr("Connect to server to see detected architectures (SD 1.5, SD XL, Flux, etc.)."));
-        d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
+        ComfyUiStyle::styleCaption(d->labelDetectedModels);
         d->labelDetectedModels->setTextFormat(Qt::PlainText);
         return;
     }
@@ -106,7 +107,7 @@ void syncDetectedModelsLabel(ComfyUIRemoteDock::Private *d)
     if (!missing.isEmpty()) {
         d->labelDetectedModels->setTextFormat(Qt::RichText);
         d->labelDetectedModels->setText(buildMissingNodesListFormat(missing));
-        d->labelDetectedModels->setStyleSheet(QString());
+        ComfyUiStyle::resetLabelStyle(d->labelDetectedModels);
         d->labelDetectedModels->setOpenExternalLinks(true);
         d->labelDetectedModels->setTextInteractionFlags(Qt::TextBrowserInteraction);
         return;
@@ -114,7 +115,7 @@ void syncDetectedModelsLabel(ComfyUIRemoteDock::Private *d)
     const QStringList ckptNames = ComfyUIUtils::parseCheckpointNamesFromObjectInfoRoot(d->lastObjectInfoRoot);
     d->labelDetectedModels->setTextFormat(Qt::RichText);
     d->labelDetectedModels->setText(buildMissingResourcesDictFormatHtml(ckptNames));
-    d->labelDetectedModels->setStyleSheet(QStringLiteral("color: gray;"));
+    ComfyUiStyle::styleCaption(d->labelDetectedModels);
     d->labelDetectedModels->setOpenExternalLinks(true);
     d->labelDetectedModels->setTextInteractionFlags(Qt::TextBrowserInteraction);
 }

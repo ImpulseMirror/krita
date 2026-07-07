@@ -1,31 +1,31 @@
 {
-  "1": {
-    "class_type": "ImageScale",
-    "inputs": {
-      "crop": "disabled",
-      "height": 768,
-      "image": [
-        "2",
-        0
-      ],
-      "upscale_method": "lanczos",
-      "width": 1024
+    "1": {
+        "class_type": "LoadImage",
+        "inputs": {
+            "image": "golden_canvas.png"
+        }
+    },
+    "2": {
+        "class_type": "ImageScale",
+        "inputs": {
+            "crop": "disabled",
+            "height": 768,
+            "image": [
+                "1",
+                0
+            ],
+            "upscale_method": "lanczos",
+            "width": 1024
+        }
+    },
+    "3": {
+        "class_type": "SaveImage",
+        "inputs": {
+            "filename_prefix": "ComfyUI_upscale",
+            "images": [
+                "2",
+                0
+            ]
+        }
     }
-  },
-  "2": {
-    "class_type": "LoadImage",
-    "inputs": {
-      "image": "golden_canvas.png"
-    }
-  },
-  "3": {
-    "class_type": "SaveImage",
-    "inputs": {
-      "filename_prefix": "ComfyUI_upscale",
-      "images": [
-        "1",
-        0
-      ]
-    }
-  }
 }

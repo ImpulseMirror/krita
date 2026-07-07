@@ -10,6 +10,7 @@
 #include "ComfyLocalization.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyStyleLoraListWidget.h"
+#include "ComfyUiStyle.h"
 
 #include <QCursor>
 #include <QDialog>
@@ -66,8 +67,9 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         mainLayout->addLayout(contentLayout);
 
         QListWidget *navList = new QListWidget(dlg);
-        navList->setFixedWidth(120);  // §13.175
+        navList->setFixedWidth(ComfyUiStyle::Spacing::navWidth);
         navList->setSelectionMode(QAbstractItemView::SingleSelection);
+        ComfyUiStyle::applySettingsNavList(navList);
         // FAITHFUL_PORT: Plugin tab dropped on Android — the auto-update path and
         // diagnostics buttons there expose host-only flows (URL handlers, intent
         // launchers) that crash or no-op on Android; the docker's About menu plus
@@ -75,7 +77,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         const QStringList navItems = { ComfyTr::tr("Connection"), ComfyTr::tr("Styles"), ComfyTr::tr("Diffusion"), ComfyTr::tr("Interface"), ComfyTr::tr("Performance") };
         for (const QString &label : navItems) {
             QListWidgetItem *item = new QListWidgetItem(label);
-            item->setSizeHint(QSize(112, 24));  // §13.175
+            item->setSizeHint(QSize(ComfyUiStyle::Spacing::navWidth - 8, ComfyUiStyle::Spacing::rowHeight));
             navList->addItem(item);
         }
         contentLayout->addWidget(navList);
@@ -107,14 +109,15 @@ void ComfyUIRemoteDock::slotConfigureHelp()
         // Footer (Restore Defaults, version text, Ok)
         QHBoxLayout *footerLayout = new QHBoxLayout();
         QPushButton *restoreButton = new QPushButton(ComfyTr::tr("Restore Defaults"), dlg);
+        restoreButton->setStyleSheet(ComfyUiStyle::restoreDefaultsButtonStyleSheet());
         connect(restoreButton, &QPushButton::clicked, this, &ComfyUIRemoteDock::slotRestoreDefaults);
         footerLayout->addWidget(restoreButton);
-        // §4.3 / §13.204: Plugin version from single source
         QLabel *footerVersion = new QLabel(ComfyTr::tr("Plugin version: %1", ComfyUIUtils::pluginVersion()), dlg);
         footerVersion->setAlignment(Qt::AlignCenter);
-        footerVersion->setStyleSheet(QStringLiteral("color: gray; font-style: italic;"));
+        footerVersion->setStyleSheet(ComfyUiStyle::footerVersionStyleSheet());
         footerLayout->addWidget(footerVersion, 1);
         QPushButton *okButton = new QPushButton(ComfyTr::tr("Ok"), dlg);
+        ComfyUiStyle::applyPrimaryButton(okButton);
         okButton->setDefault(true);
         okButton->setAutoDefault(true);
         connect(okButton, &QPushButton::clicked, dlg, [dlg](bool) {
@@ -138,6 +141,7 @@ void ComfyUIRemoteDock::slotConfigureHelp()
             }
         });
         updateHistoryUsageLabel();
+        ComfyUiStyle::applyWidgetTree(dlg);
         navList->setCurrentRow(0);
 
         refreshConnectionTabUi();
@@ -232,7 +236,6 @@ void ComfyUIRemoteDock::slotRestoreDefaults()
     if (m_d->generate.spinSeed) {
         m_d->generate.spinSeed->setValue(0);
     }
-    syncQueueSeedWidgetsFromMain();
     if (m_d->checkConfirmDiscardImage) {
         m_d->checkConfirmDiscardImage->setChecked(true);
     }

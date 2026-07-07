@@ -42,6 +42,15 @@ void logHistoryThumbnailStage(const char *stage,
                               const QSize &maskSize,
                               const QString &detail);
 
+/// Log widget geometry + parent chain (logcat: COMFY_UI_DIAG SLIDER).
+void logSliderMetrics(const char *reason, QWidget *widget);
+
+/// Log strength-row hierarchy after dock layout settles.
+void logStrengthRowMetrics(void *dockPrivate);
+
+/// Reparent slider + icon buttons onto the Generate strength row (shared with Live workspace).
+void ensureGenerateStrengthRowLayout(void *dockPrivate);
+
 /// Reparent live preview below gen chrome on contentPage (Live workspace only).
 void restoreLivePreviewPanelLayout(void *dockPrivate, QWidget *contentPage);
 

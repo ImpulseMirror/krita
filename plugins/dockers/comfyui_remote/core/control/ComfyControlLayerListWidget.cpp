@@ -9,6 +9,8 @@
 #include "ComfyControlLayerRowWidget.h"
 
 #include <QPushButton>
+#include <QSize>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <KisViewManager.h>
@@ -17,14 +19,28 @@
 ComfyControlLayerListWidget::ComfyControlLayerListWidget(QWidget *parent)
     : QWidget(parent)
 {
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(2);
     m_rowsLayout = new QVBoxLayout();
     m_rowsLayout->setContentsMargins(0, 0, 0, 0);
+    m_rowsLayout->setSpacing(2);
     lay->addLayout(m_rowsLayout);
     m_btnAdd = new QPushButton(ComfyTr::tr("Add control layer"), this);
     connect(m_btnAdd, &QPushButton::clicked, this, &ComfyControlLayerListWidget::addLayerRequested);
     lay->addWidget(m_btnAdd);
+}
+
+void ComfyControlLayerListWidget::setCompactChrome(bool compact)
+{
+    if (m_btnAdd)
+        m_btnAdd->setVisible(!compact);
+}
+
+void ComfyControlLayerListWidget::setLayoutNotificationsEnabled(bool enabled)
+{
+    m_layoutNotificationsEnabled = enabled;
 }
 
 void ComfyControlLayerListWidget::setViewManager(KisViewManager *viewManager)
@@ -75,6 +91,23 @@ void ComfyControlLayerListWidget::rebuildRows()
                 &ComfyControlLayerListWidget::addPoseCharacterRequested);
         connect(row, &ComfyControlLayerRowWidget::removeRequested, this, &ComfyControlLayerListWidget::removeRequested);
     }
+    if (m_layoutNotificationsEnabled)
+        QTimer::singleShot(0, this, [this]() { Q_EMIT layoutChanged(); });
+    updateGeometry();
+}
+
+QSize ComfyControlLayerListWidget::sizeHint() const
+{
+    if (QLayout *lay = layout())
+        return lay->sizeHint();
+    return QWidget::sizeHint();
+}
+
+QSize ComfyControlLayerListWidget::minimumSizeHint() const
+{
+    if (QLayout *lay = layout())
+        return lay->minimumSize();
+    return QWidget::minimumSizeHint();
 }
 
 void ComfyControlLayerListWidget::refreshLayerCombos()

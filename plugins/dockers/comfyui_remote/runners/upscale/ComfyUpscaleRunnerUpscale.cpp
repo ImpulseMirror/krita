@@ -94,7 +94,7 @@ void onUpscale(ComfyUIRemoteDock *dock)
         return;
     }
     dock->m_d->upscale.btnUpscale->setEnabled(false);
-    dock->m_d->progressBar->setValue(0);
+    dock->beginJobProgress();
     QString path = baseUrl.path();
     if (path.isEmpty() || path == "/") baseUrl.setPath("/upload/image");
     else if (!path.endsWith('/')) baseUrl.setPath(path + "/upload/image");
@@ -119,7 +119,7 @@ void onUpscale(ComfyUIRemoteDock *dock)
         if (reply->error() != QNetworkReply::NoError) {
             dock->setStatusMessage(ComfyTr::tr("Upload error: %1", reply->errorString()), true);
             dock->m_d->upscale.btnUpscale->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
@@ -127,7 +127,7 @@ void onUpscale(ComfyUIRemoteDock *dock)
         if (dock->m_d->upscaleRt.upscaleUploadedImageName.isEmpty()) {
             dock->setStatusMessage(ComfyTr::tr("Server did not return image name."), true);
             dock->m_d->upscale.btnUpscale->setEnabled(true);
-            dock->m_d->progressBar->setValue(0);
+            dock->resetProgressBarToIdle();
             return;
         }
         continueAfterCanvasUpload(dock, w, h, w2, h2);
@@ -163,7 +163,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
                     ComfyTr::tr("Select a refinement model (a style preset other than \"None\"), or disable \"Refine upscaled image\"."),
                     true);
                 dock->m_d->upscale.btnUpscale->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
             QString ckpt = dock->checkpointNameForUpscaleRefinementPreset();
@@ -304,7 +304,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
                 dock->setStatusMessage(useTiledRefine ? ComfyTr::tr("Tiled upscale workflow error.") : ComfyTr::tr("Upscale refine workflow error."),
                                  true);
                 dock->m_d->upscale.btnUpscale->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
         } else {
@@ -321,7 +321,7 @@ void continueAfterCanvasUpload(ComfyUIRemoteDock *dock, int canvasW, int canvasH
             if (workflow.isEmpty()) {
                 dock->setStatusMessage(ComfyTr::tr("Upscale workflow error."), true);
                 dock->m_d->upscale.btnUpscale->setEnabled(true);
-                dock->m_d->progressBar->setValue(0);
+                dock->resetProgressBarToIdle();
                 return;
             }
         }

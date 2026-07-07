@@ -3,12 +3,15 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
 #include "ComfyDockUiBuilder.h"
+#include "ComfyGrid.h"
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyWorkspaceSelectButton.h"
 #include "ComfyPromptResizeHandle.h"
 #include "ComfySwitchWidget.h"
@@ -84,7 +87,7 @@ void buildWelcomePage(const Context &ctx, DockShell &shell)
     if (!logoPix.isNull()) {
         logoLabel->setPixmap(logoPix.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     } else {
-        logoLabel->setStyleSheet(QStringLiteral("background: palette(mid); border-radius: 4px;"));
+        logoLabel->setStyleSheet(ComfyUiStyle::logoPlaceholderStyleSheet());
     }
     QLabel *welcomeTitle = new QLabel(ComfyTr::tr("AI Image\nGeneration"), d->welcomePage);
     QFont titleFont = welcomeTitle->font();
@@ -92,10 +95,10 @@ void buildWelcomePage(const Context &ctx, DockShell &shell)
     welcomeTitle->setFont(titleFont);
     welcomeTitle->setAlignment(Qt::AlignCenter);
     welcomeTitle->setTextFormat(Qt::PlainText);
-    QHBoxLayout *headerRow = new QHBoxLayout();
-    headerRow->addWidget(logoLabel);
-    headerRow->addWidget(welcomeTitle, 1);
-    welcomeLayout->addLayout(headerRow);
+    auto *headerGrid = new ComfyGridRow(d->welcomePage);
+    headerGrid->addWidget(logoLabel, 3);
+    headerGrid->addWidget(welcomeTitle, 9, 1);
+    welcomeLayout->addWidget(headerGrid);
     welcomeLayout->addSpacing(12);
     // §13.190 order: AutoUpdateWidget (3), NewsWidget (4), ConnectionWidget (5). At most one visible.
     d->welcomeUpdateWidget = new QWidget(d->welcomePage);
@@ -112,7 +115,7 @@ void buildWelcomePage(const Context &ctx, DockShell &shell)
     d->welcomeUpdateProgressBar->setTextVisible(false);
     d->welcomeUpdateProgressBar->hide();
     updateLayout->addWidget(d->welcomeUpdateProgressBar);
-    d->welcomeCheckAutoUpdate = new QCheckBox(ComfyTr::tr("Check for updates on startup"), d->welcomeUpdateWidget);
+    d->welcomeCheckAutoUpdate = new ComfyCheckBox(ComfyTr::tr("Check for updates on startup"), d->welcomeUpdateWidget);
     d->welcomeCheckAutoUpdate->setChecked(ComfyUIUtils::loadSettingsJson().value(QStringLiteral("auto_update")).toBool(true));
     d->welcomeCheckAutoUpdate->setToolTip(ComfyTr::tr("When enabled, the Welcome view will check for a new plugin version when shown."));
     QObject::connect(d->welcomeCheckAutoUpdate, &QCheckBox::toggled, dock, [dock, d](bool checked) {
@@ -123,6 +126,7 @@ void buildWelcomePage(const Context &ctx, DockShell &shell)
     });
     updateLayout->addWidget(d->welcomeCheckAutoUpdate);
     d->welcomeUpdateButton = new QPushButton(ComfyTr::tr("Download and Install"), d->welcomeUpdateWidget);
+    ComfyUiStyle::applyPrimaryButton(d->welcomeUpdateButton);
     QObject::connect(d->welcomeUpdateButton, &QPushButton::clicked, dock, [dock, d](bool) {
         if (d->pluginUpdateState == ComfyUIRemoteDock::Private::PluginUpdateState::RestartRequired) {
             const QString p = d->updateExtractPath;
@@ -142,6 +146,7 @@ void buildWelcomePage(const Context &ctx, DockShell &shell)
     d->welcomeNewsLabel->setObjectName(QStringLiteral("newsText"));
     newsLayout->addWidget(d->welcomeNewsLabel);
     QPushButton *btnNewsOk = new QPushButton(ComfyTr::tr("Ok"), d->welcomeNewsWidget);
+    ComfyUiStyle::applyPrimaryButton(btnNewsOk);
     QObject::connect(btnNewsOk, &QPushButton::clicked, dock, [dock, d](bool) {
         d->hasUnseenNews = false;
         QJsonObject s = ComfyUIUtils::loadSettingsJson();
@@ -159,10 +164,11 @@ void buildWelcomePage(const Context &ctx, DockShell &shell)
     d->welcomeStatusLabel->setWordWrap(true);
     d->welcomeErrorLabel = new QLabel(d->welcomeConnectionWidget);
     d->welcomeErrorLabel->setWordWrap(true);
-    d->welcomeErrorLabel->setStyleSheet(QStringLiteral("color: #b58900;"));  // Yellow for error line (§13.73)
+    d->welcomeErrorLabel->setStyleSheet(ComfyUiStyle::warningLabelStyleSheet());
     d->welcomeErrorLabel->hide();
     QPushButton *btnConfigure = new QPushButton(ComfyTr::tr("Configure"), d->welcomeConnectionWidget);
     btnConfigure->setIcon(ComfyTheme::icon(QStringLiteral("settings")));
+    ComfyUiStyle::applyPrimaryButton(btnConfigure);
     QObject::connect(btnConfigure, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotConfigureHelp);
     connWidgetLayout->addWidget(d->welcomeStatusLabel);
     connWidgetLayout->addWidget(d->welcomeErrorLabel);

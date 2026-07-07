@@ -3,65 +3,21 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyStyleSamplerWidget.h"
+#include "ComfyFormUi.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIUtils.h"
+#include "ComfyUiStyle.h"
 
 #include <QComboBox>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QSlider>
+#include <QAbstractSlider>
 #include <QSizePolicy>
 #include <QToolButton>
 #include <QVBoxLayout>
-
-namespace {
-
-QWidget *makeSliderSettingRow(QWidget *parent,
-                              const QString &title,
-                              const QString &description,
-                              QSlider **outSlider,
-                              QLabel **outValueLabel,
-                              int min,
-                              int max)
-{
-    auto *row = new QWidget(parent);
-    auto *rowLayout = new QHBoxLayout(row);
-    rowLayout->setContentsMargins(0, 4, 0, 4);
-
-    QString labelText = title;
-    if (!description.isEmpty())
-        labelText += QLatin1Char(' ') + description;
-    auto *keyLabel = new QLabel(labelText, row);
-    keyLabel->setWordWrap(true);
-    keyLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    rowLayout->addWidget(keyLabel, 1);
-
-    auto *sliderBox = new QWidget(row);
-    auto *sliderLayout = new QHBoxLayout(sliderBox);
-    sliderLayout->setContentsMargins(0, 0, 0, 0);
-
-    auto *slider = new QSlider(Qt::Horizontal, sliderBox);
-    slider->setMinimumWidth(200);
-    slider->setMaximumWidth(300);
-    slider->setRange(min, max);
-    slider->setSingleStep(1);
-
-    auto *valueLabel = new QLabel(sliderBox);
-    const QFontMetrics fm(valueLabel->font());
-    valueLabel->setMinimumWidth(fm.horizontalAdvance(QStringLiteral("555")));
-
-    sliderLayout->addWidget(slider);
-    sliderLayout->addWidget(valueLabel);
-    rowLayout->addWidget(sliderBox, 0, Qt::AlignRight | Qt::AlignVCenter);
-
-    *outSlider = slider;
-    *outValueLabel = valueLabel;
-    return row;
-}
-
-} // namespace
 
 ComfyStyleSamplerWidget::ComfyStyleSamplerWidget(Kind kind, QWidget *parent)
     : QWidget(parent)
@@ -77,15 +33,16 @@ ComfyStyleSamplerWidget::ComfyStyleSamplerWidget(Kind kind, QWidget *parent)
     m_expander->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_expander->setArrowType(Qt::RightArrow);
     m_expander->setText(title);
-    m_expander->setStyleSheet(QStringLiteral("QToolButton { border: none; font-weight: bold; text-align: left; }"));
+    ComfyUiStyle::applyExpanderButton(m_expander);
     connect(m_expander, &QToolButton::toggled, this, [this](bool on) {
         m_expander->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
         if (m_extended)
             m_extended->setVisible(on);
     });
 
-    m_preset = new QComboBox(this);
+    m_preset = new ComfyComboBox(this);
     m_preset->setMinimumWidth(230);
+    ComfyUiStyle::applyComboBox(m_preset);
     connect(m_preset, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ComfyStyleSamplerWidget::onPresetChanged);
 
     auto *headerLayout = new QHBoxLayout();
@@ -97,31 +54,33 @@ ComfyStyleSamplerWidget::ComfyStyleSamplerWidget(Kind kind, QWidget *parent)
     m_samplerInfo = new QLabel(this);
     m_samplerInfo->setWordWrap(true);
 
-    QWidget *stepsRow = makeSliderSettingRow(
+    const auto stepsSetting = ComfyFormUi::addSliderRow(
         this,
         ComfyTr::tr("Sampler Steps"),
         ComfyTr::tr("Higher values can produce more refined results but take longer"),
-        &m_steps,
-        &m_stepsValue,
         1,
-        100);
+        100,
+        QStringLiteral("1"));
+    m_steps = stepsSetting.qtSlider();
+    m_stepsValue = stepsSetting.valueLabel();
     m_steps->setToolTip(ComfyTr::tr("Higher values can produce more refined results but take longer"));
-    connect(m_steps, &QSlider::valueChanged, this, [this](int v) {
+    connect(m_steps, &QAbstractSlider::valueChanged, this, [this](int v) {
         m_stepsValue->setText(QString::number(v));
         if (!m_loading)
             emit valueChanged();
     });
 
-    QWidget *cfgRow = makeSliderSettingRow(
+    const auto cfgSetting = ComfyFormUi::addSliderRow(
         this,
         ComfyTr::tr("Guidance Strength (CFG Scale)"),
         ComfyTr::tr("Value which indicates how closely image generation follows the text prompt"),
-        &m_cfg,
-        &m_cfgValue,
         10,
-        200);
+        200,
+        QStringLiteral("1.0"));
+    m_cfg = cfgSetting.qtSlider();
+    m_cfgValue = cfgSetting.valueLabel();
     m_cfg->setToolTip(ComfyTr::tr("Value which indicates how closely image generation follows the text prompt"));
-    connect(m_cfg, &QSlider::valueChanged, this, [this](int v) {
+    connect(m_cfg, &QAbstractSlider::valueChanged, this, [this](int v) {
         m_cfgValue->setText(QString::number(v / 10.0, 'f', 1));
         if (!m_loading)
             emit valueChanged();
@@ -134,8 +93,8 @@ ComfyStyleSamplerWidget::ComfyStyleSamplerWidget(Kind kind, QWidget *parent)
     auto *extendedLayout = new QVBoxLayout();
     extendedLayout->setContentsMargins(16, 2, 0, 2);
     extendedLayout->addLayout(infoLayout);
-    extendedLayout->addWidget(stepsRow);
-    extendedLayout->addWidget(cfgRow);
+    extendedLayout->addWidget(stepsSetting.row);
+    extendedLayout->addWidget(cfgSetting.row);
 
     m_extended = new QWidget(this);
     m_extended->setLayout(extendedLayout);

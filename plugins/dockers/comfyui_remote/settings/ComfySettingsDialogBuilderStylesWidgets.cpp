@@ -3,15 +3,19 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyCheckBox.h"
+#include "ComfyComboBox.h"
 #include "ComfySettingsDialogBuilderStylesInternal.h"
 #include "ComfySettingsDialogBuilderInternal.h"
 #include "ComfySettingsDialogBuilder.h"
+#include "ComfyFormUi.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyLocalization.h"
 #include "ComfyUIUtils.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfySwitchWidget.h"
 #include "ComfyStyleLoraListWidget.h"
 #include "ComfyStyleSamplerWidget.h"
@@ -33,7 +37,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
-#include <QSpinBox>
+#include "ComfySpinBox.h"
 #include <QStackedWidget>
 #include <QToolButton>
 #include <QUrl>
@@ -54,26 +58,17 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
     QDialog *dlg = ws.dialog;
     QStackedWidget *stack = ws.stack;
 
-        // Styles tab (index 1) — §4.5 Style Presets (mirrors dock; LoRA list + samplers.json presets partial / stub)
-        QWidget *stylesPage = new QWidget(dlg);
-        QVBoxLayout *stylesOuter = new QVBoxLayout(stylesPage);
-        QScrollArea *stylesScroll = new QScrollArea(stylesPage);
-        stylesScroll->setWidgetResizable(true);
-        stylesScroll->setFrameShape(QFrame::NoFrame);
-        QWidget *stylesInner = new QWidget();
-        QVBoxLayout *stylesLayout = new QVBoxLayout(stylesInner);
-        QLabel *stylesHeading = new QLabel(ComfyTr::tr("Style Presets"), stylesInner);
-        QFont stylesHeadingFont = stylesHeading->font();
-        stylesHeadingFont.setBold(true);
-        stylesHeading->setFont(stylesHeadingFont);
-        stylesLayout->addWidget(stylesHeading);
+        ComfyFormUi::ScrollTab stylesTab =
+            ComfyFormUi::createScrollTab(dlg, ComfyTr::tr("Style Presets"));
+        QWidget *stylesInner = stylesTab.inner;
+        QVBoxLayout *stylesLayout = stylesTab.innerLayout;
 
         QFrame *styleToolbarFrame = new QFrame(stylesInner);
         styleToolbarFrame->setFrameStyle(QFrame::StyledPanel);
         styleToolbarFrame->setLineWidth(1);
         QVBoxLayout *styleToolbarLayout = new QVBoxLayout(styleToolbarFrame);
         QHBoxLayout *presetBtnRow = new QHBoxLayout();
-        ws.stylesPresetMirror = new QComboBox(styleToolbarFrame);
+        ws.stylesPresetMirror = new ComfyComboBox(styleToolbarFrame);
         ws.btnStylesAddPreset = new QToolButton(styleToolbarFrame);
         ws.btnStylesAddPreset->setIcon(ComfyTheme::icon(QStringLiteral("control-add")));
         ws.btnStylesAddPreset->setToolTip(ComfyTr::tr("Create a new style"));
@@ -90,6 +85,10 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         ws.btnStylesRefresh->setIcon(ComfyTheme::icon(QStringLiteral("reset")));
         ws.btnStylesRefresh->setToolTip(ComfyTr::tr("Look for new style files"));
         ws.btnStylesRefresh->setAutoRaise(true);
+        ComfyUiStyle::applyIconToolButton(ws.btnStylesAddPreset);
+        ComfyUiStyle::applyIconToolButton(ws.btnStylesDuplicate);
+        ComfyUiStyle::applyIconToolButton(ws.btnStylesDeletePreset);
+        ComfyUiStyle::applyIconToolButton(ws.btnStylesRefresh);
         QObject::connect(ws.btnStylesDeletePreset, &QToolButton::clicked, dock, &ComfyUIRemoteDock::slotDeletePreset);
         presetBtnRow->addWidget(ws.stylesPresetMirror, 1);
         presetBtnRow->addWidget(ws.btnStylesAddPreset);
@@ -99,7 +98,7 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         styleToolbarLayout->addLayout(presetBtnRow);
 
         ws.lblBuiltinMessage = new QLabel(ComfyTr::tr("Built-in styles cannot be modified."), styleToolbarFrame);
-        ws.lblBuiltinMessage->setStyleSheet(QStringLiteral("font-style: italic;"));
+        ComfyUiStyle::styleHint(ws.lblBuiltinMessage);
         ws.lblBuiltinMessage->hide();
         ws.lblBuiltinCopyLink = new QLabel(
             QStringLiteral("<a href=\"copy\">%1</a>").arg(ComfyTr::tr("Click to edit a copy")), styleToolbarFrame);
@@ -112,7 +111,7 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         builtinLayout->addWidget(ws.lblBuiltinMessage);
         builtinLayout->addWidget(ws.lblBuiltinCopyLink);
         builtinLayout->addStretch();
-        ws.checkShowBuiltinStyles = new QCheckBox(ComfyTr::tr("Show pre-installed styles"), styleToolbarFrame);
+        ws.checkShowBuiltinStyles = new ComfyCheckBox(ComfyTr::tr("Show pre-installed styles"), styleToolbarFrame);
         ws.checkShowBuiltinStyles->setChecked(
             ComfyUIUtils::loadSettingsJson().value(QStringLiteral("show_builtin_styles")).toBool(true));
         builtinLayout->addWidget(ws.checkShowBuiltinStyles);
@@ -120,60 +119,21 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         stylesLayout->addWidget(styleToolbarFrame);
 
         auto addStylesBoldHeader = [stylesInner](const QString &title) -> QLabel * {
-            QLabel *titleLabel = new QLabel(title, stylesInner);
-            QFont titleFont = titleLabel->font();
-            titleFont.setBold(true);
-            titleLabel->setFont(titleFont);
-            return titleLabel;
+            return ComfyFormUi::makeBoldHeader(stylesInner, title);
         };
         auto addStylesSettingRow = [stylesInner](const QString &title, const QString &description, QWidget *control) -> QWidget * {
-            QWidget *row = new QWidget(stylesInner);
-            QHBoxLayout *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(0, 4, 0, 4);
-            QVBoxLayout *textCol = new QVBoxLayout();
-            textCol->setContentsMargins(0, 0, 0, 0);
-            textCol->setSpacing(2);
-            QLabel *titleLabel = new QLabel(title, row);
-            QFont titleFont = titleLabel->font();
-            titleFont.setBold(true);
-            titleLabel->setFont(titleFont);
-            textCol->addWidget(titleLabel);
-            if (!description.isEmpty()) {
-                QLabel *descLabel = new QLabel(description, row);
-                descLabel->setWordWrap(true);
-                textCol->addWidget(descLabel);
-            }
-            rowLayout->addLayout(textCol, 5);
-            if (control)
-                rowLayout->addWidget(control, 0, Qt::AlignRight | Qt::AlignVCenter);
-            else
-                rowLayout->addStretch(1);
-            return row;
+            return ComfyFormUi::addControlRow(stylesInner, title, description, control);
         };
-        // Python LineEditSetting: header block then full-width line edit below.
-        auto addStylesLineEditBlock = [stylesInner, addStylesBoldHeader](const QString &title, const QString &description,
-                                                                         QLineEdit *edit) -> QWidget * {
-            QWidget *block = new QWidget(stylesInner);
-            QVBoxLayout *blockLayout = new QVBoxLayout(block);
-            blockLayout->setContentsMargins(0, 4, 0, 4);
-            blockLayout->setSpacing(4);
-            blockLayout->addWidget(addStylesBoldHeader(title));
-            if (!description.isEmpty()) {
-                QLabel *descLabel = new QLabel(description, block);
-                descLabel->setWordWrap(true);
-                blockLayout->addWidget(descLabel);
-            }
-            edit->setMinimumWidth(0);
-            edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-            blockLayout->addWidget(edit);
-            return block;
+        auto addStylesLineEditBlock = [stylesInner](const QString &title, const QString &description,
+                                                    QLineEdit *edit) -> QWidget * {
+            return ComfyFormUi::addLineEditBlock(stylesInner, title, description, edit);
         };
 
         ws.editStyleName = new QLineEdit(stylesInner);
         stylesLayout->addWidget(addStylesSettingRow(ComfyTr::tr("Name"), QString(), ws.editStyleName));
 
         QHBoxLayout *ckptRow = new QHBoxLayout();
-        ws.stylesCkptMirror = new QComboBox(stylesInner);
+        ws.stylesCkptMirror = new ComfyComboBox(stylesInner);
         ws.stylesCkptMirror->setEditable(true);
         ws.stylesCkptMirror->setMinimumWidth(230);
         ws.stylesCkptMirror->setPlaceholderText(ComfyTr::tr("The Diffusion model checkpoint file"));
@@ -181,6 +141,7 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         ws.btnStylesCkptRefresh->setIcon(ComfyTheme::icon(QStringLiteral("reset")));
         ws.btnStylesCkptRefresh->setToolTip(ComfyTr::tr("Look for new checkpoint files"));
         ws.btnStylesCkptRefresh->setAutoRaise(true);
+        ComfyUiStyle::applyIconToolButton(ws.btnStylesCkptRefresh);
         QObject::connect(ws.btnStylesCkptRefresh, &QToolButton::clicked, dock, &ComfyUIRemoteDock::slotRefreshCheckpoints);
         ckptRow->addWidget(ws.stylesCkptMirror, 1);
         ckptRow->addWidget(ws.btnStylesCkptRefresh);
@@ -192,7 +153,7 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
             ckptControl));
         ws.stylesCkptWarning = new QLabel(stylesInner);
         ws.stylesCkptWarning->setWordWrap(true);
-        ws.stylesCkptWarning->setStyleSheet(QStringLiteral("color: #b8860b; font-style: italic;"));
+        ComfyUiStyle::styleWarning(ws.stylesCkptWarning);
         ws.stylesCkptWarning->setAlignment(Qt::AlignRight);
         ws.stylesCkptWarning->hide();
         stylesLayout->addWidget(ws.stylesCkptWarning);
@@ -202,7 +163,7 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
             tb->setChecked(startOpen);
             tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
             tb->setArrowType(startOpen ? Qt::DownArrow : Qt::RightArrow);
-            tb->setStyleSheet(QStringLiteral("QToolButton { border: none; font-weight: bold; text-align: left; }"));
+            ComfyUiStyle::applyExpanderButton(tb);
             body->setVisible(startOpen);
             QObject::connect(tb, &QToolButton::toggled, body, &QWidget::setVisible);
             QObject::connect(tb, &QToolButton::toggled, tb, [tb](bool on) { tb->setArrowType(on ? Qt::DownArrow : Qt::RightArrow); });
@@ -213,100 +174,96 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         QVBoxLayout *advCkptLay = new QVBoxLayout(ws.advCkptBody);
         advCkptLay->setContentsMargins(0, 0, 0, 0);
         advCkptLay->setSpacing(0);
-        auto addAdvCkptSettingRow = [&ws, advCkptLay](const QString &title, const QString &description) -> QHBoxLayout * {
-            QWidget *row = new QWidget(ws.advCkptBody);
-            QHBoxLayout *rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(16, 4, 0, 4);
-            QVBoxLayout *textCol = new QVBoxLayout();
-            textCol->setContentsMargins(0, 0, 0, 0);
-            textCol->setSpacing(2);
-            QLabel *titleLabel = new QLabel(title, row);
-            QFont titleFont = titleLabel->font();
-            titleFont.setBold(true);
-            titleLabel->setFont(titleFont);
-            textCol->addWidget(titleLabel);
-            if (!description.isEmpty()) {
-                QLabel *descLabel = new QLabel(description, row);
-                descLabel->setWordWrap(true);
-                textCol->addWidget(descLabel);
-            }
-            rowLayout->addLayout(textCol, 5);
-            rowLayout->addStretch(1);
-            advCkptLay->addWidget(row);
-            return rowLayout;
-        };
-        ws.comboStyleArchitecture = new QComboBox(ws.advCkptBody);
+        ws.comboStyleArchitecture = new ComfyComboBox(ws.advCkptBody);
         ws.comboStyleArchitecture->setMinimumWidth(230);
         ws.comboStyleArchitecture->setToolTip(
             ComfyTr::tr("Architecture for the checkpoint. Automatic resolves from the model at generate time."));
-        ws.comboStyleVae = new QComboBox(ws.advCkptBody);
+        ws.comboStyleVae = new ComfyComboBox(ws.advCkptBody);
         ws.comboStyleVae->setMinimumWidth(230);
         ws.comboStyleVae->setToolTip(ComfyTr::tr("VAE used for encode/decode. Connect to the server and refresh to list installed VAE files."));
-        ws.spinStyleClipSkip = new QSpinBox(ws.advCkptBody);
+        ws.spinStyleClipSkip = new ComfySpinBox(ws.advCkptBody);
         ws.spinStyleClipSkip->setRange(0, 12);
         ws.spinStyleClipSkip->setMinimumWidth(100);
         ws.spinStyleClipSkip->setSpecialValueText(ComfyTr::tr("Default"));
         ws.spinStyleClipSkip->setToolTip(ComfyTr::tr("CLIP skip layers (SD 1.5 / SDXL / Illustrious). 0 uses the checkpoint default."));
-        ws.checkStyleClipSkipOverride = new QCheckBox(ComfyTr::tr("Override"), ws.advCkptBody);
-        ws.spinStylePreferredResolution = new QSpinBox(ws.advCkptBody);
+        ws.checkStyleClipSkipOverride = new ComfyCheckBox(ComfyTr::tr("Override"), ws.advCkptBody);
+        ws.spinStylePreferredResolution = new ComfySpinBox(ws.advCkptBody);
         ws.spinStylePreferredResolution->setRange(0, 2048);
         ws.spinStylePreferredResolution->setSingleStep(8);
         ws.spinStylePreferredResolution->setMinimumWidth(100);
         ws.spinStylePreferredResolution->setSpecialValueText(ComfyTr::tr("Default"));
         ws.spinStylePreferredResolution->setToolTip(ComfyTr::tr("When enabled, sets generate width/height to dock square size when the style is applied."));
-        ws.checkStylePreferredResolution = new QCheckBox(ComfyTr::tr("Override"), ws.advCkptBody);
-        ws.switchStyleZsnr = new ComfySwitchWidget(ws.advCkptBody);
-        ws.switchStyleZsnr->setToolTip(ComfyTr::tr("v-prediction zsnr (saved to style JSON; workflow nodes deferred)."));
-        ws.labelStyleZsnrState = new QLabel(ComfyTr::tr("Off"), ws.advCkptBody);
-        ws.switchStyleSag = new ComfySwitchWidget(ws.advCkptBody);
-        ws.switchStyleSag->setToolTip(ComfyTr::tr("Self-attention guidance (saved to style JSON; workflow nodes deferred)."));
-        ws.labelStyleSagState = new QLabel(ComfyTr::tr("Off"), ws.advCkptBody);
+        ws.checkStylePreferredResolution = new ComfyCheckBox(ComfyTr::tr("Override"), ws.advCkptBody);
+        ws.switchStyleZsnr = nullptr;
+        ws.labelStyleZsnrState = nullptr;
+        ws.switchStyleSag = nullptr;
+        ws.labelStyleSagState = nullptr;
+        advCkptLay->addWidget(ComfyFormUi::addControlRow(
+            ws.advCkptBody,
+            ComfyTr::tr("Diffusion Architecture"),
+            ComfyTr::tr("The base model ecosystem which the selected checkpoint belongs to."),
+            ws.comboStyleArchitecture,
+            16));
+        advCkptLay->addWidget(ComfyFormUi::addControlRow(
+            ws.advCkptBody,
+            ComfyTr::tr("VAE"),
+            ComfyTr::tr("Model to encode and decode images. Commonly affects saturation and sharpness."),
+            ws.comboStyleVae,
+            16));
         {
-            QHBoxLayout *archRow = addAdvCkptSettingRow(
-                ComfyTr::tr("Diffusion Architecture"),
-                ComfyTr::tr("The base model ecosystem which the selected checkpoint belongs to."));
-            archRow->addWidget(ws.comboStyleArchitecture);
-        }
-        {
-            QHBoxLayout *vaeRow = addAdvCkptSettingRow(
-                ComfyTr::tr("VAE"),
-                ComfyTr::tr("Model to encode and decode images. Commonly affects saturation and sharpness."));
-            vaeRow->addWidget(ws.comboStyleVae);
-        }
-        {
-            QHBoxLayout *clipRow = addAdvCkptSettingRow(
+            QWidget *clipWrap = new QWidget(ws.advCkptBody);
+            auto *clipLay = new QHBoxLayout(clipWrap);
+            clipLay->setContentsMargins(0, 0, 0, 0);
+            clipLay->addWidget(ws.checkStyleClipSkipOverride);
+            clipLay->addWidget(ws.spinStyleClipSkip);
+            advCkptLay->addWidget(ComfyFormUi::addControlRow(
+                ws.advCkptBody,
                 ComfyTr::tr("Clip Skip"),
-                ComfyTr::tr("Clip layers to omit at the end. Some checkpoints prefer a different value than the default."));
-            clipRow->addWidget(ws.checkStyleClipSkipOverride);
-            clipRow->addWidget(ws.spinStyleClipSkip);
+                ComfyTr::tr("Clip layers to omit at the end. Some checkpoints prefer a different value than the default."),
+                clipWrap,
+                16));
         }
         {
-            QHBoxLayout *resRow = addAdvCkptSettingRow(
+            QWidget *resWrap = new QWidget(ws.advCkptBody);
+            auto *resLay = new QHBoxLayout(resWrap);
+            resLay->setContentsMargins(0, 0, 0, 0);
+            resLay->addWidget(ws.checkStylePreferredResolution);
+            resLay->addWidget(ws.spinStylePreferredResolution);
+            advCkptLay->addWidget(ComfyFormUi::addControlRow(
+                ws.advCkptBody,
                 ComfyTr::tr("Preferred Resolution"),
-                ComfyTr::tr("Image resolution the checkpoint was trained on"));
-            resRow->addWidget(ws.checkStylePreferredResolution);
-            resRow->addWidget(ws.spinStylePreferredResolution);
+                ComfyTr::tr("Image resolution the checkpoint was trained on"),
+                resWrap,
+                16));
         }
         {
-            QHBoxLayout *zsnrRow = addAdvCkptSettingRow(
+            auto zsnrRow = ComfyFormUi::addSwitchRow(
+                ws.advCkptBody,
                 ComfyTr::tr("V-Prediction / Zero Terminal SNR"),
-                ComfyTr::tr("Enable dock if the checkpoint is a v-prediction model which requires zero terminal SNR noise schedule"));
-            zsnrRow->addWidget(ws.labelStyleZsnrState);
-            zsnrRow->addWidget(ws.switchStyleZsnr);
+                ComfyTr::tr("Enable dock if the checkpoint is a v-prediction model which requires zero terminal SNR noise schedule"),
+                ComfyTr::tr("On"),
+                ComfyTr::tr("Off"));
+            ws.switchStyleZsnr = zsnrRow.switchWidget;
+            ws.labelStyleZsnrState = zsnrRow.stateLabel;
+            ws.switchStyleZsnr->setToolTip(ComfyTr::tr("v-prediction zsnr (saved to style JSON; workflow nodes deferred)."));
+            advCkptLay->addWidget(zsnrRow.row);
+            if (auto *rowLayout = qobject_cast<QHBoxLayout *>(zsnrRow.row->layout()))
+                rowLayout->setContentsMargins(16, 4, 0, 4);
         }
         {
-            QHBoxLayout *sagRow = addAdvCkptSettingRow(
+            auto sagRow = ComfyFormUi::addSwitchRow(
+                ws.advCkptBody,
                 ComfyTr::tr("Enable SAG / Self-Attention Guidance"),
-                ComfyTr::tr("Pay more attention to difficult parts of the image. Can improve fine details."));
-            sagRow->addWidget(ws.labelStyleSagState);
-            sagRow->addWidget(ws.switchStyleSag);
+                ComfyTr::tr("Pay more attention to difficult parts of the image. Can improve fine details."),
+                ComfyTr::tr("On"),
+                ComfyTr::tr("Off"));
+            ws.switchStyleSag = sagRow.switchWidget;
+            ws.labelStyleSagState = sagRow.stateLabel;
+            ws.switchStyleSag->setToolTip(ComfyTr::tr("Self-attention guidance (saved to style JSON; workflow nodes deferred)."));
+            advCkptLay->addWidget(sagRow.row);
+            if (auto *rowLayout = qobject_cast<QHBoxLayout *>(sagRow.row->layout()))
+                rowLayout->setContentsMargins(16, 4, 0, 4);
         }
-        QObject::connect(ws.switchStyleZsnr, &QAbstractButton::toggled, ws.labelStyleZsnrState, [&ws](bool on) {
-            ws.labelStyleZsnrState->setText(on ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
-        });
-        QObject::connect(ws.switchStyleSag, &QAbstractButton::toggled, ws.labelStyleSagState, [&ws](bool on) {
-            ws.labelStyleSagState->setText(on ? ComfyTr::tr("On") : ComfyTr::tr("Off"));
-        });
         wireDisclosure(ws.toggleAdvCkpt, ws.advCkptBody, false);
         stylesLayout->addWidget(ws.toggleAdvCkpt);
         stylesLayout->addWidget(ws.advCkptBody);
@@ -327,7 +284,7 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
             ComfyTr::tr("Textual description of things to avoid in generated images."),
             ws.editStylesNegative));
 
-        ws.comboLinkedEditStyle = new QComboBox(stylesInner);
+        ws.comboLinkedEditStyle = new ComfyComboBox(stylesInner);
         ws.comboLinkedEditStyle->setMinimumWidth(230);
         ws.linkedEditStyleRow = addStylesSettingRow(
             ComfyTr::tr("Linked Edit Style"),
@@ -346,9 +303,8 @@ void buildStylesTabWidgets(StylesWorkspace &ws)
         stylesLayout->addWidget(ws.qualitySamplerWidget);
         stylesLayout->addWidget(ws.liveSamplerWidget);
         stylesLayout->addStretch();
-        stylesScroll->setWidget(stylesInner);
-        stylesOuter->addWidget(stylesScroll);
-        ws.stack->addWidget(stylesPage);
+        stylesTab.scroll->setWidget(stylesInner);
+        ws.stack->addWidget(stylesTab.page);
 
 }
 

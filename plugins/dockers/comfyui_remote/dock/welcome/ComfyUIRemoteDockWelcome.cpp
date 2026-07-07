@@ -7,6 +7,7 @@
 #include "ComfyLocalization.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
+#include "ComfyUiStyle.h"
 
 #include "ComfyDockUiBuilder.h"
 
@@ -70,7 +71,7 @@ void ComfyUIRemoteDock::updateWelcomeVisibility()
     if (m_d->welcomeStatusLabel) {
         const auto resetWelcomeStatusStyle = [](QLabel *label) {
             if (label)
-                label->setStyleSheet(QString());
+                ComfyUiStyle::resetLabelStyle(label);
         };
         if (m_d->updateCheckInProgress) {
             resetWelcomeStatusStyle(m_d->welcomeStatusLabel);
@@ -95,7 +96,7 @@ void ComfyUIRemoteDock::updateWelcomeVisibility()
             }
         } else if (m_d->connectionErrorOccurred) {
             m_d->welcomeStatusLabel->setText(ComfyTr::tr("Connection attempt failed! Click below to configure and reconnect."));
-            m_d->welcomeStatusLabel->setStyleSheet(QStringLiteral("color: #b58900;"));  // §13.73 alert yellow
+            ComfyUiStyle::styleStatusLabel(m_d->welcomeStatusLabel, ComfyUiStyle::StatusTone::Warning);
             if (m_d->welcomeErrorLabel) {
                 m_d->welcomeErrorLabel->clear();
                 m_d->welcomeErrorLabel->hide();

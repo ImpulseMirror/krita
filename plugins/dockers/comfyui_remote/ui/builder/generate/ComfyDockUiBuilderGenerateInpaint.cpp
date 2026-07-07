@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilderGenerateInternal.h"
 
 #include "ComfyUIRemoteDockShellInternal.h"
@@ -10,6 +11,8 @@
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
+#include "ComfyGrid.h"
 #include "ComfyWorkspaceSelectButton.h"
 #include "ComfyPromptResizeHandle.h"
 #include "ComfySwitchWidget.h"
@@ -79,13 +82,12 @@ void buildInpaintSection(Workspace &ws)
     QVBoxLayout *genContentLayout = ws.genContentLayout;
 
     // §13.206 / P4.1: InpaintMode — all seven Python modes with theme icons
-    d->inpaint.customInpaintRowWidget = new QWidget(d->generate.genContentContainer);
-    QHBoxLayout *customInpaintLay = new QHBoxLayout(d->inpaint.customInpaintRowWidget);
-    customInpaintLay->setContentsMargins(0, 0, 0, 0);
+    d->inpaint.customInpaintRowWidget = new ComfyGridRow(d->generate.genContentContainer);
+    auto *customInpaintGrid = static_cast<ComfyGridRow *>(d->inpaint.customInpaintRowWidget);
     auto addInpaintComboItem = [](QComboBox *cb, const QString &label, const QString &data, const char *iconStem) {
         cb->addItem(ComfyTheme::icon(QString::fromUtf8(iconStem)), label, data);
     };
-    d->inpaint.comboInpaintMode = new QComboBox(shell.genGroup);
+    d->inpaint.comboInpaintMode = new ComfyComboBox(shell.genGroup);
     addInpaintComboItem(d->inpaint.comboInpaintMode, ComfyTr::tr("Default (Auto-detect)"), QStringLiteral("automatic"), "inpaint-automatic");
     addInpaintComboItem(d->inpaint.comboInpaintMode, ComfyTr::tr("Fill"), QStringLiteral("fill"), "inpaint-fill");
     addInpaintComboItem(d->inpaint.comboInpaintMode, ComfyTr::tr("Expand"), QStringLiteral("expand"), "inpaint-expand");
@@ -112,7 +114,7 @@ void buildInpaintSection(Workspace &ws)
     });
     // comboInpaintMode stays off-layout (mode chosen via ▼ menu); not added to customInpaintRowWidget.
     // §13.188: FillMode UI — five options (None, Neutral, Blur, Border, Inpaint); replace/green internal only
-    d->inpaint.comboFillMode = new QComboBox(shell.genGroup);
+    d->inpaint.comboFillMode = new ComfyComboBox(shell.genGroup);
     const QIcon fillIcon = ComfyTheme::icon(QStringLiteral("fill"));
     d->inpaint.comboFillMode->addItem(ComfyTheme::icon(QStringLiteral("fill-empty")),
                                 ComfyTr::tr("None"),
@@ -128,9 +130,8 @@ void buildInpaintSection(Workspace &ws)
             dock->saveInpaintWorkspaceToDocument();
         dock->schedulePersistDocumentDefaults();
     });
-    customInpaintLay->addWidget(d->inpaint.comboFillMode, 1);
     // §13.169 / §13.194: Inpaint context (Python InpaintContext; JSON uses underscores)
-    d->inpaint.comboInpaintContext = new QComboBox(shell.genGroup);
+    d->inpaint.comboInpaintContext = new ComfyComboBox(shell.genGroup);
     addInpaintComboItem(d->inpaint.comboInpaintContext, ComfyTr::tr("Automatic Context"), QStringLiteral("automatic"),
                         "context-automatic");
     addInpaintComboItem(d->inpaint.comboInpaintContext, ComfyTr::tr("Selection Bounds"), QStringLiteral("mask_bounds"),
@@ -150,13 +151,12 @@ void buildInpaintSection(Workspace &ws)
             dock->saveInpaintWorkspaceToDocument();
         dock->schedulePersistDocumentDefaults();
     });
-    customInpaintLay->addWidget(d->inpaint.comboInpaintContext, 1);
     // §13.107 / §13.169: CustomInpaint toggles (Python: Seamless / Focus)
     d->inpaint.checkInpaintUseModel = new ComfySwitchWidget(shell.genGroup);
     {
         QLabel *seamlessLabel = new QLabel(ComfyTr::tr("Seamless"), d->inpaint.customInpaintRowWidget);
-        customInpaintLay->insertWidget(0, d->inpaint.checkInpaintUseModel);
-        customInpaintLay->insertWidget(1, seamlessLabel);
+        customInpaintGrid->addWidget(d->inpaint.checkInpaintUseModel, 1);
+        customInpaintGrid->addWidget(seamlessLabel, 1);
         d->inpaint.seamlessRowWidget = nullptr;
     }
     d->inpaint.checkInpaintUseModel->setToolTip(ComfyTr::tr("Generate content which blends into the surroundings"));
@@ -171,8 +171,8 @@ void buildInpaintSection(Workspace &ws)
     d->inpaint.checkInpaintUsePromptFocus = new ComfySwitchWidget(shell.genGroup);
     {
         QLabel *focusLabel = new QLabel(ComfyTr::tr("Focus"), d->inpaint.customInpaintRowWidget);
-        customInpaintLay->insertWidget(2, d->inpaint.checkInpaintUsePromptFocus);
-        customInpaintLay->insertWidget(3, focusLabel);
+        customInpaintGrid->addWidget(d->inpaint.checkInpaintUsePromptFocus, 1);
+        customInpaintGrid->addWidget(focusLabel, 1);
         d->inpaint.focusRowWidget = nullptr;
     }
     d->inpaint.checkInpaintUsePromptFocus->setToolTip(
@@ -191,9 +191,11 @@ void buildInpaintSection(Workspace &ws)
         QLabel *editLabel = new QLabel(ComfyTr::tr("Edit"), d->inpaint.customInpaintRowWidget);
         editLabel->setToolTip(ComfyTr::tr("Use instruction-based editing (linked edit style)."));
         d->inpaint.editModeSwitch->setToolTip(editLabel->toolTip());
-        customInpaintLay->insertWidget(4, d->inpaint.editModeSwitch);
-        customInpaintLay->insertWidget(5, editLabel);
+        customInpaintGrid->addWidget(d->inpaint.editModeSwitch, 1);
+        customInpaintGrid->addWidget(editLabel, 1);
     }
+    customInpaintGrid->addWidget(d->inpaint.comboFillMode, 3, 1);
+    customInpaintGrid->addWidget(d->inpaint.comboInpaintContext, 3, 1);
     if (d->generate.checkEditMode) {
         d->inpaint.editModeSwitch->setChecked(d->generate.checkEditMode->isChecked());
         QObject::connect(d->inpaint.editModeSwitch, &QAbstractButton::toggled, dock, [dock, d](bool checked) {
@@ -223,14 +225,14 @@ void buildInpaintSection(Workspace &ws)
     genContentLayout->addWidget(d->inpaint.customInpaintRowWidget);
     d->inpaint.customInpaintRowWidget->setVisible(false);
 
-    ComfyTheme::applyFlatComboStyle(d->inpaint.comboInpaintMode);
-    ComfyTheme::applyFlatComboStyle(d->inpaint.comboFillMode);
-    ComfyTheme::applyFlatComboStyle(d->inpaint.comboInpaintContext);
-    ComfyTheme::applyToolbarComboStyle(d->generate.comboPreset);
-    ComfyTheme::applyFlatComboStyle(d->generate.comboCheckpoint);
-    ComfyTheme::applyFlatComboStyle(d->generate.comboQuality);
-    ComfyTheme::applyFlatComboStyle(d->generate.comboQueueMode);
-    ComfyTheme::applyFlatComboStyle(d->generate.comboSampler);
+    ComfyUiStyle::applyComboBox(d->inpaint.comboInpaintMode);
+    ComfyUiStyle::applyComboBox(d->inpaint.comboFillMode);
+    ComfyUiStyle::applyComboBox(d->inpaint.comboInpaintContext);
+    ComfyUiStyle::applyComboBox(d->generate.comboPreset);
+    ComfyUiStyle::applyComboBox(d->generate.comboCheckpoint);
+    ComfyUiStyle::applyComboBox(d->generate.comboQuality);
+    ComfyUiStyle::applyComboBox(d->generate.comboQueueMode);
+    ComfyUiStyle::applyComboBox(d->generate.comboSampler);
 
 }
 

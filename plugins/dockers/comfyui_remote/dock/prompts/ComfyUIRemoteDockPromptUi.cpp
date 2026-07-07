@@ -66,17 +66,6 @@ void ComfyUIRemoteDock::persistSeedToConfig()
     cfg.writeEntry("FixedSeed", m_d->generate.checkFixedSeed->isChecked());
     cfg.writeEntry("SeedValue", static_cast<qint64>(m_d->generate.spinSeed->value()));
 }
-void ComfyUIRemoteDock::syncQueueSeedWidgetsFromMain()
-{
-    if (!m_d->generate.queueSpinSeed || !m_d->generate.queueCheckFixedSeed || !m_d->generate.spinSeed || !m_d->generate.checkFixedSeed)
-        return;
-    m_d->generate.queueSpinSeed->blockSignals(true);
-    m_d->generate.queueCheckFixedSeed->blockSignals(true);
-    m_d->generate.queueSpinSeed->setValue(m_d->generate.spinSeed->value());
-    m_d->generate.queueCheckFixedSeed->setChecked(m_d->generate.checkFixedSeed->isChecked());
-    m_d->generate.queueSpinSeed->blockSignals(false);
-    m_d->generate.queueCheckFixedSeed->blockSignals(false);
-}
 void ComfyUIRemoteDock::refreshQueuePopupSupportsBatch()
 {
     const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : 0;

@@ -11,6 +11,7 @@
 #include "ComfyResources.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 #include "ComfyUIUtils.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
@@ -295,8 +296,8 @@ void updateOptions(ComfyUIRemoteDock *dock)
 
     if (dock->m_d->generate.layerCountRow)
         dock->m_d->generate.layerCountRow->setVisible(qwenLayered);
-    if (dock->m_d->inpaint.sliderStrength)
-        dock->m_d->inpaint.sliderStrength->setVisible(!qwenLayered);
+    if (dock->m_d->inpaint.strengthSliderWidget)
+        dock->m_d->inpaint.strengthSliderWidget->setVisible(!qwenLayered);
     if (dock->m_d->generate.spinStrength)
         dock->m_d->generate.spinStrength->setVisible(!qwenLayered);
 
@@ -369,7 +370,7 @@ void updateOptions(ComfyUIRemoteDock *dock)
         dock->m_d->generate.btnGenerate->setIcon(ComfyTheme::icon(iconName));
 
     if (dock->m_d->inpaint.btnInpaintMode && dock->m_d->generate.btnGenerate)
-        dock->m_d->inpaint.btnInpaintMode->setFixedHeight(qMax(20, dock->m_d->generate.btnGenerate->sizeHint().height() - 3));
+        dock->m_d->inpaint.btnInpaintMode->setFixedHeight(ComfyUiStyle::Spacing::primaryButtonHeight - 3);
 
 }
 

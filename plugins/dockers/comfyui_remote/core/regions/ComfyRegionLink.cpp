@@ -176,7 +176,7 @@ QString regionDisplayName(const ComfyUIRemoteDock::Private::RegionEntry &entry, 
 {
     const QStringList ids = parseLayerIds(entry.layerIds);
     if (ids.isEmpty())
-        return entry.name;
+        return ComfyTr::tr("No layers linked");
     QStringList names;
     for (const QString &idStr : ids) {
         if (KisLayerSP layer = findLayerByUuid(image, QUuid(idStr)))

@@ -5,6 +5,7 @@
 
 #include "ComfyControlLayer.h"
 
+#include "ComfyLocalization.h"
 #include "ComfyResources.h"
 #include "ComfyUIUtils.h"
 
@@ -152,6 +153,22 @@ QList<ComfyControlLayerEntry> fromJsonArray(const QJsonArray &arr)
 bool canGenerateJob(const ComfyControlLayerEntry &entry)
 {
     return !entry.layerName.isEmpty() && modeHasPreprocessor(entry.mode);
+}
+
+bool isModeSupported(const QString &mode, const QString &archKey)
+{
+    if (ComfyResources::ControlMode::isIpAdapter(mode))
+        return true;
+    if (!modeHasPreprocessor(mode))
+        return true;
+    const ComfyResources::Arch arch = ComfyResources::archFromKey(archKey);
+    return !ComfyResources::defaultControlNetFileName(arch, mode).isEmpty();
+}
+
+QString unsupportedModeMessage(const QString &mode, const QString &archKey)
+{
+    Q_UNUSED(archKey);
+    return ComfyTr::tr("%1 is not available for the current model.", modeLabel(mode));
 }
 
 bool needsGenerateUpload(const ComfyControlLayerEntry &entry)

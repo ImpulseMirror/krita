@@ -62,7 +62,6 @@ private:
     int m_low = 25;
     int m_high = 75;
     int m_activeHandle = -1;
-    int m_handleRadius = 7;
 };
 
 #endif // COMFYUI_INTERVAL_SLIDER_H_

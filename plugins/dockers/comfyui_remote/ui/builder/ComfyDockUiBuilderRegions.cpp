@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilder.h"
+#include "ComfyGrid.h"
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
@@ -78,9 +80,9 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     d->generate.regionsGroupBox = new QGroupBox(ComfyTr::tr("Regions"));
     QVBoxLayout *regLayout = new QVBoxLayout(d->generate.regionsGroupBox);
     // §13.90: PromptHeader — full (title + description), icon (icon only), none (no header)
-    QHBoxLayout *regionHeaderRow = new QHBoxLayout();
-    regionHeaderRow->addWidget(new QLabel(ComfyTr::tr("Header:")));
-    d->generate.regionHeaderCombo = new QComboBox();
+    auto *regionHeaderGrid = new ComfyGridRow(d->generate.regionsGroupBox);
+    regionHeaderGrid->addWidget(new QLabel(ComfyTr::tr("Header:")), 3);
+    d->generate.regionHeaderCombo = new ComfyComboBox();
     d->generate.regionHeaderCombo->addItem(ComfyTr::tr("Full"), 0);
     d->generate.regionHeaderCombo->addItem(ComfyTr::tr("Icon"), 1);
     d->generate.regionHeaderCombo->addItem(ComfyTr::tr("None"), 2);
@@ -93,9 +95,8 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
                          KSharedConfig::openConfig()->group("ComfyUIRemote").writeEntry("PromptHeader", d->promptHeaderMode);
                          dock->applyPromptHeader();
                      });
-    regionHeaderRow->addWidget(d->generate.regionHeaderCombo);
-    regionHeaderRow->addStretch();
-    regLayout->addLayout(regionHeaderRow);
+    regionHeaderGrid->addWidget(d->generate.regionHeaderCombo, 9, 1);
+    regLayout->addWidget(regionHeaderGrid);
     d->generate.regionHeaderLabel = new QLabel(ComfyTr::tr("Different prompt per area (layer or selection):"));
     regLayout->addWidget(d->generate.regionHeaderLabel);
     d->generate.regionPromptWidget = new ComfyRegionPromptWidget(d->generate.regionsGroupBox);
@@ -121,15 +122,24 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     });
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::regionEdited, dock, [dock]() {
         dock->saveRegionsToConfig();
-        dock->refreshRegionsList();
     });
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::removeRegionRequested, dock,
                      &ComfyUIRemoteDock::slotRemoveRegion);
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::requestAddRegion, dock,
                      &ComfyUIRemoteDock::slotAddRegion);
-    QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::layoutHeightsChanged, dock, [dock, d]() {
+    QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::activeIndexChanged, dock, [dock, d](int) {
         if (d->comboWorkspace && d->comboWorkspace->currentIndex() == 0)
-            dock->syncCompactGenerateLayoutRows(true);
+            dock->syncCompactGenerateLayoutRows(true, false);
+    });
+    QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::layoutHeightsChanged, dock, [dock, d]() {
+        const int ws = d->comboWorkspace ? d->comboWorkspace->currentIndex() : 0;
+        if (ws == 0 || ws == 2) {
+            if (d->generate.regionPromptWidget)
+                d->generate.regionPromptWidget->syncCompactHeightFromLayout();
+            dock->syncCompactGenerateLayoutRows(true, false);
+        }
+        if (ws == 2)
+            dock->syncLivePromptRowHeights();
     });
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::translatePromptRequested, dock,
                      [dock, d](bool negative) {

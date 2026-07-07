@@ -468,15 +468,19 @@ void ComfyUIRemoteDock::applyModelFieldsFromUiJson(const QJsonObject &ui)
             const int pct = readStrengthPct(us.value(QStringLiteral("strength")), 30);
             QSignalBlocker b(m_d->upscale.sliderUpscaleRefineStrength);
             m_d->upscale.sliderUpscaleRefineStrength->setValue(pct);
-            if (m_d->upscale.labelUpscaleRefineStrength)
-                m_d->upscale.labelUpscaleRefineStrength->setText(QString::number(pct) + QLatin1Char('%'));
+            if (m_d->upscale.spinUpscaleRefineStrength) {
+                QSignalBlocker bs(m_d->upscale.spinUpscaleRefineStrength);
+                m_d->upscale.spinUpscaleRefineStrength->setValue(pct);
+            }
         }
         if (us.contains(QStringLiteral("unblur_strength")) && m_d->upscale.sliderUpscaleRefineGuidance) {
             const int pct = readStrengthPct(us.value(QStringLiteral("unblur_strength")), 50);
             QSignalBlocker b(m_d->upscale.sliderUpscaleRefineGuidance);
             m_d->upscale.sliderUpscaleRefineGuidance->setValue(pct);
-            if (m_d->upscale.labelUpscaleRefineGuidance)
-                m_d->upscale.labelUpscaleRefineGuidance->setText(QString::number(pct) + QLatin1Char('%'));
+            if (m_d->upscale.spinUpscaleRefineGuidance) {
+                QSignalBlocker bs(m_d->upscale.spinUpscaleRefineGuidance);
+                m_d->upscale.spinUpscaleRefineGuidance->setValue(pct);
+            }
         }
         if (us.contains(QStringLiteral("tile_overlap_mode")) && m_d->upscale.comboTileOverlapMode) {
             const int tom = qBound(0, us.value(QStringLiteral("tile_overlap_mode")).toInt(0), m_d->upscale.comboTileOverlapMode->count() - 1);
@@ -484,7 +488,7 @@ void ComfyUIRemoteDock::applyModelFieldsFromUiJson(const QJsonObject &ui)
             QSignalBlocker b(m_d->upscale.comboTileOverlapMode);
             m_d->upscale.comboTileOverlapMode->setCurrentIndex(tom);
             if (m_d->upscale.spinTileOverlap)
-                m_d->upscale.spinTileOverlap->setVisible(tom == 1);
+                m_d->upscale.spinTileOverlap->setEnabled(tom == 1);
         }
         if (us.contains(QStringLiteral("tile_overlap")) && m_d->upscale.spinTileOverlap) {
             m_d->upscaleRt.tileOverlap = us.value(QStringLiteral("tile_overlap")).toInt(m_d->upscaleRt.tileOverlap);

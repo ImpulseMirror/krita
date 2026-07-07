@@ -71,7 +71,7 @@ void ComfyUIRemoteDock::refreshHistoryList(bool scrollToBottom)
             header->setData(HistoryItemImageIndexRole, -1);
             header->setData(HistoryItemIsHeaderRole, 1);
             header->setToolTip(e.prompt);
-            const int headerH = m_d->history.listHistory->fontMetrics().lineSpacing() + 2;
+            const int headerH = m_d->history.listHistory->fontMetrics().height() + 4;
             header->setSizeHint(historyHeaderItemSizeHint(m_d->history.listHistory, headerH));
             header->setTextAlignment(Qt::AlignLeft);
             m_d->history.listHistory->addItem(header);

@@ -88,24 +88,8 @@ void collectInpaintContextMaskLayerNodes(KisNodeSP node, QVector<QPair<QString, 
         collectInpaintContextMaskLayerNodes(node->at(i), out);
 }
 
-ComfyPromptPlainTextEdit::ComfyPromptPlainTextEdit(QCompleter *completer, QWidget *parent)
-    : QPlainTextEdit(parent)
-    , m_completer(completer)
-{
-}
-
-bool ComfyPromptPlainTextEdit::focusNextPrevChild(bool next)
-{
-    if (!m_completer.isNull()) {
-        QAbstractItemView *pop = m_completer->popup();
-        if (pop && pop->isVisible())
-            return false;
-    }
-    return QPlainTextEdit::focusNextPrevChild(next);
-}
-
 StrengthSpinBox::StrengthSpinBox(QSpinBox *stepsSpinBox, QWidget *parent)
-    : QSpinBox(parent)
+    : ComfySpinBox(parent)
     , m_steps(stepsSpinBox)
 {
 }

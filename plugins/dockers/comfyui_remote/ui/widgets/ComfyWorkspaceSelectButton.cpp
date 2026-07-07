@@ -7,6 +7,7 @@
 
 #include "ComfyLocalization.h"
 #include "ComfyTheme.h"
+#include "ComfyUiStyle.h"
 
 #include <QAction>
 #include <QMenu>
@@ -39,7 +40,9 @@ ComfyWorkspaceSelectButton::ComfyWorkspaceSelectButton(QWidget *parent)
     setAutoRaise(true);
     setToolTip(ComfyTr::tr(
         "Switch between workspaces: image generation, upscaling, live preview and animation."));
-    setMinimumWidth(static_cast<int>(sizeHint().width() * 1.6));
+    setFixedSize(ComfyUiStyle::Spacing::iconButtonSize, ComfyUiStyle::Spacing::iconButtonSize);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    setStyleSheet(QString());
 
     auto *menu = new QMenu(this);
     for (int i = 0; i < count(); ++i) {
@@ -75,15 +78,15 @@ void ComfyWorkspaceSelectButton::paintEvent(QPaintEvent *event)
     QStyleOption opt;
     opt.initFrom(this);
     QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
     QStyle *style = this->style();
-    const Qt::Alignment align = Qt::AlignLeft | Qt::AlignVCenter | Qt::AlignAbsolute;
-    const QRect rect = this->rect();
-    const QPixmap pixmap = icon().pixmap(static_cast<int>(rect.height() * 0.75));
     QStyle::PrimitiveElement element = QStyle::PE_Widget;
     if (opt.state & QStyle::State_MouseOver)
         element = QStyle::PE_PanelButtonCommand;
     style->drawPrimitive(element, &opt, &painter, this);
-    style->drawItemPixmap(&painter, rect.adjusted(4, 0, 0, 0), static_cast<int>(align), pixmap);
-    painter.translate(static_cast<int>(0.5 * rect.width() - 10), 0);
-    style->drawPrimitive(QStyle::PE_IndicatorArrowDown, &opt, &painter, this);
+
+    const int iconSide = ComfyUiStyle::Spacing::iconSmall - 2;
+    const QRect iconRect(2, (height() - iconSide) / 2, iconSide, iconSide);
+    painter.drawPixmap(iconRect, icon().pixmap(iconSide, iconSide));
 }
