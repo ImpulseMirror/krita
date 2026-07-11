@@ -183,7 +183,8 @@ void syncWorkspaceTopRowLayout(ComfyUIRemoteDock::Private *d)
     const bool isLive = (ws == 2);
     const bool isAnimation = (ws == 3);
     const bool isGraph = (ws == 4);
-    const bool styleComboVisible = isGenerate || isLive || isAnimation || isGraph;
+    const bool styleComboVisible = isGenerate || isLive || isAnimation;
+    const bool graphLibraryVisible = isGraph;
 
     if (d->comboWorkspace)
         restoreTopRowWidget(d->comboWorkspace, QSizePolicy::Fixed);
@@ -192,6 +193,12 @@ void syncWorkspaceTopRowLayout(ComfyUIRemoteDock::Private *d)
             restoreTopRowWidget(d->generate.comboPreset, QSizePolicy::Expanding);
         else
             collapseTopRowWidget(d->generate.comboPreset);
+    }
+    if (d->graphWorkflowSelectWidgets) {
+        if (graphLibraryVisible)
+            restoreTopRowWidget(d->graphWorkflowSelectWidgets, QSizePolicy::Expanding);
+        else
+            collapseTopRowWidget(d->graphWorkflowSelectWidgets);
     }
     if (d->upscale.comboUpscaleModel) {
         if (isUpscale)
@@ -223,7 +230,8 @@ void applyHistoryPanelWorkspaceVisibility(ComfyUIRemoteDock::Private *d, QWidget
         return;
     const int ws = d->comboWorkspace ? d->comboWorkspace->currentIndex() : 0;
     const bool generateWs = (ws == 0);
-    if (generateWs) {
+    const bool graphWs = (ws == 4);
+    if (generateWs || graphWs) {
         restoreHistoryPanelLayout(d->history.histGroupBox);
         if (contentPage && contentPage->layout()) {
             if (auto *box = qobject_cast<QVBoxLayout *>(contentPage->layout())) {
@@ -266,10 +274,11 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
     const bool upscaleWs = (ws == 1);
     const bool liveWs = (ws == 2);
     const bool generateWs = (ws == 0);
+    const bool graphWs = (ws == 4);
     const bool compactMode = upscaleWs || compactGenerate || liveWs;
 
-    if (compactMode)
-        syncWorkspaceTopRowLayout(m_d.data());
+    // Top-row collapse uses fixed 0x0; must restore on Graph/Animation too, not only compact workspaces.
+    syncWorkspaceTopRowLayout(m_d.data());
 
     auto syncLayout = [compactMode, upscaleWs, liveWs, compactGenerate](QLayout *layout, const auto &isEssential) {
         if (!layout)
@@ -293,6 +302,10 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
     };
 
     if (m_d->generate.genContentContainer) {
+        if (graphWs) {
+            // Graph hosts its own body; keep Generate content collapsed (0x0), not merely hidden.
+            collapseCompactLayoutRow(m_d->generate.genContentContainer);
+        } else {
         syncLayout(m_d->generate.genContentContainer->layout(), [this, upscaleWs, liveWs, generateWs](QWidget *w) {
             if (upscaleWs) {
                 return w == m_d->upscale.upscaleFactorRow || w == m_d->upscale.upscaleRefineBlock
@@ -340,6 +353,7 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
                 m_d->progressBar->show();
         }
         m_d->generate.genContentContainer->updateGeometry();
+        }
     }
 
     if (m_d->generate.genContentContainer && m_d->generate.regionPromptWidget) {
@@ -357,14 +371,29 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
         }
     }
 
-    if (compactMode && m_d->generate.genGroupBox) {
-        if (QLayout *genLay = m_d->generate.genGroupBox->layout()) {
-            syncLayout(genLay, [this](QWidget *w) {
-                return w == m_d->generate.genContentContainer;
-            });
-        }
-        if (m_d->graphPlaceholderWidget)
+    if (m_d->generate.genGroupBox) {
+        if (graphWs) {
+            // Do not use syncLayout here: non-compact path restores every child and would
+            // un-collapse genContentContainer. Graph body only.
+            if (m_d->generate.genContentContainer)
+                collapseCompactLayoutRow(m_d->generate.genContentContainer);
+            if (m_d->graphPlaceholderWidget)
+                restoreCompactLayoutRow(m_d->graphPlaceholderWidget);
+            if (m_d->graphActionRowHost)
+                restoreCompactLayoutRow(m_d->graphActionRowHost);
+            if (m_d->generate.generateActionRowWidget)
+                restoreCompactLayoutRow(m_d->generate.generateActionRowWidget);
+        } else if (compactMode) {
+            if (QLayout *genLay = m_d->generate.genGroupBox->layout()) {
+                syncLayout(genLay, [this](QWidget *w) {
+                    return w == m_d->generate.genContentContainer;
+                });
+            }
+            if (m_d->graphPlaceholderWidget)
+                collapseCompactLayoutRow(m_d->graphPlaceholderWidget);
+        } else if (m_d->graphPlaceholderWidget) {
             collapseCompactLayoutRow(m_d->graphPlaceholderWidget);
+        }
     }
 
     if ((generateWs || liveWs) && reapplyPromptLayout)
@@ -385,7 +414,21 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
         contentPage = m_d->progressBar->parentWidget();
     if (contentPage) {
         applyHistoryPanelWorkspaceVisibility(m_d.data(), contentPage);
-        if (compactMode) {
+        if (graphWs) {
+            // Leave Generate/Live height clamps so Graph body + history can expand.
+            clearCompactFixedHeight(m_d->generate.genGroupBox);
+            if (m_d->graphPlaceholderWidget)
+                clearCompactFixedHeight(m_d->graphPlaceholderWidget);
+            if (QLayout *pageLay = contentPage->layout()) {
+                if (auto *box = qobject_cast<QVBoxLayout *>(pageLay)) {
+                    if (m_d->generate.genGroupBox) {
+                        const int genIx = box->indexOf(m_d->generate.genGroupBox);
+                        if (genIx >= 0)
+                            box->setStretch(genIx, 1);
+                    }
+                }
+            }
+        } else if (compactMode) {
             clearCompactFixedHeight(m_d->generate.genContentContainer);
             clearCompactFixedHeight(m_d->generate.genGroupBox);
             if (m_d->live.livePreviewGroupBox && !liveWs && m_d->generate.genGroupBox) {

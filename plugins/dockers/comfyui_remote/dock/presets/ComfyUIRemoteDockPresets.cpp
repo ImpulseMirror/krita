@@ -9,6 +9,7 @@
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyStyleCollection.h"
 #include "ComfyUIUtils.h"
+#include "ComfyTheme.h"
 
 #include <QInputDialog>
 #include <QJsonDocument>
@@ -16,7 +17,9 @@
 #include <QLineEdit>
 #include <QMetaObject>
 #include <QPointer>
+#include <QSignalBlocker>
 #include <QLoggingCategory>
+#include <QFileInfo>
 #include <thread>
 
 Q_DECLARE_LOGGING_CATEGORY(KIS_COMFYUI_REMOTE)
@@ -212,6 +215,127 @@ void ComfyUIRemoteDock::applyImportedWorkflowBytes(const QByteArray &raw, const 
         setStatusMessage(ComfyTr::tr("Loaded workflow from file."));
     }
     persistOpenCustomWorkflowToDocument();
+    refreshCustomWorkflowParameterPanel();
+}
+
+void ComfyUIRemoteDock::refreshGraphWorkflowCombo()
+{
+    if (!m_d->comboGraphWorkflow)
+        return;
+    const QString prev = m_d->comboGraphWorkflow->currentData().toString();
+    QSignalBlocker b(m_d->comboGraphWorkflow);
+    m_d->comboGraphWorkflow->clear();
+    m_d->comboGraphWorkflow->addItem(ComfyTheme::icon(QStringLiteral("file-json")),
+                                    ComfyTr::tr("(unsaved / pasted)"), QString());
+    const QStringList files = ComfyUIUtils::listLocalWorkflowJsonFilenames();
+    for (const QString &fn : files) {
+        m_d->comboGraphWorkflow->addItem(ComfyTheme::icon(QStringLiteral("file-json")),
+                                        QFileInfo(fn).completeBaseName(), fn);
+    }
+    int restore = 0;
+    if (!prev.isEmpty()) {
+        const int ix = m_d->comboGraphWorkflow->findData(prev);
+        if (ix >= 0)
+            restore = ix;
+    }
+    m_d->comboGraphWorkflow->setCurrentIndex(restore);
+    const bool hasSelection = restore > 0;
+    if (m_d->btnGraphSaveWorkflow)
+        m_d->btnGraphSaveWorkflow->setEnabled(m_d->editCustomWorkflow
+                                              && !m_d->editCustomWorkflow->toPlainText().trimmed().isEmpty());
+    if (m_d->btnGraphDeleteWorkflow)
+        m_d->btnGraphDeleteWorkflow->setEnabled(hasSelection);
+}
+
+void ComfyUIRemoteDock::slotGraphWorkflowSelected(int index)
+{
+    if (!m_d->comboGraphWorkflow || !m_d->editCustomWorkflow)
+        return;
+    if (m_d->btnGraphDeleteWorkflow)
+        m_d->btnGraphDeleteWorkflow->setEnabled(index > 0);
+    if (index <= 0)
+        return;
+    const QString fileName = m_d->comboGraphWorkflow->itemData(index).toString();
+    if (fileName.isEmpty())
+        return;
+    const QString path = ComfyUIUtils::workflowsStorageDir() + QLatin1Char('/') + fileName;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        setStatusMessage(ComfyTr::tr("Could not open workflow: %1", f.errorString()), true);
+        return;
+    }
+    applyImportedWorkflowBytes(ComfyUIUtils::stripJsonLineComments(f.readAll()), QString());
+}
+
+void ComfyUIRemoteDock::slotSaveWorkflowToLibrary()
+{
+    if (!m_d->editCustomWorkflow)
+        return;
+    const QString json = m_d->editCustomWorkflow->toPlainText().trimmed();
+    if (json.isEmpty()) {
+        setStatusMessage(ComfyTr::tr("Nothing to save — paste or import a workflow first."), true);
+        return;
+    }
+    QString baseName;
+    if (m_d->comboGraphWorkflow && m_d->comboGraphWorkflow->currentIndex() > 0)
+        baseName = m_d->comboGraphWorkflow->currentText().trimmed();
+    bool ok = false;
+    baseName = QInputDialog::getText(this, ComfyTr::tr("Save workflow to file"),
+                                     ComfyTr::tr("Workflow name:"), QLineEdit::Normal, baseName, &ok)
+                   .trimmed();
+    if (!ok || baseName.isEmpty())
+        return;
+    baseName.replace(QLatin1Char('/'), QLatin1Char('_'));
+    baseName.replace(QLatin1Char('\\'), QLatin1Char('_'));
+    if (!baseName.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
+        baseName += QStringLiteral(".json");
+    const QString path = ComfyUIUtils::workflowsStorageDir() + QLatin1Char('/') + baseName;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        QMessageBox::warning(this, ComfyTr::tr("Save Workflow"),
+                             ComfyTr::tr("Could not write file: %1", f.errorString()));
+        return;
+    }
+    f.write(json.toUtf8());
+    f.close();
+    refreshGraphWorkflowCombo();
+    if (m_d->comboGraphWorkflow) {
+        const int ix = m_d->comboGraphWorkflow->findData(baseName);
+        if (ix >= 0) {
+            QSignalBlocker b(m_d->comboGraphWorkflow);
+            m_d->comboGraphWorkflow->setCurrentIndex(ix);
+        }
+    }
+    if (m_d->btnGraphDeleteWorkflow)
+        m_d->btnGraphDeleteWorkflow->setEnabled(true);
+    setStatusMessage(ComfyTr::tr("Saved workflow \"%1\".", QFileInfo(baseName).completeBaseName()), false);
+}
+
+void ComfyUIRemoteDock::slotDeleteWorkflowFromLibrary()
+{
+    if (!m_d->comboGraphWorkflow || m_d->comboGraphWorkflow->currentIndex() <= 0)
+        return;
+    const QString fileName = m_d->comboGraphWorkflow->currentData().toString();
+    if (fileName.isEmpty())
+        return;
+    const QString path = ComfyUIUtils::workflowsStorageDir() + QLatin1Char('/') + fileName;
+    const auto answer = QMessageBox::question(
+        this, ComfyTr::tr("Delete Workflow"),
+        ComfyTr::tr("Are you sure you want to delete the current workflow?") + QLatin1Char('\n') + path,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+    if (!QFile::remove(path)) {
+        QMessageBox::warning(this, ComfyTr::tr("Delete Workflow"),
+                             ComfyTr::tr("Could not delete file: %1", path));
+        return;
+    }
+    if (m_d->editCustomWorkflow)
+        m_d->editCustomWorkflow->clear();
+    persistOpenCustomWorkflowToDocument();
+    refreshCustomWorkflowParameterPanel();
+    refreshGraphWorkflowCombo();
+    setStatusMessage(ComfyTr::tr("Deleted workflow."), false);
 }
 
 void ComfyUIRemoteDock::slotLoadWorkflowFromFile()
@@ -234,8 +358,21 @@ void ComfyUIRemoteDock::slotLoadWorkflowFromFile()
             }
             if (!self)
                 return;
+            // Copy into local library when imported from elsewhere.
+            if (errStr.isEmpty() && !raw.isEmpty()) {
+                QString base = QFileInfo(path).fileName();
+                if (!base.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
+                    base += QStringLiteral(".json");
+                const QString dest = ComfyUIUtils::workflowsStorageDir() + QLatin1Char('/') + base;
+                if (QFileInfo(path).absoluteFilePath() != QFileInfo(dest).absoluteFilePath()) {
+                    QFile out(dest);
+                    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                        out.write(raw);
+                }
+            }
             QMetaObject::invokeMethod(self.data(), "applyImportedWorkflowBytes", Qt::QueuedConnection, Q_ARG(QByteArray, raw),
                                       Q_ARG(QString, errStr));
+            QMetaObject::invokeMethod(self.data(), "refreshGraphWorkflowCombo", Qt::QueuedConnection);
         }).detach();
         return;
     }
@@ -245,7 +382,27 @@ void ComfyUIRemoteDock::slotLoadWorkflowFromFile()
         return;
     }
     // §13.135: Strip // line comments before parsing so JSON with comments loads
-    applyImportedWorkflowBytes(ComfyUIUtils::stripJsonLineComments(f.readAll()), QString());
+    const QByteArray raw = ComfyUIUtils::stripJsonLineComments(f.readAll());
+    QString base = QFileInfo(path).fileName();
+    if (!base.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
+        base += QStringLiteral(".json");
+    const QString dest = ComfyUIUtils::workflowsStorageDir() + QLatin1Char('/') + base;
+    if (QFileInfo(path).absoluteFilePath() != QFileInfo(dest).absoluteFilePath()) {
+        QFile out(dest);
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            out.write(raw);
+    }
+    applyImportedWorkflowBytes(raw, QString());
+    refreshGraphWorkflowCombo();
+    if (m_d->comboGraphWorkflow) {
+        const int ix = m_d->comboGraphWorkflow->findData(base);
+        if (ix >= 0) {
+            QSignalBlocker b(m_d->comboGraphWorkflow);
+            m_d->comboGraphWorkflow->setCurrentIndex(ix);
+        }
+        if (m_d->btnGraphDeleteWorkflow)
+            m_d->btnGraphDeleteWorkflow->setEnabled(ix > 0);
+    }
 }
 
 void ComfyUIRemoteDock::slotRandomSeed()

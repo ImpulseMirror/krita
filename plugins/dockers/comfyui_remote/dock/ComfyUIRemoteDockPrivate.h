@@ -636,7 +636,13 @@ struct ComfyUIRemoteDock::Private
     /// §13.49 / §13.53: Control timing range + server-side preprocessor preview (Generate workspace)
     /// §13.98: Add default pose skeleton to active vector layer (Pose.create_default extent + people_count)
     /// §13.53 hands: after server returns crop output, composite onto full canvas extent for preview
-    QWidget *graphPlaceholderWidget = nullptr; // Graph workspace: "Open Settings" placeholder
+    QWidget *graphPlaceholderWidget = nullptr; // Graph workspace body
+    QWidget *graphWorkflowSelectWidgets = nullptr; // combo + import/save/delete (top row)
+    QComboBox *comboGraphWorkflow = nullptr;
+    QToolButton *btnGraphImportWorkflow = nullptr;
+    QToolButton *btnGraphSaveWorkflow = nullptr;
+    QToolButton *btnGraphDeleteWorkflow = nullptr;
+    QWidget *graphActionRowHost = nullptr; // holds Generate+queue when Graph active
 
     // §5.1/5.2: Main stack (Welcome vs workspace content) and connection state (§13.73)
     QStackedWidget *mainStack = nullptr;

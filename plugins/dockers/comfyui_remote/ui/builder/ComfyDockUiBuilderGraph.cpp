@@ -3,72 +3,22 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "ComfyCheckBox.h"
+#include "ComfyComboBox.h"
 #include "ComfyDockUiBuilder.h"
 #include "ComfyUIRemoteDockShellInternal.h"
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyUIUtils.h"
 #include "ComfyTheme.h"
-#include "ComfyWorkspaceSelectButton.h"
-#include "ComfyPromptResizeHandle.h"
-#include "ComfySwitchWidget.h"
-#include "ComfyQueueButton.h"
-#include "ComfyUIIntervalSlider.h"
-#include "ComfyHistoryListWidget.h"
-#include "ComfyRegionPromptWidget.h"
-#include "ComfyRegionLink.h"
+#include "ComfyUiStyle.h"
+#include "ComfyLocalization.h"
 
-#include <QAbstractItemView>
-#include <QButtonGroup>
-#include <QCheckBox>
 #include <QComboBox>
-#include <QCompleter>
-#include <QDesktopServices>
-#include <QDoubleSpinBox>
-#include <QFont>
-#include <QFormLayout>
-#include <QFrame>
-#include <QGroupBox>
 #include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QListView>
-#include <QMenu>
-#include <QPixmap>
-#include <QPainter>
-#include <QPlainTextEdit>
-#include <QPointer>
-#include <QFileInfo>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QRadioButton>
-#include <QScrollArea>
-#include <QSize>
-#include <QSlider>
-#include <QSpinBox>
-#include <QStackedWidget>
-#include <QStringListModel>
-#include <QTimer>
+#include <QGroupBox>
 #include <QToolButton>
-#include <QUrl>
 #include <QVBoxLayout>
-#include <QWidgetAction>
-
-#include <KSharedConfig>
-#include <KConfigGroup>
-
-#include <kis_annotation.h>
-#include <kis_types.h>
-
-using ComfyDockShellInternal::ComfyPromptPlainTextEdit;
-using ComfyDockShellInternal::LiveSpinnerWidget;
-using ComfyDockShellInternal::StrengthSpinBox;
-using ComfyDockShellInternal::setComboCurrentItemData;
-
-
+#include <QWidget>
 
 namespace ComfyDockUiBuilder {
 
@@ -76,52 +26,92 @@ void buildGraphWorkspace(const Context &ctx, DockShell &shell)
 {
     ComfyUIRemoteDock *dock = ctx.dock;
     ComfyUIRemoteDock::Private *d = ctx.d;
+
+    // Top-row workflow library chrome (upstream CustomWorkflowWidget header, minus Open Web UI).
+    d->graphWorkflowSelectWidgets = new QWidget(shell.genGroup);
+    auto *selectLay = new QHBoxLayout(d->graphWorkflowSelectWidgets);
+    ComfyUiStyle::applyTightRowLayout(selectLay, 2);
+
+    d->comboGraphWorkflow = new ComfyComboBox(d->graphWorkflowSelectWidgets);
+    d->comboGraphWorkflow->setMinimumContentsLength(16);
+    d->comboGraphWorkflow->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLength);
+    d->comboGraphWorkflow->setToolTip(ComfyTr::tr("Select a custom workflow JSON from the local library."));
+    ComfyUiStyle::applyComboBox(d->comboGraphWorkflow);
+    selectLay->addWidget(d->comboGraphWorkflow, 1);
+
+    auto makeTool = [d](const QString &iconStem, const QString &tip) {
+        auto *btn = new QToolButton(d->graphWorkflowSelectWidgets);
+        btn->setIcon(ComfyTheme::icon(iconStem));
+        btn->setToolTip(tip);
+        btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        btn->setAutoRaise(true);
+        ComfyUiStyle::applyIconToolButton(btn);
+        return btn;
+    };
+    d->btnGraphImportWorkflow =
+        makeTool(QStringLiteral("import"), ComfyTr::tr("Import workflow from file"));
+    d->btnGraphSaveWorkflow =
+        makeTool(QStringLiteral("save"), ComfyTr::tr("Save workflow to file"));
+    d->btnGraphDeleteWorkflow =
+        makeTool(QStringLiteral("discard"), ComfyTr::tr("Delete the currently selected workflow"));
+    selectLay->addWidget(d->btnGraphImportWorkflow);
+    selectLay->addWidget(d->btnGraphSaveWorkflow);
+    selectLay->addWidget(d->btnGraphDeleteWorkflow);
+
+    QObject::connect(d->comboGraphWorkflow, QOverload<int>::of(&QComboBox::currentIndexChanged), dock,
+                     &ComfyUIRemoteDock::slotGraphWorkflowSelected);
+    QObject::connect(d->btnGraphImportWorkflow, &QToolButton::clicked, dock,
+                     &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
+    QObject::connect(d->btnGraphSaveWorkflow, &QToolButton::clicked, dock,
+                     &ComfyUIRemoteDock::slotSaveWorkflowToLibrary);
+    QObject::connect(d->btnGraphDeleteWorkflow, &QToolButton::clicked, dock,
+                     &ComfyUIRemoteDock::slotDeleteWorkflowFromLibrary);
+
+    if (d->workspaceTopRowLayout) {
+        // After workspace select / live toolbar, before style combo — Graph swaps style for this.
+        const int insertAt = d->workspaceTopRowLayout->indexOf(d->generate.comboPreset);
+        if (insertAt >= 0)
+            d->workspaceTopRowLayout->insertWidget(insertAt, d->graphWorkflowSelectWidgets, 1);
+        else
+            d->workspaceTopRowLayout->addWidget(d->graphWorkflowSelectWidgets, 1);
+    }
+    d->graphWorkflowSelectWidgets->hide();
+
     d->graphPlaceholderWidget = new QWidget(shell.genGroup);
     d->graphWorkflowEditorLayout = new QVBoxLayout(d->graphPlaceholderWidget);
-    QLabel *graphLabel = new QLabel(ComfyTr::tr("Paste ComfyUI API JSON below, then click Generate (results in History)."));
-    graphLabel->setWordWrap(true);
-    d->graphWorkflowEditorLayout->addWidget(graphLabel);
-    d->graphWorkflowEditorLayout->addWidget(d->live.checkUseReferenceImage);
-    QPushButton *btnGraphLoadWorkflow = new QPushButton(ComfyTr::tr("Load from file…"), d->graphPlaceholderWidget);
-    QObject::connect(btnGraphLoadWorkflow, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotLoadWorkflowFromFile);
-    d->graphWorkflowEditorLayout->addWidget(btnGraphLoadWorkflow);
-    d->graphWorkflowEditorLayout->addWidget(d->editCustomWorkflow);
-    d->checkCustomGraphLive = new ComfyCheckBox(ComfyTr::tr("Continuous preview (re-capture each result)"), d->graphPlaceholderWidget);
-    d->checkCustomGraphLive->setToolTip(ComfyTr::tr("Graph workspace live mode: re-export canvas and re-submit after each result."));
-    QObject::connect(d->checkCustomGraphLive, &QCheckBox::toggled, dock, [dock, d](bool on) {
-        d->customGraphLiveActive = on;
-        if (on)
-            d->customGraphLiveLastFingerprint.clear();
-        if (!on && d->customGraphLiveTimer)
-            d->customGraphLiveTimer->stop();
-    });
-    d->graphWorkflowEditorLayout->addWidget(d->checkCustomGraphLive);
-    d->customWorkflowParamsGroup->setParent(d->graphPlaceholderWidget);
-    d->graphWorkflowEditorLayout->addWidget(d->customWorkflowParamsGroup);
-    // §13.170: Open Web UI — open client.url in default browser (QDesktopServices::openUrl)
-    QPushButton *btnOpenWebUI = new QPushButton(ComfyTr::tr("Open Web UI"));
-    btnOpenWebUI->setToolTip(ComfyTr::tr("Open Web UI to create custom workflows"));
-    QObject::connect(btnOpenWebUI, &QPushButton::clicked, dock, [dock, d](bool) {
-        QString urlStr = d->editServerUrl->text().trimmed();
-        if (urlStr.isEmpty()) {
-            dock->setStatusMessage(ComfyTr::tr("Set server URL in Settings first."), true);
-            return;
-        }
-        QUrl url(urlStr);
-        if (!url.scheme().isEmpty() && url.scheme() != QLatin1String("http") && url.scheme() != QLatin1String("https"))
-            urlStr = QStringLiteral("http://") + urlStr;
-        else if (url.scheme().isEmpty())
-            urlStr = QStringLiteral("http://") + urlStr;
-        QDesktopServices::openUrl(QUrl(urlStr));
-        dock->beginWebWorkflowSwitch();
-    });
-    d->graphWorkflowEditorLayout->addWidget(btnOpenWebUI);
-    QPushButton *btnOpenSettingsForGraph = new QPushButton(ComfyTr::tr("Open Settings"));
-    QObject::connect(btnOpenSettingsForGraph, &QPushButton::clicked, dock, &ComfyUIRemoteDock::slotConfigureHelp);
-    d->graphWorkflowEditorLayout->addWidget(btnOpenSettingsForGraph);
+    d->graphWorkflowEditorLayout->setContentsMargins(0, ComfyUiStyle::Spacing::sectionGap, 0, 0);
+    d->graphWorkflowEditorLayout->setSpacing(ComfyUiStyle::Spacing::rowGap);
+
+    // Upstream CustomWorkflowWidget: params (when ETN) + Generate. No paste JSON /
+    // reference / continuous-preview chrome on the Graph surface — JSON stays
+    // hidden storage filled by import / library select.
+    if (d->editCustomWorkflow) {
+        d->editCustomWorkflow->setParent(d->graphPlaceholderWidget);
+        d->editCustomWorkflow->hide();
+        d->editCustomWorkflow->setMaximumHeight(0);
+    }
+    if (d->live.checkUseReferenceImage) {
+        d->live.checkUseReferenceImage->setParent(d->graphPlaceholderWidget);
+        d->live.checkUseReferenceImage->hide();
+    }
+    // checkCustomGraphLive intentionally not created — Graph live loop stays off for first pass.
+
+    if (d->customWorkflowParamsGroup) {
+        d->customWorkflowParamsGroup->setParent(d->graphPlaceholderWidget);
+        d->graphWorkflowEditorLayout->addWidget(d->customWorkflowParamsGroup);
+    }
+    d->graphWorkflowEditorLayout->addStretch(1);
+
+    d->graphActionRowHost = new QWidget(d->graphPlaceholderWidget);
+    auto *actionHostLay = new QHBoxLayout(d->graphActionRowHost);
+    actionHostLay->setContentsMargins(0, 0, 0, 0);
+    actionHostLay->setSpacing(0);
+    d->graphWorkflowEditorLayout->addWidget(d->graphActionRowHost);
+
     d->graphPlaceholderWidget->setVisible(false);
     shell.genLayout->addWidget(d->graphPlaceholderWidget);
-}
 
+    dock->refreshGraphWorkflowCombo();
+}
 
 } // namespace ComfyDockUiBuilder

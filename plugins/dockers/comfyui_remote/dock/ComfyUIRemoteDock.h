@@ -264,6 +264,10 @@ private Q_SLOTS:
     void slotLoadWorkflowFromFile();
     /// §4.8: Main-thread continuation after optional background read in slotLoadWorkflowFromFile.
     void applyImportedWorkflowBytes(const QByteArray &raw, const QString &openError);
+    void refreshGraphWorkflowCombo();
+    void slotGraphWorkflowSelected(int index);
+    void slotSaveWorkflowToLibrary();
+    void slotDeleteWorkflowFromLibrary();
     void slotPresetChanged(int index);
     void slotSaveAsPreset();
     /// Persist current dock settings as a new custom preset; returns false if name empty or taken.

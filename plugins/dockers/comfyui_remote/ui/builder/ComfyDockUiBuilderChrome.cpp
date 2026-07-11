@@ -314,7 +314,9 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
         if (d->inpaint.checkInpaintUsePromptFocus) d->inpaint.checkInpaintUsePromptFocus->setVisible(false);
         if (d->upscale.btnUpscale) d->upscale.btnUpscale->setVisible(isUpscale);
         if (d->upscale.upscaleActionRowWidget) d->upscale.upscaleActionRowWidget->setVisible(isUpscale);
-        if (d->generate.comboPreset) d->generate.comboPreset->setVisible(isGenerate || isLive || isAnimation || isGraph);
+        // Graph uses workflow library combo instead of style preset (upstream CustomWorkflowWidget).
+        if (d->generate.comboPreset) d->generate.comboPreset->setVisible(isGenerate || isLive || isAnimation);
+        if (d->graphWorkflowSelectWidgets) d->graphWorkflowSelectWidgets->setVisible(isGraph);
         if (d->upscale.comboUpscaleModel) d->upscale.comboUpscaleModel->setVisible(isUpscale);
         if (isUpscale && d->upscale.upscaleActionRowWidget && d->generate.btnQueuePopup) {
             if (auto *row = qobject_cast<QHBoxLayout *>(d->upscale.upscaleActionRowWidget->layout()))
@@ -324,7 +326,39 @@ void buildSharedChrome(const Context &ctx, DockShell &shell)
                 d->generate.btnQueuePopup->setMinimumWidth(d->generate.btnQueuePopup->sizeHint().width());
             }
             dock->updateQueueStatus();
+        } else if (isGraph && d->graphActionRowHost && d->generate.generateActionRowWidget) {
+            if (QWidget *oldParent = d->generate.generateActionRowWidget->parentWidget()) {
+                if (QLayout *oldLay = oldParent->layout())
+                    oldLay->removeWidget(d->generate.generateActionRowWidget);
+            }
+            if (auto *hostLay = qobject_cast<QHBoxLayout *>(d->graphActionRowHost->layout())) {
+                if (hostLay->indexOf(d->generate.generateActionRowWidget) < 0)
+                    hostLay->addWidget(d->generate.generateActionRowWidget, 1);
+            }
+            d->generate.generateActionRowWidget->setParent(d->graphActionRowHost);
+            d->generate.generateActionRowWidget->show();
+            if (d->generate.btnGenerate)
+                d->generate.btnGenerate->show();
+            if (d->generate.btnQueuePopup) {
+                d->generate.btnQueuePopup->setFixedHeight(ComfyUiStyle::Spacing::primaryButtonHeight - 2);
+                d->generate.btnQueuePopup->setMinimumWidth(d->generate.btnQueuePopup->sizeHint().width());
+                d->generate.btnQueuePopup->show();
+            }
+            dock->updateQueueStatus();
         } else if (d->generate.generateActionRowWidget && d->generate.btnQueuePopup) {
+            if (d->generate.genContentContainer) {
+                if (QWidget *oldParent = d->generate.generateActionRowWidget->parentWidget()) {
+                    if (oldParent != d->generate.genContentContainer) {
+                        if (QLayout *oldLay = oldParent->layout())
+                            oldLay->removeWidget(d->generate.generateActionRowWidget);
+                        if (auto *genLay = qobject_cast<QVBoxLayout *>(d->generate.genContentContainer->layout())) {
+                            if (genLay->indexOf(d->generate.generateActionRowWidget) < 0)
+                                genLay->addWidget(d->generate.generateActionRowWidget);
+                        }
+                        d->generate.generateActionRowWidget->setParent(d->generate.genContentContainer);
+                    }
+                }
+            }
             if (auto *row = qobject_cast<QHBoxLayout *>(d->generate.generateActionRowWidget->layout()))
                 row->addWidget(d->generate.btnQueuePopup);
             if (d->generate.btnGenerate && d->generate.btnQueuePopup) {

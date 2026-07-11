@@ -109,7 +109,9 @@ void ComfyUIRemoteDock::reparentCustomWorkflowEditor(bool toGraphWorkspace)
 {
     if (!m_d->editCustomWorkflow)
         return;
-    m_d->editCustomWorkflow->setMaximumHeight(toGraphWorkspace ? 160 : 80);
+    // Graph keeps the editor as hidden storage (import/library fill it); no paste UI.
+    m_d->editCustomWorkflow->hide();
+    m_d->editCustomWorkflow->setMaximumHeight(0);
     if (toGraphWorkspace)
         refreshCustomWorkflowParameterPanel();
 }
