@@ -93,10 +93,17 @@ void reapplyRegionPromptCompactLayout(ComfyUIRemoteDock::Private *d)
     if (ws != 0 && ws != 2)
         return;
     QJsonObject s = ComfyUIUtils::loadSettingsJson();
-    const int lines = qBound(1, s.value(QStringLiteral("prompt_line_count")).toInt(3), 10);
     const bool showNeg = s.value(QStringLiteral("show_negative_prompt")).toBool(false);
     const bool liveWs = (ws == 2);
-    const int posLines = ComfyPromptLayoutMetrics::positiveLinesForGenerateWorkspace(showNeg, lines);
+    const int lines = liveWs
+                          ? qBound(1,
+                                   s.value(QStringLiteral("prompt_line_count_live"))
+                                       .toInt(ComfyPromptLayoutMetrics::kLivePositiveLinesDefault),
+                                   10)
+                          : qBound(1, s.value(QStringLiteral("prompt_line_count")).toInt(3), 10);
+    const int posLines = liveWs
+                             ? (showNeg ? qMax(lines - ComfyPromptLayoutMetrics::kNegativeLineCount, 1) : lines)
+                             : ComfyPromptLayoutMetrics::positiveLinesForGenerateWorkspace(showNeg, lines);
     d->generate.regionPromptWidget->applyCompactLayout(posLines, showNeg, true, liveWs);
 }
 
@@ -292,7 +299,8 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
                        || w == m_d->upscale.upscaleActionRowWidget || w == m_d->progressBar;
             }
             if (liveWs) {
-                return w == m_d->live.liveParamsRowWidget || w == m_d->live.livePromptRowWidget;
+                return w == m_d->live.liveParamsRowWidget || w == m_d->live.livePromptRowWidget
+                       || w == m_d->live.livePreviewGroupBox;
             }
             if (generateWs) {
                 return w == m_d->generate.regionPromptWidget || w == m_d->inpaint.strengthRowWidget
@@ -314,6 +322,8 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
                 m_d->live.liveParamsRowWidget->show();
             if (m_d->live.livePromptRowWidget)
                 m_d->live.livePromptRowWidget->show();
+            if (m_d->live.livePreviewGroupBox)
+                m_d->live.livePreviewGroupBox->show();
             if (m_d->generate.regionPromptWidget && m_d->live.livePromptHostWidget
                 && m_d->generate.regionPromptWidget->parentWidget() == m_d->live.livePromptHostWidget) {
                 m_d->generate.regionPromptWidget->show();
@@ -359,6 +369,14 @@ void ComfyUIRemoteDock::syncCompactGenerateLayoutRows(bool compactGenerate, bool
 
     if ((generateWs || liveWs) && reapplyPromptLayout)
         reapplyRegionPromptCompactLayout(m_d.data());
+
+    // Live nests regionPrompt in a fixed-height host; grow host/row after prompt
+    // (and embedded control/region rows) settle, before chrome height measure.
+    if (liveWs) {
+        if (m_d->generate.regionPromptWidget)
+            m_d->generate.regionPromptWidget->syncCompactHeightFromLayout();
+        syncLivePromptRowHeights();
+    }
 
     QWidget *contentPage = nullptr;
     if (m_d->history.histGroupBox)

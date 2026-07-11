@@ -128,18 +128,25 @@ void buildRegionsPanel(const Context &ctx, QVBoxLayout *scrollLayout)
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::requestAddRegion, dock,
                      &ComfyUIRemoteDock::slotAddRegion);
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::activeIndexChanged, dock, [dock, d](int) {
-        if (d->comboWorkspace && d->comboWorkspace->currentIndex() == 0)
+        const int ws = d->comboWorkspace ? d->comboWorkspace->currentIndex() : -1;
+        if (ws == 0 || ws == 2) {
+            if (d->generate.regionPromptWidget)
+                d->generate.regionPromptWidget->syncCompactHeightFromLayout();
+            if (ws == 2)
+                dock->syncLivePromptRowHeights();
             dock->syncCompactGenerateLayoutRows(true, false);
+        }
     });
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::layoutHeightsChanged, dock, [dock, d]() {
         const int ws = d->comboWorkspace ? d->comboWorkspace->currentIndex() : 0;
         if (ws == 0 || ws == 2) {
             if (d->generate.regionPromptWidget)
                 d->generate.regionPromptWidget->syncCompactHeightFromLayout();
+            // Live host/row fixed heights must update before chrome height measure.
+            if (ws == 2)
+                dock->syncLivePromptRowHeights();
             dock->syncCompactGenerateLayoutRows(true, false);
         }
-        if (ws == 2)
-            dock->syncLivePromptRowHeights();
     });
     QObject::connect(d->generate.regionPromptWidget, &ComfyRegionPromptWidget::translatePromptRequested, dock,
                      [dock, d](bool negative) {

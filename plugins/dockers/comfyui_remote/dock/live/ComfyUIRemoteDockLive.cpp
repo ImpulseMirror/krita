@@ -98,7 +98,10 @@ void applyLivePromptRowHeights(ComfyUIRemoteDock::Private *d)
     if (!d || !d->generate.regionPromptWidget || !d->live.livePromptHostWidget || !d->live.livePromptRowWidget)
         return;
 
-    const int promptH = d->generate.regionPromptWidget->height();
+    // Prefer layout hints when control/region rows grew but widget height not yet settled.
+    int promptH = d->generate.regionPromptWidget->height();
+    promptH = qMax(promptH, d->generate.regionPromptWidget->sizeHint().height());
+    promptH = qMax(promptH, d->generate.regionPromptWidget->minimumSizeHint().height());
     if (promptH <= 0)
         return;
 

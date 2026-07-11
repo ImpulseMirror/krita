@@ -2351,6 +2351,12 @@ void ComfyUIRemoteDockTest::testComfyThemePaletteAndIcons()
     QVERIFY(!ComfyTheme::icon(QStringLiteral("inpaint-fill")).isNull());
     QVERIFY(!ComfyTheme::icon(QStringLiteral("settings")).isNull());
     QVERIFY(!ComfyTheme::icon(QStringLiteral("star")).isNull());
+    // Region chip stems must match dropdown keys (underscores kept).
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("control-soft_edge")).isNull());
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("control-line_art")).isNull());
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("control-canny_edge")).isNull());
+    QVERIFY(!ComfyTheme::icon(QStringLiteral("control-depth")).isNull());
+    QVERIFY(ComfyTheme::icon(QStringLiteral("control-soft-edge")).isNull());
     QVERIFY(!ComfyTheme::checkpointIcon(ComfyResources::Arch::Sdxl).isNull());
     QCOMPARE(ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")),
              ComfyTheme::kritaIconNameForThemeStem(QStringLiteral("queue-active")));

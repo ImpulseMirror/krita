@@ -112,6 +112,8 @@ void finalizeGenerateWorkspaceLayout(const Context &ctx, DockShell &shell)
 
     if (d->generate.regionPromptWidget && d->generate.rootControlLayerList)
         d->generate.regionPromptWidget->embedRegionControlPanel(d->generate.rootControlLayerList);
+    if (d->generate.regionPromptWidget)
+        d->generate.regionPromptWidget->setRootControlLayers(&d->rootControlLayers);
 
     if (d->generate.regionsGroupBox)
         d->generate.regionsGroupBox->setVisible(false);

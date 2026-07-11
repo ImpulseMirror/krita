@@ -8,6 +8,7 @@
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyControlLayer.h"
 #include "ComfyControlLayerListWidget.h"
+#include "ComfyRegionPromptWidget.h"
 #include "ComfyResources.h"
 #include "ComfyUIIntervalSlider.h"
 #include "ComfyUIPoseLayers.h"
@@ -53,6 +54,8 @@ void ComfyUIRemoteDock::wireControlLayerList(ComfyControlLayerListWidget *list,
     list->setArchKeyProvider([d]() { return currentArchKey(d); });
     connect(list, &ComfyControlLayerListWidget::entryEdited, this, [this]() {
         scheduleDocumentUiJsonSave();
+        if (m_d->generate.regionPromptWidget)
+            m_d->generate.regionPromptWidget->refreshControlIcons();
     });
     connect(list, &ComfyControlLayerListWidget::addLayerRequested, this, [this]() {
         if (comfyActiveRegionRow(m_d.data()) >= 0)
@@ -75,8 +78,19 @@ void ComfyUIRemoteDock::wireControlLayerList(ComfyControlLayerListWidget *list,
     connect(list, &ComfyControlLayerListWidget::layoutChanged, this, [this]() {
         if (!m_d->shellLayoutReady)
             return;
-        if (m_d->comboWorkspace && m_d->comboWorkspace->currentIndex() == 0) {
-            QTimer::singleShot(0, this, [this]() { syncCompactGenerateLayoutRows(true); });
+        if (m_d->generate.regionPromptWidget)
+            m_d->generate.regionPromptWidget->refreshControlIcons();
+        const int ws = m_d->comboWorkspace ? m_d->comboWorkspace->currentIndex() : -1;
+        // Generate (0) and Live (2) share regionPrompt + embedded control list; Live also
+        // locks livePromptHost/Row to a fixed height that must grow with control rows.
+        if (ws == 0 || ws == 2) {
+            QTimer::singleShot(0, this, [this, ws]() {
+                if (m_d->generate.regionPromptWidget)
+                    m_d->generate.regionPromptWidget->syncCompactHeightFromLayout();
+                if (ws == 2)
+                    syncLivePromptRowHeights();
+                syncCompactGenerateLayoutRows(true, false);
+            });
         }
     });
 }

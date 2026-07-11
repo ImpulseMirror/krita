@@ -34,8 +34,11 @@ public:
     QPlainTextEdit *negativePromptEditor() const { return m_editNegative; }
     void setRootPromptEditors(QPlainTextEdit *positive, QPlainTextEdit *negative);
     void embedRegionControlPanel(QWidget *panel);
+    void setRootControlLayers(QList<ComfyControlLayerEntry> *layers);
     void bind(QList<ComfyUIRemoteDock::Private::RegionEntry> *regions, int *activeIndex);
     void refresh();
+    /// Refresh control-mode icons on active header + inactive chips (after control list edits).
+    void refreshControlIcons();
     void onActiveLayerChanged();
     void focusPromptEditor();
     void commitRootPromptEditors();
@@ -114,8 +117,8 @@ private:
     QPushButton *m_btnLinkRegionMenu = nullptr;
     bool m_showResizeHandle = true;
     bool m_liveLineCounts = false;
+    QList<ComfyControlLayerEntry> *m_rootControlLayers = nullptr;
 
     bool m_syncingEditor = false;
 };
-
 #endif

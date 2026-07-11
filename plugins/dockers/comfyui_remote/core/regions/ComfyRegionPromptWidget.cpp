@@ -99,8 +99,12 @@ public:
         }
         const int iconSize = qMax(14, static_cast<int>(fontMetrics().height() * 1.2));
         for (const QString &stem : controlModeStems) {
+            const QPixmap pix = ComfyTheme::icon(stem).pixmap(iconSize, iconSize);
+            if (pix.isNull())
+                continue;
             auto *ic = new QLabel(this);
-            ic->setPixmap(ComfyTheme::icon(stem).pixmap(iconSize, iconSize));
+            ic->setPixmap(pix);
+            ic->setToolTip(stem);
             m_icons->addWidget(ic);
         }
         updateClippedText();
@@ -175,8 +179,12 @@ QStringList controlIconStems(const QList<ComfyControlLayerEntry> &layers)
 {
     QStringList stems;
     for (const ComfyControlLayerEntry &c : layers) {
-        QString mode = c.mode;
-        mode.replace(QLatin1Char('_'), QLatin1Char('-'));
+        // Match dropdown: ComfyControlLayerRowWidget uses "control-" + mode key as-is
+        // (soft_edge, line_art, canny_edge). Do not rewrite '_' → '-' — that breaks
+        // bundled icon lookup (control-soft_edge-*.png).
+        const QString mode = c.mode.trimmed().toLower();
+        if (mode.isEmpty())
+            continue;
         stems.append(QStringLiteral("control-") + mode);
     }
     return stems;
@@ -409,6 +417,22 @@ void ComfyRegionPromptWidget::embedRegionControlPanel(QWidget *panel)
     updateGeometry();
 }
 
+void ComfyRegionPromptWidget::setRootControlLayers(QList<ComfyControlLayerEntry> *layers)
+{
+    m_rootControlLayers = layers;
+    refreshControlIcons();
+}
+
+void ComfyRegionPromptWidget::refreshControlIcons()
+{
+    // Control icons only on compressed (inactive) chips — never on focused active header.
+    rebuildInactiveChips();
+    if (m_promptStack)
+        m_promptStack->refreshFrameHeight();
+    updateGeometry();
+    Q_EMIT layoutHeightsChanged();
+}
+
 void ComfyRegionPromptWidget::bind(QList<ComfyUIRemoteDock::Private::RegionEntry> *regions, int *activeIndex)
 {
     m_regions = regions;
@@ -526,7 +550,9 @@ void ComfyRegionPromptWidget::rebuildInactiveChips()
         bool rootPlaceholder = false;
         const QString rootText = inactivePromptText(pseudo, true, &rootPlaceholder);
         auto *rootChip = new InactiveRegionChip(this);
-        rootChip->setContent(thumbnailForRegion(pseudo, image, true), rootText, {}, rootPlaceholder);
+        const QStringList rootStems =
+            m_rootControlLayers ? controlIconStems(*m_rootControlLayers) : QStringList();
+        rootChip->setContent(thumbnailForRegion(pseudo, image, true), rootText, rootStems, rootPlaceholder);
         return rootChip;
     };
 

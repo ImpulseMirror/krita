@@ -21,6 +21,8 @@
 #include "ComfyUIRemoteDock.h"
 #include "ComfyUIRemoteDockPrivate.h"
 #include "ComfyRegionPromptWidget.h"
+#include "ComfyControlLayer.h"
+#include "ComfyControlLayerListWidget.h"
 #include "ComfyUiLayoutDiagnostics.h"
 #include "ComfyPromptLayoutMetrics.h"
 
@@ -78,6 +80,7 @@ private Q_SLOTS:
     void testLivePreviewOnContentPage();
     void testLivePromptSurvivesUpscaleRoundTrip();
     void testLivePositiveLineCountMatchesGenerate();
+    void testLiveControlLayersGrowPromptHost();
     void testGenerateNegativePromptFitsInGenContent();
     void testAllCompactWorkspacesShareTopInset_data();
     void testAllCompactWorkspacesShareTopInset();
@@ -579,6 +582,58 @@ void ComfyGenerateChromeLayoutRegressionTest::testLivePositiveLineCountMatchesGe
              qPrintable(QStringLiteral("Live positive prompt should be 3 lines: h=%1 expected=%2")
                             .arg(livePos->height())
                             .arg(expectedH)));
+}
+
+void ComfyGenerateChromeLayoutRegressionTest::testLiveControlLayersGrowPromptHost()
+{
+    ComfyUIRemoteDock dock;
+    dock.setViewManager(nullptr);
+    dock.setCanvas(nullptr);
+    dock.resize(420, 720);
+    dock.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dock));
+    dock.setEnabled(true);
+    settleGenerateLayout(dock);
+
+    auto *d = static_cast<ComfyUIRemoteDock::Private *>(dock.testDockPrivate());
+    d->comboWorkspace->setCurrentIndex(2);
+    QApplication::processEvents();
+    settleLayout(dock);
+
+    QVERIFY(d->generate.regionPromptWidget);
+    QVERIFY(d->live.livePromptHostWidget);
+    QVERIFY(d->generate.rootControlLayerList);
+    const int hostBefore = d->live.livePromptHostWidget->height();
+    const int promptBefore = d->generate.regionPromptWidget->height();
+    QVERIFY(hostBefore > 0);
+    QVERIFY(promptBefore > 0);
+
+    for (int i = 0; i < 3; ++i) {
+        ComfyControlLayerEntry e = ComfyControlLayer::makeDefaultForLayer(QStringLiteral("Paint layer %1").arg(i + 1),
+                                                                         QStringLiteral("sd_xl"));
+        e.mode = QStringLiteral("depth");
+        d->rootControlLayers.append(e);
+    }
+    d->generate.rootControlLayerList->setLayers(&d->rootControlLayers);
+    d->generate.rootControlLayerList->refresh();
+    QApplication::processEvents();
+    QTest::qWait(50);
+    settleLayout(dock);
+
+    const int hostAfter = d->live.livePromptHostWidget->height();
+    const int promptAfter = d->generate.regionPromptWidget->height();
+    QVERIFY2(promptAfter > promptBefore + 40,
+             qPrintable(QStringLiteral("regionPrompt must grow with control rows: before=%1 after=%2")
+                            .arg(promptBefore)
+                            .arg(promptAfter)));
+    QVERIFY2(hostAfter >= promptAfter - 2,
+             qPrintable(QStringLiteral("livePromptHost must fit regionPrompt: host=%1 prompt=%2")
+                            .arg(hostAfter)
+                            .arg(promptAfter)));
+    QVERIFY2(hostAfter > hostBefore + 40,
+             qPrintable(QStringLiteral("livePromptHost must grow with control rows: before=%1 after=%2")
+                            .arg(hostBefore)
+                            .arg(hostAfter)));
 }
 
 void ComfyGenerateChromeLayoutRegressionTest::testGenerateNegativePromptFitsInGenContent()
